@@ -31,6 +31,14 @@ data class Texture(
     val bloomAmount: Float,       // 0..1, diffusion strength
     val bloomReach: Float,        // relative, picks the filter family
     val glarePercent: Float,      // 0..3, veiling flare
+    /**
+     * Whether grain could actually be measured. Grain is a few thousandths of a millimetre
+     * across; in a reference shrunk for the web it has been averaged away, and what survives is
+     * JPEG noise. So below a size where it can survive, nothing is read — and the film keeps
+     * its own grain, rather than having it switched off because it could not be seen.
+     * Last, after the numbers, so nothing built by position can shift.
+     */
+    val grainMeasured: Boolean = true,
 ) {
 
     /** The suggested filter family, from how far the bloom reaches. */
@@ -43,10 +51,14 @@ data class Texture(
         }
 
     /** Applies what was read to a recipe, leaving the colour alone. */
-    fun applyTo(r: Recipe): Recipe = r.copy(
-        grain = grainAmount > 0.02f,
-        grainSizeUm2 = (0.08f + (1f - grainFineness) * 0.9f).coerceIn(0.03f, 3.2f),
-        grainBlur = (0.3f + (1f - grainFineness) * 0.6f).coerceIn(0.1f, 1.5f),
+    fun applyTo(r: Recipe): Recipe = (
+        // Grain only when it was actually measured; otherwise the film's own grain stands.
+        if (grainMeasured) r.copy(
+            grain = grainAmount > 0.02f,
+            grainSizeUm2 = (0.08f + (1f - grainFineness) * 0.9f).coerceIn(0.03f, 3.2f),
+            grainBlur = (0.3f + (1f - grainFineness) * 0.6f).coerceIn(0.1f, 1.5f),
+        ) else r
+    ).copy(
         halation = halationAmount > 0.05f,
         halationAmount = halationAmount,
         halationScale = halationReach,
@@ -62,14 +74,19 @@ data class Texture(
         fun average(list: List<Texture>): Texture {
             require(list.isNotEmpty())
             val n = list.size.toFloat()
+            // Grain is averaged over the references that could show it — a small image's zero
+            // would otherwise drag the set's grain down towards none.
+            val withGrain = list.filter { it.grainMeasured }
+            val g = withGrain.size.toFloat()
             return Texture(
-                list.sumOf { it.grainAmount.toDouble() }.toFloat() / n,
-                list.sumOf { it.grainFineness.toDouble() }.toFloat() / n,
+                if (g > 0f) withGrain.sumOf { it.grainAmount.toDouble() }.toFloat() / g else 0f,
+                if (g > 0f) withGrain.sumOf { it.grainFineness.toDouble() }.toFloat() / g else 0.5f,
                 list.sumOf { it.halationAmount.toDouble() }.toFloat() / n,
                 list.sumOf { it.halationReach.toDouble() }.toFloat() / n,
                 list.sumOf { it.bloomAmount.toDouble() }.toFloat() / n,
                 list.sumOf { it.bloomReach.toDouble() }.toFloat() / n,
                 list.sumOf { it.glarePercent.toDouble() }.toFloat() / n,
+                grainMeasured = withGrain.isNotEmpty(),
             )
         }
 
@@ -84,7 +101,7 @@ data class Texture(
         fun of(wide: Bitmap, grainCrop: Bitmap? = null): Texture {
             val broad = measureBroad(wide)
             val g = grainCrop?.let { measureGrain(it) } ?: (0f to 0.5f)
-            return broad.copy(grainAmount = g.first, grainFineness = g.second)
+            return broad.copy(grainAmount = g.first, grainFineness = g.second, grainMeasured = grainCrop != null)
         }
 
         /** Grain, at the resolution it actually exists at. */

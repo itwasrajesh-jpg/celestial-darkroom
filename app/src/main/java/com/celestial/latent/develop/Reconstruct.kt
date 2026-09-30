@@ -44,6 +44,12 @@ object Reconstruct {
         isRaw: Boolean,
         baseStock: String,
         rounds: Int = 240,
+        /**
+         * Where to begin. A previous result for the same references is a far better start than
+         * the base film's defaults, so a second build refines the first instead of re-deriving
+         * it. Null starts from scratch.
+         */
+        startFrom: Emulsion.Shape? = null,
         onProgress: (Progress) -> Unit,
     ): Attempt? {
         cancelled = false
@@ -82,7 +88,7 @@ object Reconstruct {
         onProgress(Progress(0, rounds, null, "starting exposure ${"%+.1f".format(baseEv)} EV"))
 
         var best: Attempt? = null
-        var current = Emulsion.Shape()
+        var current = startFrom ?: Emulsion.Shape()
         var currentDistance = Float.MAX_VALUE
         var temperature = 1f
         val random = Random(1)
@@ -90,13 +96,25 @@ object Reconstruct {
         // Filled in once the helpers below exist; read by every evaluation.
         var judgeable: FloatArray? = null
 
+        /**
+         * The one recipe every attempt, probe and baseline is developed with.
+         *
+         * There used to be two: the search built its own with grain, halation and glare off,
+         * while the probe and the baseline went through recipeFor and kept the app's defaults —
+         * all three on. Halation is a red glow, so the probe deciding which way the yellow filter
+         * warms the picture was measuring a haloed image while the search ran on a clean one.
+         * The spatial effects are measured from the references separately; here they stay off.
+         */
+        fun fitRecipe(shape: Emulsion.Shape): Recipe =
+            recipeFor(stockId, Attempt(shape, 0f, null, baseEv), paper, previewSize = 320)
+                .copy(grain = false, halation = false, glare = false, diffusion = false)
+
         /** Develops one candidate and returns what it measures, without scoring it. */
         fun evaluateFingerprint(shape: Emulsion.Shape): Fingerprint? {
             Emulsion.write(base, shape, stockId, "Working") ?: return null
             return runCatching {
                 SpektraEngine(dir).use { engine ->
-                    val recipe = recipeFor(stockId, Attempt(shape, 0f, null, baseEv), paper, previewSize = 320)
-                    val (bytes, _) = Develop.renderWith(engine, context, source, recipe, preview = true)
+                    val (bytes, _) = Develop.renderWith(engine, context, source, fitRecipe(shape), preview = true)
                     android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.let { Fingerprint.of(it) }
                 }
             }.getOrNull()
@@ -105,29 +123,7 @@ object Reconstruct {
         fun evaluate(shape: Emulsion.Shape, keepImage: Boolean): Attempt? {
             Emulsion.write(base, shape, stockId, "Working") ?: return null
             return runCatching {
-                val recipe = Recipe(
-                    film = stockId,
-                    // A negative MUST be printed. Scanning it directly gives the negative itself —
-                    // orange-masked and inverted — which is not what the references look like, so
-                    // the fit would be aiming at the wrong image entirely.
-                    // A negative must be printed; a slide film has no print stage and is scanned.
-                    paper = paper ?: Develop.DEFAULT_PAPER,
-                    scanFilm = paper == null,
-                    // The print is where colour balance is set, so the search moves it too.
-                    yFilterShift = shape.yFilter,
-                    mFilterShift = shape.mFilter,
-                    printExposure = shape.printExposure,
-                    printContrast = shape.printContrast,
-                    grain = false, halation = false, glare = false, diffusion = false,
-                    previewMaxSize = 320,
-                    exposureEv = baseEv,
-                    // Brightness is matched, not levelled. When this fit was first written the
-                    // search could not set exposure, so every attempt was auto-levelled and the
-                    // tone positions were weighted down as meaningless. The search now controls
-                    // the print exposure, so brightness is something it can and should match —
-                    // and the washed, lifted results were the old assumption still in force.
-                    autoExposure = false,
-                )
+                val recipe = fitRecipe(shape)
                 // A fresh engine each attempt: the profile changes between them, and an engine
                 // that had already read the old one would keep using it. Creating one reads the
                 // profile folder, which is why attempts are capped and the work stays small.
@@ -149,19 +145,33 @@ object Reconstruct {
         // Guessing here is how a fit ends up chasing a colour cast instead of correcting it.
         var yellowDirection = 1f
         var magentaDirection = 1f
+        var contrastDirection = 1f
+        var couplersDirection = 1f
         runCatching {
             if (cancelled) return@runCatching
             val plain = evaluateFingerprint(Emulsion.Shape())
             val warmer = evaluateFingerprint(Emulsion.Shape(yFilter = 6f))
             val greener = evaluateFingerprint(Emulsion.Shape(mFilter = 6f))
+            // Contrast and saturation are probed the same way rather than assumed: a steeper
+            // paper should mean more contrast and more coupler action more saturation, but it is
+            // the engine's answer that counts, not the textbook's.
+            val steeper = evaluateFingerprint(Emulsion.Shape(printContrast = 1.3f))
+            val richer = evaluateFingerprint(Emulsion.Shape(couplers = 1.5f))
             if (plain != null && warmer != null) {
                 yellowDirection = if (warmer.neutralWarmth >= plain.neutralWarmth) 1f else -1f
             }
             if (plain != null && greener != null) {
                 magentaDirection = if (greener.neutralGreen >= plain.neutralGreen) 1f else -1f
             }
-            Log.i("Latent", "filter directions: yellow $yellowDirection, magenta $magentaDirection")
-            onProgress(Progress(0, rounds, null, "measured how the filters move the colour"))
+            if (plain != null && steeper != null) {
+                contrastDirection = if (steeper.contrast >= plain.contrast) 1f else -1f
+            }
+            if (plain != null && richer != null) {
+                couplersDirection = if (richer.saturation >= plain.saturation) 1f else -1f
+            }
+            Log.i("Latent", "probe directions: yellow $yellowDirection, magenta $magentaDirection, " +
+                "contrast $contrastDirection, couplers $couplersDirection")
+            onProgress(Progress(0, rounds, null, "measured how each control moves the picture"))
         }
 
         // What can be judged: what the references show AND what the undeveloped test shot can
@@ -191,21 +201,54 @@ object Reconstruct {
          * error can be measured and corrected — like focusing a lens rather than guessing where
          * focus lies. Done every so often during the search, so a drift cannot settle in.
          */
-        fun correctColour() {
-            val fp = evaluateFingerprint(current) ?: return
-            val warmError = fp.neutralWarmth - target.neutralWarmth
-            val greenError = fp.neutralGreen - target.neutralGreen
-            if (kotlin.math.abs(warmError) < 0.02f && kotlin.math.abs(greenError) < 0.02f) return
-            val v = current.asArray().copyOf()
-            // A rough gain: the filters run to twenty, the neutral figures to about one.
-            v[15] = (v[15] - yellowDirection * warmError * 14f).coerceIn(-20f, 20f)
-            v[16] = (v[16] - magentaDirection * greenError * 14f).coerceIn(-20f, 20f)
+        /** Tries one aimed change; keeps it only if the match genuinely improves. */
+        fun tryAimed(v: FloatArray): Boolean {
             val aimed = Emulsion.Shape.from(v)
-            val attempt = evaluate(aimed, keepImage = false) ?: return
-            if (attempt.distance < currentDistance) {
-                current = aimed
-                currentDistance = attempt.distance
-                if (best == null || attempt.distance < best!!.distance) best = evaluate(aimed, keepImage = true) ?: attempt
+            val attempt = evaluate(aimed, keepImage = false) ?: return false
+            if (attempt.distance >= currentDistance) return false
+            current = aimed
+            currentDistance = attempt.distance
+            if (best == null || attempt.distance < best!!.distance) best = evaluate(aimed, keepImage = true) ?: attempt
+            return true
+        }
+
+        /**
+         * Aim the controls that have one direct effect, instead of waiting for the search to
+         * stumble on them: the filters for colour balance, the paper contrast for contrast, the
+         * couplers for saturation. Each is measured, moved by the amount that should close the
+         * gap, and kept only if the match improves — so a badly judged step costs one develop
+         * and is thrown away.
+         */
+        fun correctAim() {
+            val fp = evaluateFingerprint(current) ?: return
+            // Colour — only when the references actually showed something neutral. Without that
+            // their neutral figures read zero, which means "perfectly grey", not "unknown", and
+            // aiming at it would drag the picture grey for no reason.
+            val neutralsJudgeable = (judgeable?.getOrNull(7) ?: target.coverage.getOrElse(7) { 0f }) > 0.01f
+            if (neutralsJudgeable) {
+                val warmError = fp.neutralWarmth - target.neutralWarmth
+                val greenError = fp.neutralGreen - target.neutralGreen
+                if (kotlin.math.abs(warmError) >= 0.02f || kotlin.math.abs(greenError) >= 0.02f) {
+                    val v = current.asArray().copyOf()
+                    // A rough gain: the filters run to twenty, the neutral figures to about one.
+                    v[15] = (v[15] - yellowDirection * warmError * 14f).coerceIn(-20f, 20f)
+                    v[16] = (v[16] - magentaDirection * greenError * 14f).coerceIn(-20f, 20f)
+                    tryAimed(v)
+                }
+            }
+            // Contrast, through the paper grade.
+            val contrastError = fp.contrast - target.contrast
+            if (kotlin.math.abs(contrastError) >= 0.01f) {
+                val v = current.asArray().copyOf()
+                v[18] = v[18] - contrastDirection * contrastError * 1.5f
+                tryAimed(v)
+            }
+            // Saturation, through the couplers.
+            val saturationError = fp.saturation - target.saturation
+            if (kotlin.math.abs(saturationError) >= 0.005f) {
+                val v = current.asArray().copyOf()
+                v[19] = v[19] - couplersDirection * saturationError * 5f
+                tryAimed(v)
             }
         }
         while (tried < rounds && !cancelled) {
@@ -215,7 +258,7 @@ object Reconstruct {
             // tried more often early on, when there is most to gain from them.
             // The print controls — balance, exposure and contrast — set the colour and the
             // brightness, and are worth far more attempts than any single curve parameter.
-            val which = if (random.nextInt(100) < 50) 15 + random.nextInt(4)
+            val which = if (random.nextInt(100) < 50) 15 + random.nextInt(5)
             else random.nextInt(Emulsion.Shape.COUNT)
             val step = Emulsion.Shape.STEP[which] * temperature
             v[which] += if (random.nextBoolean()) step else -step
@@ -234,7 +277,7 @@ object Reconstruct {
             // Settle gradually; a few larger jumps early, finer adjustments later.
             temperature = (1f - tried.toFloat() / rounds).coerceAtLeast(0.15f)
             // Correct the balance at intervals, so the curve search cannot drift the colour.
-            if (tried % 40 == 0) correctColour()
+            if (tried % 40 == 0) correctAim()
             if (tried % 8 == 0) {
                 onProgress(Progress(tried, rounds, best, "closest so far: ${percent(best?.distance)}"))
             }

@@ -47,9 +47,17 @@ object Emulsion {
         val mFilter: Float = 0f,
         val printExposure: Float = 1f,
         val printContrast: Float = 1f,
+        /**
+         * The DIR couplers: the chemistry by which one colour layer holds its neighbours back
+         * as it develops. It is how film makes colour stronger or softer, so it is the honest
+         * control for saturation — the search had nothing that moved saturation directly.
+         * Last in the list on purpose, after every other number, so nothing built by position
+         * can shift.
+         */
+        val couplers: Float = 1f,
     ) {
         fun asArray() = centre + height + width + spectralShift + speed +
-            floatArrayOf(yFilter, mFilter, printExposure, printContrast)
+            floatArrayOf(yFilter, mFilter, printExposure, printContrast, couplers)
 
         /**
          * Carries the print settings into a recipe. The emulsion lives in the profile, but how
@@ -61,6 +69,7 @@ object Emulsion {
             mFilterShift = mFilter,
             printExposure = printExposure,
             printContrast = printContrast,
+            dirAmount = couplers,
             // The fit set the brightness deliberately through the print exposure, so the stock
             // must not level it away — that would make the saved film look nothing like the
             // result that was approved.
@@ -68,7 +77,7 @@ object Emulsion {
         )
 
         companion object {
-            const val COUNT = 19
+            const val COUNT = 20
 
             fun from(v: FloatArray) = Shape(
                 centre = floatArrayOf(v[0], v[1], v[2]),
@@ -79,6 +88,7 @@ object Emulsion {
                 yFilter = v[15].coerceIn(-20f, 20f), mFilter = v[16].coerceIn(-20f, 20f),
                 printExposure = v[17].coerceIn(0.4f, 2.2f),
                 printContrast = v[18].coerceIn(0.6f, 1.6f),
+                couplers = v[19].coerceIn(0.2f, 2.0f),
             )
 
             /** How far each number is allowed to move in one step of the search. */
@@ -93,6 +103,7 @@ object Emulsion {
                                           // small: a jump of six would swing the balance wildly
                                           // and almost every attempt would be thrown away.
                 0.05f, 0.04f,             // print exposure and paper contrast
+                0.08f,                    // couplers — saturation
             )
         }
     }

@@ -95,6 +95,11 @@ fun LookScreen(settings: AppSettings, onBack: () -> Unit) {
         context.contentResolver.openInputStream(uri)?.use { input ->
             // newInstance can return null for a file it cannot open in regions.
             val decoder = android.graphics.BitmapRegionDecoder.newInstance(input, false) ?: return@use null
+            // Film grain is a few thousandths of a millimetre. On a 35 mm frame scanned to 3000 px
+            // along its long side, one pixel is about twelve of those — the grain is already at
+            // the edge of visibility. Smaller than that, what looks like grain is JPEG noise, so it
+            // is not measured at all and the film keeps its own.
+            if (maxOf(decoder.width, decoder.height) < 3000) { decoder.recycle(); return@use null }
             val side = minOf(decoder.width, decoder.height, 512)
             val left = (decoder.width - side) / 2
             val top = (decoder.height - side) / 2
@@ -198,6 +203,9 @@ fun LookScreen(settings: AppSettings, onBack: () -> Unit) {
     /** Builds an emulsion to match the references, on the test shot. */
     fun reconstruct(target: Fingerprint) {
         val src = testShot ?: return
+        // Taken BEFORE the result is cleared below — read afterwards it would always be empty,
+        // and every build would quietly start from scratch.
+        val previous = result?.shape
         busy = true
         result = null
         resultBitmap = null
@@ -209,6 +217,9 @@ fun LookScreen(settings: AppSettings, onBack: () -> Unit) {
                 testShot = src,
                 isRaw = testIsRaw,
                 baseStock = BASE_STOCK,
+                // A second build continues from the first rather than starting over; "start
+                // over" clears the result, and with it this starting point.
+                startFrom = previous,
             ) { p ->
                 progress = p
                 p.best?.jpeg?.let { bytes ->
@@ -332,7 +343,7 @@ fun LookScreen(settings: AppSettings, onBack: () -> Unit) {
         texture?.let { t ->
             Section("READ FROM THEM")
             Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(LatentColors.Surface).padding(13.dp)) {
-                Reading("grain", (if (t.grainFineness > 0.55f) "fine · " else "coarse · ") + "%.2f".format(t.grainAmount))
+                Reading("grain", if (!t.grainMeasured) "left to the film — references too small to show it" else (if (t.grainFineness > 0.55f) "fine · " else "coarse · ") + "%.2f".format(t.grainAmount))
                 Reading("halation", (if (t.halationAmount > 0.8f) "strong · " else "gentle · ") + "%.2f".format(t.halationAmount))
                 Reading("bloom", t.bloomFamily.replace('_', ' ') + " · " + "%.2f".format(t.bloomAmount))
                 Reading("veiling glare", "%.1f%%".format(t.glarePercent))
@@ -388,7 +399,7 @@ fun LookScreen(settings: AppSettings, onBack: () -> Unit) {
             if (busy) {
                 Pill("stop") { com.celestial.latent.develop.Reconstruct.cancelled = true }
             } else {
-                Pill(if (result == null) "build the film" else "build again", accent = canRun) {
+                Pill(if (result == null) "build the film" else "refine", accent = canRun) {
                     if (canRun) reconstruct(target!!)
                 }
             }
