@@ -1,10 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.CAMERA" />
-    <!-- Updating from the project's own releases. The APK is fetched with Android's own
-         download manager and installed from the Downloads app, so this app never needs the
-         permission to install packages — the one Play Protect treats as a red flag. -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Lets Latent install its own updates from inside the app. Android still asks once for
+         permission and shows its confirmation; later updates may need no tap on Android 12+. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.camera.any" android:required="false" />
@@ -26,5 +26,10 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Android's installer reports here on an update; only Latent itself can reach it. -->
+        <receiver
+            android:name=".UpdateInstallReceiver"
+            android:exported="false" />
     </application>
 </manifest>

@@ -1,12 +1,14 @@
 package com.celestial.latent
 
-import android.app.DownloadManager
+import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageInstaller
 import android.net.Uri
-import android.os.Environment
+import android.os.Build
 import android.util.Log
 import org.json.JSONObject
+import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 
@@ -16,10 +18,11 @@ import java.net.URL
  * Latent is not on a store, so updating means going to GitHub, finding the newest release and
  * downloading its APK by hand. This does the same thing from inside the app: it asks the
  * releases API what the latest version is, compares it with the running one, downloads the
- * attached APK, and hands it to Android's installer.
+ * attached APK, and installs it through Android's own installer session.
  *
- * Nothing is installed silently: Android shows its own confirmation, and the app needs the
- * user's permission to install packages at all the first time.
+ * The first time, Android asks for permission to install apps and shows its confirmation. On
+ * Android 12 and later the session asks to need no confirmation for later updates — which Android
+ * grants once Latent is the one that installed itself — though a phone's own skin may still ask.
  */
 object Updater {
 
@@ -34,8 +37,11 @@ object Updater {
         /** The release exists but its tag cannot be compared with the running version. */
         data class Unclear(val tag: String, val current: String) : State
         data class Available(val release: Release) : State
-        data class Downloading(val id: Long) : State
-        data class ReadyToInstall(val id: Long) : State
+        data class Downloading(val percent: Int) : State
+        /** Handed to Android; it may show its confirmation, or install straight away. */
+        data class Installing(val note: String) : State
+        /** Android needs the one-time permission to install apps before this can go on. */
+        data class NeedsPermission(val apk: File) : State
         data class Failed(val reason: String) : State
     }
 
@@ -128,41 +134,115 @@ object Updater {
             .mapNotNull { p -> p.takeWhile { it.isDigit() }.toIntOrNull() }
 
     /**
-     * Hands the APK to Android's own download manager, which shows its progress in the
-     * notification shade and keeps the file in Downloads.
-     *
-     * Deliberately not downloaded by this app and installed by this app: doing that needs the
-     * permission to install packages, and Play Protect treats any app holding it as a risk —
-     * insisting on a scan at every install. Installing from Downloads is the same install,
-     * without that permission.
-     *
-     * @return the download id, or null if it could not be queued.
+     * Downloads the APK into the app's own cache, reporting progress. Returns the file, or null
+     * if it failed. GitHub serves release files through one redirect, which this follows.
      */
-    fun download(context: Context, release: Release): Long? = try {
-        val dm = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
-        val name = "latent-${release.version}.apk"
-        val request = DownloadManager.Request(Uri.parse(release.apkUrl))
-            .setTitle("Latent ${release.version}")
-            .setDescription("Tap when finished to install")
-            .setMimeType("application/vnd.android.package-archive")
-            .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-            .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, name)
-        dm.enqueue(request)
-    } catch (t: Throwable) {
-        Log.e("Latent", "could not queue the update download", t); null
-    }
-
-    /** Whether a queued download has finished, failed, or is still going. */
-    fun downloadStatus(context: Context, id: Long): Int {
-        val dm = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
-        dm.query(DownloadManager.Query().setFilterById(id)).use { c ->
-            if (!c.moveToFirst()) return DownloadManager.STATUS_FAILED
-            return c.getInt(c.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS))
+    fun download(context: Context, release: Release, onProgress: (Int) -> Unit): File? {
+        var conn: HttpURLConnection? = null
+        return try {
+            val dir = File(context.cacheDir, "updates").apply { mkdirs() }
+            dir.listFiles()?.forEach { it.delete() }
+            val out = File(dir, "latent-${release.version}.apk")
+            val c = (URL(release.apkUrl).openConnection() as HttpURLConnection).apply {
+                connectTimeout = 15_000
+                readTimeout = 30_000
+                instanceFollowRedirects = true
+                setRequestProperty("User-Agent", "Latent")
+            }
+            conn = c
+            val total = if (release.sizeBytes > 0) release.sizeBytes else c.contentLengthLong
+            c.inputStream.use { input ->
+                out.outputStream().use { output ->
+                    val buffer = ByteArray(64 * 1024)
+                    var written = 0L
+                    var last = -1
+                    while (true) {
+                        val read = input.read(buffer)
+                        if (read <= 0) break
+                        output.write(buffer, 0, read)
+                        written += read
+                        if (total > 0) {
+                            val pct = (written * 100 / total).toInt()
+                            if (pct != last) { last = pct; onProgress(pct) }
+                        }
+                    }
+                }
+            }
+            // A short file is a broken download, not an update — never hand that to the installer.
+            if (total > 0 && out.length() != total) {
+                Log.w("Latent", "update download incomplete: ${out.length()} of $total bytes")
+                out.delete()
+                null
+            } else {
+                Log.i("Latent", "update downloaded: ${out.length() / 1024} KB")
+                out
+            }
+        } catch (t: Throwable) {
+            Log.e("Latent", "update download failed", t)
+            null
+        } finally {
+            conn?.disconnect()
         }
     }
 
-    /** Opens Android's Downloads, where a tap on the APK brings up the system installer. */
-    fun openDownloads(context: Context) {
-        context.startActivity(Intent(DownloadManager.ACTION_VIEW_DOWNLOADS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    /** Whether Android will let the app install a package at all; the user grants this once. */
+    fun canInstall(context: Context): Boolean = context.packageManager.canRequestPackageInstalls()
+
+    /** Opens Android's page for the one-time "install unknown apps" permission. */
+    fun requestInstallPermission(context: Context) {
+        context.startActivity(
+            Intent(android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES)
+                .setData(Uri.parse("package:${context.packageName}"))
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+        )
+    }
+
+    /**
+     * Where the installer's answers go while the update screen is open. Android reports through
+     * UpdateInstallReceiver, which passes the message on here.
+     */
+    @Volatile var onInstallStatus: ((State) -> Unit)? = null
+
+    /**
+     * Streams the APK into an Android install session and commits it.
+     *
+     * This is Android's proper channel for an app installing an update: no file is handed to
+     * another app. Android answers through UpdateInstallReceiver — with its confirmation screen
+     * if it wants one, or by simply installing. On success Latent is replaced and restarts.
+     */
+    fun install(context: Context, apk: File): State = try {
+        val installer = context.packageManager.packageInstaller
+        val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL).apply {
+            setAppPackageName(context.packageName)
+            // Android 12+: ask to install without a confirmation. Android only honours it when
+            // Latent installed the current version itself — so the first update still asks,
+            // and the ones after it need not. A phone's own skin may still show its own prompt.
+            if (Build.VERSION.SDK_INT >= 31) {
+                setRequireUserAction(PackageInstaller.SessionParams.USER_ACTION_NOT_REQUIRED)
+            }
+        }
+        val sessionId = installer.createSession(params)
+        installer.openSession(sessionId).use { session ->
+            apk.inputStream().use { input ->
+                session.openWrite("latent.apk", 0, apk.length()).use { output ->
+                    input.copyTo(output)
+                    session.fsync(output)
+                }
+            }
+            // Mutable so the installer can attach its answer; explicit, so only our receiver gets it.
+            val flags = PendingIntent.FLAG_UPDATE_CURRENT or
+                (if (Build.VERSION.SDK_INT >= 31) PendingIntent.FLAG_MUTABLE else 0)
+            val callback = PendingIntent.getBroadcast(
+                context, sessionId,
+                Intent(context, UpdateInstallReceiver::class.java).setPackage(context.packageName),
+                flags,
+            )
+            session.commit(callback.intentSender)
+        }
+        Log.i("Latent", "update handed to the installer (session $sessionId)")
+        State.Installing("installing…")
+    } catch (t: Throwable) {
+        Log.e("Latent", "could not start the install", t)
+        State.Failed("could not start the install: ${t.message ?: "unknown error"}")
     }
 }
