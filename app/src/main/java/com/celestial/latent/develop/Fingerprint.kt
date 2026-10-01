@@ -85,35 +85,56 @@ data class Fingerprint(
      * How far this fingerprint — a CANDIDATE — is from a REFERENCE. The order matters: the
      * reference decides which figures are compared, so the two are not interchangeable.
      */
-    fun distanceTo(reference: Fingerprint, judgeable: FloatArray? = null): Float {
+    /**
+     * The individual weighted differences behind [distanceTo] — one per figure, zero where the
+     * figure cannot be judged.
+     *
+     * The solver needs to see these separately: it learns how each control moves each one, then
+     * works out the combination that pulls them all towards the reference at once. The distance
+     * is built from exactly these numbers, so what the solver minimises and what the screen
+     * reports as the match can never drift apart.
+     *
+     * Scaled first, then weighted: the figures live on very different scales, and without the
+     * scaling the colour and saturation measures are drowned out however heavily weighted.
+     * Only what the REFERENCE (and the undeveloped test shot) can show is compared — never the
+     * candidate's own coverage, or a candidate that destroyed the skin would drop the skin
+     * figures from its own comparison and be rewarded for it.
+     */
+    fun residuals(reference: Fingerprint, judgeable: FloatArray? = null): FloatArray {
         val a = asList(); val b = reference.asList()
-        var sum = 0f
-        var used = 0f
+        val out = FloatArray(a.size)
         for (i in a.indices) {
-            // Scale first, then weight. The figures live on very different scales — mean
-            // saturation moves by a few hundredths where a tone position moves by tenths —
-            // so without this the colour and saturation measures are drowned out however
-            // heavily they are weighted. Measured: desaturating by a third moved the distance
-            // 0.010 before and 0.057 after, while brightness (which is levelled anyway) fell
-            // from 0.045 to 0.042 and is now the least influential, as it should be.
-            // Only what the REFERENCE can show. Using the smaller of the two coverages was a
-            // bug: a candidate that destroyed the skin — pushed it out of the skin hue range —
-            // shrank its own skin coverage, dropped the skin figures from the comparison, and
-            // was rewarded for losing the very evidence it was being judged on. The reference
-            // decides what is compared; the candidate is always judged on those regions.
-            // What can be judged is fixed BEFORE any attempt: what the reference shows, and what
-            // the undeveloped test shot can show. Never the candidate's own coverage — that is
-            // how a candidate that destroyed the skin was scored as perfect.
+            val shared = judgeable?.getOrElse(i) { 1f } ?: reference.coverage.getOrElse(i) { 1f }
+            if (shared <= 0.001f) continue
+            out[i] = (a[i] - b[i]) * SCALE[i] * WEIGHTS[i] * sqrt(shared)
+        }
+        return out
+    }
+
+    /** The total weight of what can be compared — fixed by the reference, not the candidate. */
+    fun comparedWeight(reference: Fingerprint, judgeable: FloatArray? = null): Float {
+        var used = 0f
+        for (i in WEIGHTS.indices) {
             val shared = judgeable?.getOrElse(i) { 1f } ?: reference.coverage.getOrElse(i) { 1f }
             if (shared <= 0.001f) continue
             val w = WEIGHTS[i] * sqrt(shared)
             used += w * w
-            val d = (a[i] - b[i]) * SCALE[i] * w
-            sum += d * d
         }
-        // Divided by the weight of what was actually compared, so a pair of pictures with
-        // little in common is not flattered by the figures that were skipped.
-        return if (used <= 0f) 0f else sqrt(sum / used)
+        return used
+    }
+
+    /**
+     * How far this fingerprint — a CANDIDATE — is from a REFERENCE: the root-mean-square of
+     * [residuals], divided by the weight of what was actually compared, so a pair with little in
+     * common is not flattered by the figures that were skipped.
+     */
+    fun distanceTo(reference: Fingerprint, judgeable: FloatArray? = null): Float {
+        val used = comparedWeight(reference, judgeable)
+        if (used <= 0f) return 0f
+        val r = residuals(reference, judgeable)
+        var sum = 0f
+        for (v in r) sum += v * v
+        return sqrt(sum / used)
     }
 
     /** The readable names, in the same order as [asList], for showing the comparison. */

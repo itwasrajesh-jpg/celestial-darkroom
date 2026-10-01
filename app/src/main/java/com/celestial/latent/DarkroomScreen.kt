@@ -78,6 +78,8 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
     val context = LocalContext.current
     // Opened at the brightness it was shot: the film does not re-level it here either.
     var recipe by remember { mutableStateOf(initial.copy(autoExposure = false)) }
+    // An export choice, not part of the look — see DarkroomPrefs for why it lives apart.
+    var printSize by remember { mutableStateOf(com.celestial.latent.develop.DarkroomPrefs.printSize(context)) }
     var full by remember { mutableStateOf(false) }
     var preview by remember { mutableStateOf<Bitmap?>(null) }
     var original by remember { mutableStateOf<Bitmap?>(null) }
@@ -557,9 +559,45 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
         }
 
         Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 10.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            // Print size: the film's grain is generated at the larger size, so it stays fine
+            // rather than being blown up. Costs time in proportion to the pixels.
+            Row(
+                Modifier.fillMaxWidth().padding(bottom = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("PRINT SIZE", color = LatentColors.Line, fontSize = 9.sp, letterSpacing = 1.5.sp,
+                    modifier = Modifier.padding(end = 4.dp))
+                com.celestial.latent.develop.DarkroomPrefs.PRINT_SIZES.forEach { size ->
+                    val on = printSize == size
+                    Text(
+                        if (size == 1f) "1×" else "${size}×",
+                        color = if (on) LatentColors.AmberInk else LatentColors.Text, fontSize = 11.sp,
+                        modifier = Modifier.clip(RoundedCornerShape(999.dp))
+                            .background(if (on) LatentColors.Amber else LatentColors.Surface)
+                            .combinedClickable(onClick = {
+                                if (!fullRunning) {
+                                    Haptics.tick(context)
+                                    printSize = size
+                                    com.celestial.latent.develop.DarkroomPrefs.setPrintSize(context, size)
+                                }
+                            })
+                            .padding(horizontal = 10.dp, vertical = 4.dp),
+                    )
+                }
+            }
+            if (printSize > 1f) {
+                Text(
+                    "Larger print: the film's grain is made at the new size, so it stays fine. " +
+                        "No new detail is added, and it takes about ${"%.1f".format(printSize * printSize)}× as long.",
+                    color = LatentColors.TextDim, fontSize = 10.sp, lineHeight = 14.sp,
+                    modifier = Modifier.padding(bottom = 6.dp),
+                )
+            }
             // An honest estimate before you commit, rather than an explanation mid-wait.
             val heavy = recipe.diffusion || recipe.printDiffusion
-            Text((if (isRaw) "FROM RAW" else "FILM OVER JPEG") + (if (heavy) " · WITH DIFFUSION, SLOW" else ""),
+            Text((if (isRaw) "FROM RAW" else "FILM OVER JPEG") + (if (heavy) " · WITH DIFFUSION, SLOW" else "") +
+                (if (printSize > 1f) " · ${printSize}× PRINT" else ""),
                 color = LatentColors.Line, fontSize = 9.sp, letterSpacing = 1.5.sp)
             Text(if (fullRunning) "Developing… ${elapsed}s" else "Develop full size", color = LatentColors.AmberInk, fontSize = 12.sp,
                 modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(LatentColors.Amber).combinedClickable(onClick = {
@@ -567,7 +605,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                     Haptics.click(context)
                     fullRunning = true; fullStarted = System.currentTimeMillis(); status = "full size: queued"
                     fullJob = com.celestial.latent.develop.DevelopQueue.submitFull(
-                        context, source, isRaw, recipe,
+                        context, source, isRaw, recipe, upscale = printSize,
                         onStatus = { m -> status = "full size: $m" },
                         onDone = { out ->
                             fullRunning = false; fullJob = null

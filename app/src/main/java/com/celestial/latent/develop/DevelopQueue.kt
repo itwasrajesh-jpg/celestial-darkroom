@@ -28,7 +28,7 @@ object DevelopQueue {
         fun cancel() { cancelled = true }
     }
 
-    fun submitFull(context: Context, source: Uri, isRaw: Boolean, recipe: Recipe,
+    fun submitFull(context: Context, source: Uri, isRaw: Boolean, recipe: Recipe, upscale: Float = 1f,
                    onStatus: (String) -> Unit, onDone: (Uri?) -> Unit): Running {
         val handle = Running()
         pending.incrementAndGet(); onChanged()
@@ -39,7 +39,7 @@ object DevelopQueue {
             try {
                 if (handle.cancelled) { Log.i("Latent", "full develop cancelled before it started"); return@execute }
                 onStatus("starting")
-                out = Develop.developFull(app, source, isRaw, recipe) { m -> if (!handle.cancelled) onStatus(m) }
+                out = Develop.developFull(app, source, isRaw, recipe, upscale = upscale) { m -> if (!handle.cancelled) onStatus(m) }
                 if (handle.cancelled) { Log.i("Latent", "full develop finished after cancel; result discarded"); out = null }
             } catch (t: Throwable) {
                 Log.e("Latent", "full develop failed", t)

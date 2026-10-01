@@ -6,7 +6,6 @@ import android.net.Uri
 import android.util.Log
 import com.spectrafilm.engine.SpektraEngine
 import kotlin.math.abs
-import kotlin.random.Random
 
 /**
  * Builds an emulsion to match a set of reference images.
@@ -90,8 +89,10 @@ object Reconstruct {
         var best: Attempt? = null
         var current = startFrom ?: Emulsion.Shape()
         var currentDistance = Float.MAX_VALUE
-        var temperature = 1f
-        val random = Random(1)
+        // Every develop is counted — the probe, the aimed steps, the solver's nudges and its
+        // moves alike. The old counter saw only the random tries, so the progress bar
+        // understated the work by the probe and every correction.
+        var develops = 0
 
         // Filled in once the helpers below exist; read by every evaluation.
         var judgeable: FloatArray? = null
@@ -112,6 +113,7 @@ object Reconstruct {
         /** Develops one candidate and returns what it measures, without scoring it. */
         fun evaluateFingerprint(shape: Emulsion.Shape): Fingerprint? {
             Emulsion.write(base, shape, stockId, "Working") ?: return null
+            develops++
             return runCatching {
                 SpektraEngine(dir).use { engine ->
                     val (bytes, _) = Develop.renderWith(engine, context, source, fitRecipe(shape), preview = true)
@@ -122,6 +124,7 @@ object Reconstruct {
 
         fun evaluate(shape: Emulsion.Shape, keepImage: Boolean): Attempt? {
             Emulsion.write(base, shape, stockId, "Working") ?: return null
+            develops++
             return runCatching {
                 val recipe = fitRecipe(shape)
                 // A fresh engine each attempt: the profile changes between them, and an engine
@@ -191,16 +194,8 @@ object Reconstruct {
         best = start; currentDistance = start.distance
         onProgress(Progress(0, rounds, best, "starting from ${baseStock.replace('_', ' ')}"))
 
-        var tried = 0
         val holdsLane = holdsLaneEarly
 
-        /**
-         * Aim the two filters at the target's neutrals rather than searching for them.
-         *
-         * Brightness and colour balance each have one control with a direct effect, so the
-         * error can be measured and corrected — like focusing a lens rather than guessing where
-         * focus lies. Done every so often during the search, so a drift cannot settle in.
-         */
         /** Tries one aimed change; keeps it only if the match genuinely improves. */
         fun tryAimed(v: FloatArray): Boolean {
             val aimed = Emulsion.Shape.from(v)
@@ -251,43 +246,110 @@ object Reconstruct {
                 tryAimed(v)
             }
         }
-        while (tried < rounds && !cancelled) {
-            // One number at a time, by a step that shrinks as the search settles.
-            val v = current.asArray().copyOf()
-            // The print controls set the colour balance and were fixed until now, so they are
-            // tried more often early on, when there is most to gain from them.
-            // The print controls — balance, exposure and contrast — set the colour and the
-            // brightness, and are worth far more attempts than any single curve parameter.
-            val which = if (random.nextInt(100) < 50) 15 + random.nextInt(5)
-            else random.nextInt(Emulsion.Shape.COUNT)
-            val step = Emulsion.Shape.STEP[which] * temperature
-            v[which] += if (random.nextBoolean()) step else -step
-            val candidate = Emulsion.Shape.from(v)
+        // ---- the solver ---------------------------------------------------------------------
+        //
+        // Instead of nudging one control at random and keeping it if it helps — which wastes most
+        // of its tries and cannot handle controls that work against each other — the solver
+        // learns the controls and then moves them together:
+        //
+        //   1. nudge each of the twenty once and measure how every figure changes;
+        //   2. from that, work out the combination of moves that pulls all the figures towards
+        //      the references at once;
+        //   3. take it, keep it only if the match improves, and repeat.
+        //
+        // Damped, so controls that overlap — a layer's speed and its position both shift the same
+        // curve, and the print exposure overlaps them — cannot send it overshooting. Proved on a
+        // simulated engine before it was written: with half the develops it came far closer than
+        // the random search did with all of them, and when part of the look was out of reach it
+        // still settled near the best that was possible.
 
-            val attempt = evaluate(candidate, keepImage = false)
-            tried++
-            if (attempt != null && attempt.distance < currentDistance) {
-                current = candidate
-                currentDistance = attempt.distance
-                if (best == null || attempt.distance < best!!.distance) {
-                    // Re-run the winner keeping its picture, so the screen can show it.
-                    best = evaluate(candidate, keepImage = true) ?: attempt
+        // A quick first aim at colour, contrast and saturation, so the solver starts close.
+        if (!cancelled) correctAim()
+
+        val n = Emulsion.Shape.COUNT
+        val compared = target.comparedWeight(target, judgeable)
+        fun distanceOf(r: FloatArray): Float =
+            if (compared <= 0f) 0f else kotlin.math.sqrt((sumOfSquares(r) / compared).toFloat())
+
+        var x = current.asArray()
+        var r: FloatArray = evaluateFingerprint(current)?.residuals(target, judgeable) ?: FloatArray(0)
+        var cost = sumOfSquares(r)
+        var damping = 1.0
+        var round = 0
+        solving@ while (r.isNotEmpty() && develops + n + 1 <= rounds && !cancelled) {
+            round++
+            onProgress(Progress(develops, rounds, best, "round $round: learning how each control moves the picture"))
+
+            // 1. One nudge per control: how does each figure respond?
+            val m = r.size
+            val jac = Array(m) { DoubleArray(n) }
+            for (j in 0 until n) {
+                if (cancelled) break@solving
+                val up = x.copyOf().also { it[j] += Emulsion.Shape.STEP[j] }
+                var probe = Emulsion.Shape.from(up)
+                // At its upper limit the nudge would be clamped away — nudge it down instead.
+                if (abs(probe.asArray()[j] - x[j]) < 1e-9f) {
+                    probe = Emulsion.Shape.from(x.copyOf().also { it[j] -= Emulsion.Shape.STEP[j] })
                 }
+                val taken = (probe.asArray()[j] - x[j]) / Emulsion.Shape.STEP[j]
+                if (abs(taken) < 1e-6f) continue                 // pinned at both ends
+                val rj = evaluateFingerprint(probe)?.residuals(target, judgeable) ?: continue
+                for (i in 0 until m) jac[i][j] = ((rj[i] - r[i]) / taken).toDouble()
             }
-            // Settle gradually; a few larger jumps early, finer adjustments later.
-            temperature = (1f - tried.toFloat() / rounds).coerceAtLeast(0.15f)
-            // Correct the balance at intervals, so the curve search cannot drift the colour.
-            if (tried % 40 == 0) correctAim()
-            if (tried % 8 == 0) {
-                onProgress(Progress(tried, rounds, best, "closest so far: ${percent(best?.distance)}"))
+
+            // 2. The move that pulls everything towards the references at once.
+            val jtj = Array(n) { DoubleArray(n) }
+            val g = DoubleArray(n)
+            for (a in 0 until n) {
+                for (b in 0 until n) {
+                    var acc = 0.0
+                    for (i in 0 until m) acc += jac[i][a] * jac[i][b]
+                    jtj[a][b] = acc
+                }
+                var acc = 0.0
+                for (i in 0 until m) acc += jac[i][a] * r[i]
+                g[a] = acc
             }
+            var trace = 0.0
+            for (a in 0 until n) trace += jtj[a][a]
+            val floor = 1e-3 * trace / n + 1e-12
+
+            // 3. Take it; if it does not help, be more cautious and try a smaller one.
+            var accepted = false
+            var gained = 0.0
+            for (attempt in 0 until 4) {
+                if (cancelled || develops >= rounds) break
+                val h = Array(n) { a -> DoubleArray(n) { b -> jtj[a][b] + (if (a == b) damping * jtj[a][a] + floor else 0.0) } }
+                val delta = solveLinear(h, DoubleArray(n) { -g[it] }) ?: break
+                val moved = FloatArray(n) { j -> x[j] + (delta[j].coerceIn(-4.0, 4.0) * Emulsion.Shape.STEP[j]).toFloat() }
+                val candidate = Emulsion.Shape.from(moved)
+                val rn = evaluateFingerprint(candidate)?.residuals(target, judgeable)
+                if (rn != null && sumOfSquares(rn) < cost) {
+                    gained = (cost - sumOfSquares(rn)) / cost.coerceAtLeast(1e-12)
+                    x = candidate.asArray(); r = rn; cost = sumOfSquares(rn)
+                    current = candidate
+                    currentDistance = distanceOf(rn)
+                    if (best == null || currentDistance < best!!.distance) {
+                        // Developed once more keeping its picture, so the screen can show it.
+                        best = evaluate(candidate, keepImage = true) ?: best
+                    }
+                    damping = (damping / 3).coerceAtLeast(1e-4)
+                    accepted = true
+                    break
+                }
+                damping *= 4
+            }
+            onProgress(Progress(develops, rounds, best, "round $round: closest so far ${percent(best?.distance)}"))
+            // Settled: nothing helped, or the last move gained less than half a percent.
+            if (!accepted || gained < 0.005) break
         }
+        Log.i("Latent", "solver: $round rounds, $develops develops, distance ${best?.distance}")
         if (holdsLane) DevelopQueue.engineLane.release()
         source.close()
         // The working profile is scratch: saving writes its own file under a chosen name.
         runCatching { EngineAssets.profileFile(stockId)?.delete() }
-        onProgress(Progress(tried, rounds, best, if (cancelled) "stopped" else "finished"))
-        Log.i("Latent", "reconstruction finished after $tried attempts, distance ${best?.distance}, " +
+        onProgress(Progress(develops, rounds, best, if (cancelled) "stopped" else "finished"))
+        Log.i("Latent", "reconstruction finished after $develops develops, distance ${best?.distance}, " +
             "test shot ${source.width}x${source.height}, printed on ${paper ?: "no print — scanned directly"}")
         return best
     }
@@ -359,6 +421,44 @@ object Reconstruct {
         } finally {
             DevelopQueue.engineLane.release()
         }
+    }
+
+    private fun sumOfSquares(v: FloatArray): Double {
+        var acc = 0.0
+        for (e in v) acc += e.toDouble() * e.toDouble()
+        return acc
+    }
+
+    /**
+     * Solves A·x = b for the solver's small square system (twenty unknowns), by elimination
+     * with the largest available pivot at each step. Null if the system has no unique answer.
+     */
+    private fun solveLinear(a: Array<DoubleArray>, b: DoubleArray): DoubleArray? {
+        val n = b.size
+        val m = Array(n) { i -> a[i].copyOf() }
+        val y = b.copyOf()
+        for (col in 0 until n) {
+            var pivot = col
+            for (row in col + 1 until n) if (abs(m[row][col]) > abs(m[pivot][col])) pivot = row
+            if (abs(m[pivot][col]) < 1e-12) return null
+            if (pivot != col) {
+                val tr = m[pivot]; m[pivot] = m[col]; m[col] = tr
+                val ty = y[pivot]; y[pivot] = y[col]; y[col] = ty
+            }
+            for (row in col + 1 until n) {
+                val f = m[row][col] / m[col][col]
+                if (f == 0.0) continue
+                for (k in col until n) m[row][k] -= f * m[col][k]
+                y[row] -= f * y[col]
+            }
+        }
+        val out = DoubleArray(n)
+        for (row in n - 1 downTo 0) {
+            var acc = y[row]
+            for (k in row + 1 until n) acc -= m[row][k] * out[k]
+            out[row] = acc / m[row][row]
+        }
+        return out
     }
 
     fun percent(distance: Float?): String =
