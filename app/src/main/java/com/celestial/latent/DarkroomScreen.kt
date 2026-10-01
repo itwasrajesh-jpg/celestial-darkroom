@@ -558,42 +558,45 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
             }
         }
 
-        Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 10.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-            // Print size: the film's grain is generated at the larger size, so it stays fine
-            // rather than being blown up. Costs time in proportion to the pixels.
-            Row(
-                Modifier.fillMaxWidth().padding(bottom = 6.dp),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text("PRINT SIZE", color = LatentColors.Line, fontSize = 9.sp, letterSpacing = 1.5.sp,
-                    modifier = Modifier.padding(end = 4.dp))
-                com.celestial.latent.develop.DarkroomPrefs.PRINT_SIZES.forEach { size ->
-                    val on = printSize == size
-                    Text(
-                        if (size == 1f) "1×" else "${size}×",
-                        color = if (on) LatentColors.AmberInk else LatentColors.Text, fontSize = 11.sp,
-                        modifier = Modifier.clip(RoundedCornerShape(999.dp))
-                            .background(if (on) LatentColors.Amber else LatentColors.Surface)
-                            .combinedClickable(onClick = {
-                                if (!fullRunning) {
-                                    Haptics.tick(context)
-                                    printSize = size
-                                    com.celestial.latent.develop.DarkroomPrefs.setPrintSize(context, size)
-                                }
-                            })
-                            .padding(horizontal = 10.dp, vertical = 4.dp),
-                    )
-                }
-            }
-            if (printSize > 1f) {
+        // Print size — a direct child of the screen's column, above the bottom bar. It must never
+        // sit INSIDE the bar: in a horizontal row, fillMaxWidth takes all the width, squeezes the
+        // label and button to nothing, and the bar grows tall enough to crush the photo and controls.
+        // Print size: the film's grain is generated at the larger size, so it stays fine
+        // rather than being blown up. Costs time in proportion to the pixels.
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(top = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("PRINT SIZE", color = LatentColors.Line, fontSize = 9.sp, letterSpacing = 1.5.sp,
+                modifier = Modifier.padding(end = 4.dp))
+            com.celestial.latent.develop.DarkroomPrefs.PRINT_SIZES.forEach { size ->
+                val on = printSize == size
                 Text(
-                    "Larger print: the film's grain is made at the new size, so it stays fine. " +
-                        "No new detail is added, and it takes about ${"%.1f".format(printSize * printSize)}× as long.",
-                    color = LatentColors.TextDim, fontSize = 10.sp, lineHeight = 14.sp,
-                    modifier = Modifier.padding(bottom = 6.dp),
+                    if (size == 1f) "1×" else "${size}×",
+                    color = if (on) LatentColors.AmberInk else LatentColors.Text, fontSize = 11.sp,
+                    modifier = Modifier.clip(RoundedCornerShape(999.dp))
+                        .background(if (on) LatentColors.Amber else LatentColors.Surface)
+                        .combinedClickable(onClick = {
+                            if (!fullRunning) {
+                                Haptics.tick(context)
+                                printSize = size
+                                com.celestial.latent.develop.DarkroomPrefs.setPrintSize(context, size)
+                            }
+                        })
+                        .padding(horizontal = 10.dp, vertical = 4.dp),
                 )
             }
+        }
+        if (printSize > 1f) {
+            Text(
+                "Larger print: the film's grain is made at the new size, so it stays fine. " +
+                    "No new detail is added, and it takes about ${"%.1f".format(printSize * printSize)}× as long.",
+                color = LatentColors.TextDim, fontSize = 10.sp, lineHeight = 14.sp,
+                modifier = Modifier.padding(horizontal = 18.dp).padding(top = 4.dp),
+            )
+        }
+        Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 10.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             // An honest estimate before you commit, rather than an explanation mid-wait.
             val heavy = recipe.diffusion || recipe.printDiffusion
             Text((if (isRaw) "FROM RAW" else "FILM OVER JPEG") + (if (heavy) " · WITH DIFFUSION, SLOW" else "") +
