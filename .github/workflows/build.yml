@@ -24,6 +24,9 @@ jobs:
           git sparse-checkout init --cone
           git sparse-checkout set engine/spektra-core lib/libraw
           git checkout ${ENGINE_REF}
+          # Latent's own engine changes, kept as patches in this repository and applied in order.
+          # A patch that no longer applies stops the build here, loudly, instead of shipping without it.
+          for p in ../engine-patches/*.patch; do [ -e "$p" ] || continue; echo "applying $p"; git apply "$p"; done
           cd ..
           mkdir -p engine lib
           cp -r upstream/engine/spektra-core engine/
