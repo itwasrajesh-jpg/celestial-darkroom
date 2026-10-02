@@ -150,13 +150,13 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
      * the main thread; queues for the engine lane like every other render, so two engines never run
      * at once. Never called while the lane is already held.
      */
-    fun renderStill(r: Recipe): Bitmap? {
+    fun renderStill(r: Recipe, edge: Int): Bitmap? {
         val q = com.celestial.latent.develop.DevelopQueue
         q.engineLane.acquire()
         return try {
             val iso = Develop.isoOf(context, source)
             val s0 = Develop.openCached(context, source, isRaw, DECODE_EDGE, r, iso) { }
-            val (bytes, _) = Develop.render(context, s0, r.copy(previewMaxSize = 560), preview = true)
+            val (bytes, _) = Develop.render(context, s0, r.copy(previewMaxSize = edge), preview = true)
             BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
         } catch (t: Throwable) {
             android.util.Log.w("Latent", "print strip failed: ${t.message}"); null
@@ -221,8 +221,9 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
             if (inPrint) {
                 PrintPanel(
                     recipe = recipe,
-                    renderAt = { e -> renderStill(recipe.copy(printExposure = e)) },
+                    renderAt = { r, edge -> renderStill(r, edge) },
                     onExposure = { e -> set { copy(printExposure = e) } },
+                    onFilters = { y, m -> set { copy(yFilterShift = y, mFilterShift = m) } },
                     modifier = Modifier.fillMaxSize(),
                 )
             } else Column(Modifier.fillMaxSize()) {

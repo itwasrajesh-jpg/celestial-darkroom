@@ -26,6 +26,17 @@ object DarkroomPrefs {
         context.getSharedPreferences(FILE, Context.MODE_PRIVATE).getFloat("printSize", 1f)
             .takeIf { it in PRINT_SIZES } ?: 1f
 
+    /**
+     * The ring-around's layout, learned once from what the engine actually does: +1 or -1 for which
+     * way a filter step moves the grid, so warmer always sits on the right and more magenta below.
+     */
+    fun ringSign(context: Context, axis: String): Float =
+        if (context.getSharedPreferences(FILE, Context.MODE_PRIVATE).getFloat("ringSign_$axis", 1f) < 0f) -1f else 1f
+
+    fun setRingSign(context: Context, axis: String, sign: Float) {
+        context.getSharedPreferences(FILE, Context.MODE_PRIVATE).edit().putFloat("ringSign_$axis", if (sign < 0f) -1f else 1f).apply()
+    }
+
     fun setPrintSize(context: Context, value: Float) {
         context.getSharedPreferences(FILE, Context.MODE_PRIVATE).edit().putFloat("printSize", value).apply()
     }
