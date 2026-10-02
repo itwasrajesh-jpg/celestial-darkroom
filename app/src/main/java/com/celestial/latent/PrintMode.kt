@@ -46,6 +46,8 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.celestial.latent.develop.PRINT_EXPOSURE_MAX
+import com.celestial.latent.develop.PRINT_EXPOSURE_MIN
 import com.celestial.latent.develop.Recipe
 import com.celestial.latent.ui.LatentColors
 import kotlinx.coroutines.Dispatchers
@@ -58,8 +60,8 @@ import kotlin.math.abs
 import kotlin.math.pow
 
 /** The print exposure the engine accepts; the same limits as the darkroom's sliders. */
-private const val MIN_EXPOSURE = 0.4f
-private const val MAX_EXPOSURE = 2.2f
+private const val MIN_EXPOSURE = PRINT_EXPOSURE_MIN
+private const val MAX_EXPOSURE = PRINT_EXPOSURE_MAX
 /** A third of a stop between strips — the step darkroom printers use for a first test. */
 private val STEP = 2f.pow(1f / 3f)
 private const val STRIPS = 5

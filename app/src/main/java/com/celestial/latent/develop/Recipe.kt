@@ -24,6 +24,16 @@ import org.json.JSONObject
  * The settings a photo is developed with. A flat, saveable set of the engine parameters that
  * actually change the picture — everything else keeps the film profile's own defaults.
  */
+/**
+ * The print exposure the darkroom offers, everywhere it is set. Wide enough for a very thin
+ * negative (a short print) or a very dense one (a long print): about 1 to 24 seconds on PRINT
+ * mode's timer. The engine itself has no limit; it simply multiplies the light. These used to be
+ * 0.4–2.2, written separately in several places — which left an underexposed shot printing too
+ * dark even on its lightest test strip.
+ */
+const val PRINT_EXPOSURE_MIN = 0.15f
+const val PRINT_EXPOSURE_MAX = 3.0f
+
 data class Recipe(
     val film: String = "kodak_portra_400",
     val paper: String = Develop.DEFAULT_PAPER,

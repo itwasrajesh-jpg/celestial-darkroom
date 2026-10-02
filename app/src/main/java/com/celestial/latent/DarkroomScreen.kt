@@ -349,7 +349,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                                     // darkroom. So the slider shows brightness and inverts it, or
                                     // dragging right would make the picture darker.
                                     S("Brightness", 1f / recipe.printExposure.coerceAtLeast(0.01f), 0.45f, 2.5f, "%.2f×") {
-                                        set { copy(printExposure = (1f / it).coerceIn(0.4f, 2.2f)) }
+                                        set { copy(printExposure = (1f / it).coerceIn(com.celestial.latent.develop.PRINT_EXPOSURE_MIN, com.celestial.latent.develop.PRINT_EXPOSURE_MAX)) }
                                     }
                                 } else {
                                     S("Brightness", recipe.exposureEv, -3f, 3f, "%+.1f EV") { set { copy(exposureEv = it) } }
@@ -372,7 +372,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                                                             recipe = if (onPrintRoute)
                                                                 // "Needs more light" means a brighter print,
                                                                 // which means a SHORTER enlarger exposure.
-                                                                recipe.copy(printExposure = (recipe.printExposure / suggested).coerceIn(0.4f, 2.2f))
+                                                                recipe.copy(printExposure = (recipe.printExposure / suggested).coerceIn(com.celestial.latent.develop.PRINT_EXPOSURE_MIN, com.celestial.latent.develop.PRINT_EXPOSURE_MAX))
                                                             else
                                                                 recipe.copy(exposureEv = (recipe.exposureEv + ev).coerceIn(-3f, 3f))
                                                         }
@@ -496,7 +496,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                                 Toggle("Compensate for film exposure", recipe.printExposureCompensation) { set { copy(printExposureCompensation = it) } }
                                 Toggle("Normalise print exposure", recipe.normalizePrintExposure) { set { copy(normalizePrintExposure = it) } }
                                 Note("With these on — as a darkroom printer would work — the enlarger cancels out changes in film exposure, so the Exposure slider changes contrast and colour rather than brightness. Turn the first off to let film exposure change brightness directly.")
-                                S("Print exposure (higher = darker print)", recipe.printExposure, 0.4f, 2.2f, "%.2f×") { set { copy(printExposure = it) } }
+                                S("Print exposure (higher = darker print)", recipe.printExposure, com.celestial.latent.develop.PRINT_EXPOSURE_MIN, com.celestial.latent.develop.PRINT_EXPOSURE_MAX, "%.2f×") { set { copy(printExposure = it) } }
                                 S("Paper contrast", recipe.printContrast, 0.6f, 1.6f, "%.2f") { set { copy(printContrast = it) } }
                                 S("Yellow filter", recipe.yFilterShift, -20f, 20f, "%+.0f") { set { copy(yFilterShift = it) } }
                                 S("Magenta filter", recipe.mFilterShift, -20f, 20f, "%+.0f") { set { copy(mFilterShift = it) } }
@@ -641,8 +641,11 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
             val heavy = recipe.diffusion || recipe.printDiffusion
             Text((if (isRaw) "FROM RAW" else "FILM OVER JPEG") + (if (heavy) " · WITH DIFFUSION, SLOW" else "") +
                 (if (printSize > 1f) " · ${com.celestial.latent.develop.DarkroomPrefs.label(printSize)} PRINT" else ""),
-                color = LatentColors.Line, fontSize = 9.sp, letterSpacing = 1.5.sp)
+                color = LatentColors.Line, fontSize = 9.sp, letterSpacing = 1.5.sp, lineHeight = 13.sp,
+                // takes the space the button leaves and wraps if it must — it used to crush the button
+                modifier = Modifier.weight(1f).padding(end = 12.dp))
             Text(if (fullRunning) "Developing… ${elapsed}s" else "Develop full size", color = LatentColors.AmberInk, fontSize = 12.sp,
+                maxLines = 1, softWrap = false,
                 modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(LatentColors.Amber).combinedClickable(onClick = {
                     if (fullRunning) return@combinedClickable
                     Haptics.click(context)
