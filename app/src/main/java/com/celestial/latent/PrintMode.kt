@@ -581,9 +581,13 @@ private class RingGeometry(val left: Float, val top: Float, val tileW: Float, va
 
 private fun ringGeometry(w: Float, h: Float, aspect: Float, density: Float): RingGeometry {
     val gap = 12f * density; val extra = 18f * density             // the label under each tile
-    var tileW = (w - 2 * gap) / 3f; var tileH = tileW / aspect
+    // Room at the edges for each print's paper border and shadow — without it the top row's
+    // border was cut off.
+    val margin = 7f * density
+    val aw = w - 2 * margin; val ah = h - 2 * margin
+    var tileW = (aw - 2 * gap) / 3f; var tileH = tileW / aspect
     val need = 3 * tileH + 3 * extra + 2 * gap
-    if (need > h) { tileH = (h - 3 * extra - 2 * gap) / 3f; tileW = tileH * aspect }
+    if (need > ah) { tileH = (ah - 3 * extra - 2 * gap) / 3f; tileW = tileH * aspect }
     val totalW = 3 * tileW + 2 * gap; val totalH = 3 * tileH + 3 * extra + 2 * gap
     return RingGeometry((w - totalW) / 2f, (h - totalH) / 2f, tileW, tileH, gap, extra)
 }

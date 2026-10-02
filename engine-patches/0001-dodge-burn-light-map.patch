@@ -1,0 +1,365 @@
+From 65f15767ab0667d7c83d296a1e343b52a0c86556 Mon Sep 17 00:00:00 2001
+From: Latent <latent@users.noreply.github.com>
+Date: Fri, 2 Oct 2026 11:35:44 +0000
+Subject: [PATCH] Dodge & burn: a per-position light map on the print exposure
+ (Latent)
+
+Adds spk_params::print_exposure_map (+ _w, _h) and EnlargerParams.printExposureMap.
+The map multiplies the enlarger light place by place, after the enlarger diffusion
+filter, without moving the mid-grey reference. It is part of the print-density memo
+key (content and size). NULL/absent leaves every render byte-identical.
+Test: tests/test_dodge_burn.cpp (14 checks).
+---
+ .../src/main/cpp/runtime/params.h             |   4 +
+ .../src/main/cpp/runtime/stages/printing.cpp  |  31 ++++
+ engine/spektra-core/src/main/cpp/spektra.cpp  |  16 ++
+ engine/spektra-core/src/main/cpp/spektra.h    |  10 ++
+ .../spektra-core/src/main/cpp/spektra_jni.cpp |  17 ++
+ .../src/main/cpp/tests/test_dodge_burn.cpp    | 152 ++++++++++++++++++
+ .../com/spectrafilm/engine/SpektraParams.kt   |  10 ++
+ 7 files changed, 240 insertions(+)
+ create mode 100644 engine/spektra-core/src/main/cpp/tests/test_dodge_burn.cpp
+
+diff --git a/engine/spektra-core/src/main/cpp/runtime/params.h b/engine/spektra-core/src/main/cpp/runtime/params.h
+index 7ff00a2..7307019 100644
+--- a/engine/spektra-core/src/main/cpp/runtime/params.h
++++ b/engine/spektra-core/src/main/cpp/runtime/params.h
+@@ -220,6 +220,10 @@ struct PrintingParams {
+     // table is used and the print parity goldens stay byte-identical; the active
+     // path is gated by its own oracle golden (test_print_curves_morph_e2e).
+     PrintCurvesMorphParams morph;
++    // Dodge & burn light map (see spk_params::print_exposure_map). nullptr = off, byte-identical.
++    const float* exposure_map = nullptr;
++    int exposure_map_w = 0;
++    int exposure_map_h = 0;
+ };
+ 
+ // Enlarger illuminant on the 81-band working shape for a given illuminant id.
+diff --git a/engine/spektra-core/src/main/cpp/runtime/stages/printing.cpp b/engine/spektra-core/src/main/cpp/runtime/stages/printing.cpp
+index c064516..0ef8a06 100644
+--- a/engine/spektra-core/src/main/cpp/runtime/stages/printing.cpp
++++ b/engine/spektra-core/src/main/cpp/runtime/stages/printing.cpp
+@@ -79,6 +79,24 @@ void cmy_to_print_log_raw_fn(const double in[3], double out[3], void* vctx) {
+ 
+ }  // namespace
+ 
++// Dodge & burn: the light map's value at pixel p of a width×height render, sampled bilinearly at
++// the pixel's centre so the map can be any size. Never negative.
++static inline double exposure_map_at(const PrintingParams& pp, int p, int width, int height) {
++    const int mw = pp.exposure_map_w, mh = pp.exposure_map_h;
++    const int x = p % width, y = p / width;
++    double u = (x + 0.5) * mw / static_cast<double>(width) - 0.5;
++    double v = (y + 0.5) * mh / static_cast<double>(height) - 0.5;
++    u = std::fmin(std::fmax(u, 0.0), static_cast<double>(mw - 1));
++    v = std::fmin(std::fmax(v, 0.0), static_cast<double>(mh - 1));
++    const int x0 = static_cast<int>(u), y0 = static_cast<int>(v);
++    const int x1 = x0 + 1 < mw ? x0 + 1 : mw - 1, y1 = y0 + 1 < mh ? y0 + 1 : mh - 1;
++    const double fx = u - x0, fy = v - y0;
++    const float* m = pp.exposure_map;
++    const double top = m[y0 * mw + x0] * (1.0 - fx) + m[y0 * mw + x1] * fx;
++    const double bot = m[y1 * mw + x0] * (1.0 - fx) + m[y1 * mw + x1] * fx;
++    return std::fmax(top * (1.0 - fy) + bot * fy, 0.0);
++}
++
+ void print_expose(const Profile& film, const Profile& print_profile,
+                   const PrintingParams& params, const float* density_cmy,
+                   int width, int height, float* log_raw_print_out) {
+@@ -322,6 +340,11 @@ void print_expose(const Profile& film, const Profile& print_profile,
+             double* rb = raw_buf.data() + static_cast<size_t>(p) * 3;
+             rb[0] = r0; rb[1] = r1; rb[2] = r2;
+         } else {
++            // Dodge & burn, when there is no diffusion pass to wait for.
++            if (params.exposure_map) {
++                const double g = exposure_map_at(params, p, width, height);
++                r0 *= g; r1 *= g; r2 *= g;
++            }
+             float* out = log_raw_print_out + static_cast<size_t>(p) * 3;
+             out[0] = static_cast<float>(std::log10(std::fmax(r0, 0.0) + 1e-10));
+             out[1] = static_cast<float>(std::log10(std::fmax(r1, 0.0) + 1e-10));
+@@ -333,6 +356,14 @@ void print_expose(const Profile& film, const Profile& print_profile,
+     if (diffusion) {
+         apply_diffusion_filter_um(raw_buf.data(), width, height,
+                                   params.diffusion_filter, params.pixel_size_um);
++        // Dodge & burn after the diffusion pass: the card is nearer the paper than the filter.
++        if (params.exposure_map) {
++            for (int q = 0; q < npix; ++q) {
++                const double g = exposure_map_at(params, q, width, height);
++                double* rb = raw_buf.data() + static_cast<size_t>(q) * 3;
++                rb[0] *= g; rb[1] *= g; rb[2] *= g;
++            }
++        }
+         const size_t total = static_cast<size_t>(npix) * 3;
+         for (size_t i = 0; i < total; ++i) {
+             log_raw_print_out[i] = static_cast<float>(
+diff --git a/engine/spektra-core/src/main/cpp/spektra.cpp b/engine/spektra-core/src/main/cpp/spektra.cpp
+index 11b7e68..ead4bd4 100644
+--- a/engine/spektra-core/src/main/cpp/spektra.cpp
++++ b/engine/spektra-core/src/main/cpp/spektra.cpp
+@@ -696,6 +696,16 @@ static uint64_t compute_print_density_key(const std::vector<float>& film_density
+     h = fnv1a64(h, &p->scanner_black_correction, sizeof(p->scanner_black_correction));
+     h = fnv1a64(h, &p->scanner_white_level, sizeof(p->scanner_white_level));
+     h = fnv1a64(h, &p->scanner_black_level, sizeof(p->scanner_black_level));
++    // Dodge & burn light map: it changes the print, so it MUST be in this key — content and
++    // size — or painting a new mask would return the previous print from the memo. Hashed only
++    // when present, so every key without a map is exactly what it was.
++    if (p->print_exposure_map && p->print_exposure_map_w > 0 && p->print_exposure_map_h > 0) {
++        h = fnv1a64(h, &p->print_exposure_map_w, sizeof(p->print_exposure_map_w));
++        h = fnv1a64(h, &p->print_exposure_map_h, sizeof(p->print_exposure_map_h));
++        h = fnv1a64(h, p->print_exposure_map,
++                    sizeof(float) * static_cast<size_t>(p->print_exposure_map_w) *
++                        static_cast<size_t>(p->print_exposure_map_h));
++    }
+     return h;
+ }
+ 
+@@ -1303,6 +1313,12 @@ spk_status run_print(spk_engine* eng, const spk_image* in, const spk_params* p,
+           p->normalize_print_exposure != 0, p->print_exposure_compensation != 0); }
+     // enlarger.print_exposure (default 1.0) multiplies the print exposure.
+     pparams.print_exposure = p->print_exposure;
++    // Dodge & burn light map, only when well formed.
++    if (p->print_exposure_map && p->print_exposure_map_w > 0 && p->print_exposure_map_h > 0) {
++        pparams.exposure_map = p->print_exposure_map;
++        pparams.exposure_map_w = p->print_exposure_map_w;
++        pparams.exposure_map_h = p->print_exposure_map_h;
++    }
+ 
+     // OPT-IN s023 print density-curve morph (print_render.density_curves_morph).
+     // Default-off -> print_develop uses the stored density_curves table (the
+diff --git a/engine/spektra-core/src/main/cpp/spektra.h b/engine/spektra-core/src/main/cpp/spektra.h
+index f42119b..45ddcae 100644
+--- a/engine/spektra-core/src/main/cpp/spektra.h
++++ b/engine/spektra-core/src/main/cpp/spektra.h
+@@ -340,6 +340,16 @@ typedef struct {
+      * (f32→f64 widening is exact) and gated by the same scenario G
+      * (direct-vs-materialized memcmp, AE-on and spatial-on included). */
+     int32_t disable_buffer_memos;
++    /* Dodge & burn (Latent): a light map over the picture that multiplies the print exposure place
++     * by place — 1 leaves a place as it is, 2 doubles its light (burn: darker), 0.5 halves it
++     * (dodge: lighter). Row-major, print_exposure_map_w × print_exposure_map_h, sampled bilinearly
++     * at each pixel's position in the picture, so it need not match the render's size. It shapes
++     * the enlarger light AFTER the enlarger diffusion filter, as a card held near the paper shapes
++     * light already diffused by the lens. It does not move the mid-grey reference, so the print's
++     * overall balance stays put. NULL (the default) leaves every render byte-identical. */
++    const float* print_exposure_map;
++    int32_t print_exposure_map_w;
++    int32_t print_exposure_map_h;
+ } spk_params;
+ 
+ /* Initialise `p` to the physical defaults that mirror a default-constructed
+diff --git a/engine/spektra-core/src/main/cpp/spektra_jni.cpp b/engine/spektra-core/src/main/cpp/spektra_jni.cpp
+index 0120fb5..95e9baf 100644
+--- a/engine/spektra-core/src/main/cpp/spektra_jni.cpp
++++ b/engine/spektra-core/src/main/cpp/spektra_jni.cpp
+@@ -193,6 +193,7 @@ struct ParamStorage {
+     std::string film_profile;
+     std::string print_profile;
+     std::string auto_exposure_method;
++    std::vector<float> print_exposure_map;   // dodge & burn; lives as long as the render
+ };
+ 
+ // Read a DiffusionFilterParams jobject into the spk_params diffusion-filter
+@@ -331,6 +332,22 @@ bool marshal_params(JNIEnv* env, jobject params, spk_params* out, ParamStorage*
+             call_bool(env, enlarger, "getNormalizePrintExposure") ? 1 : 0;
+         out->y_filter_shift = call_float(env, enlarger, "getYFilterShift");
+         out->m_filter_shift = call_float(env, enlarger, "getMFilterShift");
++        // Dodge & burn light map (Latent). Absent, or not exactly width × height, leaves it off.
++        if (jobject arrObj = call_obj(env, enlarger, "getPrintExposureMap", "()[F")) {
++            const int mw = call_int(env, enlarger, "getPrintExposureMapWidth");
++            const int mh = call_int(env, enlarger, "getPrintExposureMapHeight");
++            jfloatArray arr = static_cast<jfloatArray>(arrObj);
++            const jsize len = env->GetArrayLength(arr);
++            if (mw > 0 && mh > 0 && static_cast<long long>(mw) * mh == static_cast<long long>(len)) {
++                store->print_exposure_map.resize(static_cast<size_t>(len));
++                env->GetFloatArrayRegion(arr, 0, len, store->print_exposure_map.data());
++                out->print_exposure_map = store->print_exposure_map.data();
++                out->print_exposure_map_w = mw;
++                out->print_exposure_map_h = mh;
++            }
++            env->DeleteLocalRef(arrObj);
++        }
++        if (env->ExceptionCheck()) env->ExceptionClear();
+         out->y_filter_neutral = call_float(env, enlarger, "getYFilterNeutral");
+         out->m_filter_neutral = call_float(env, enlarger, "getMFilterNeutral");
+         out->c_filter_neutral = call_float(env, enlarger, "getCFilterNeutral");
+diff --git a/engine/spektra-core/src/main/cpp/tests/test_dodge_burn.cpp b/engine/spektra-core/src/main/cpp/tests/test_dodge_burn.cpp
+new file mode 100644
+index 0000000..9eb103c
+--- /dev/null
++++ b/engine/spektra-core/src/main/cpp/tests/test_dodge_burn.cpp
+@@ -0,0 +1,152 @@
++// Dodge & burn light map (spk_params::print_exposure_map) — end to end through spk_simulate.
++//
++//   1. a map of all 1s is byte-identical to no map;
++//   2. a map of all 2s equals doubling the print exposure;
++//   3. a half-and-half map matches each half's own reference away from the seam;
++//   4. the same holds with the enlarger diffusion filter on (the map is applied after it);
++//   5. the print-density memo cannot serve a stale print: map A, map B, then A again;
++//   6. the preview path honours the map too;
++//   7. dodging (0.5) lightens and burning (2) darkens.
++//
++// Usage: test_dodge_burn <asset_dir>
++#include "spektra.h"
++
++#include <cmath>
++#include <cstdio>
++#include <cstring>
++#include <string>
++#include <vector>
++
++static int failures = 0;
++static void check(const char* what, bool ok, const std::string& detail = "") {
++    std::printf("[%s] %s%s\n", what, ok ? "PASS" : "FAIL", detail.empty() ? "" : (" — " + detail).c_str());
++    if (!ok) ++failures;
++}
++
++static const int W = 120, H = 80;
++
++static std::vector<float> make_input() {
++    // A scene with real tonal and colour variation: red rises left to right, blue top to bottom.
++    std::vector<float> rgb(static_cast<size_t>(W) * H * 3);
++    for (int y = 0; y < H; ++y)
++        for (int x = 0; x < W; ++x) {
++            float* p = rgb.data() + (static_cast<size_t>(y) * W + x) * 3;
++            p[0] = 0.02f + 0.50f * x / (W - 1);
++            p[1] = 0.18f;
++            p[2] = 0.05f + 0.40f * y / (H - 1);
++        }
++    return rgb;
++}
++
++static void base_params(spk_params* p) {
++    p->film_profile = "kodak_portra_400";
++    p->print_profile = "kodak_portra_endura";
++    spk_default_params(p);
++}
++
++static std::vector<float> run(spk_engine* eng, std::vector<float>& in, const spk_params& p, bool preview = false) {
++    spk_image img{in.data(), W, H, SPK_CS_PROPHOTO};
++    spk_image out{};
++    spk_status st = preview ? spk_simulate_preview(eng, &img, &p, &out) : spk_simulate(eng, &img, &p, &out);
++    if (st != SPK_OK) { std::printf("simulate failed: %s\n", spk_status_str(st)); ++failures; return {}; }
++    std::vector<float> v(out.data, out.data + static_cast<size_t>(out.width) * out.height * 3);
++    spk_image_free(&out);
++    return v;
++}
++
++static double max_diff(const std::vector<float>& a, const std::vector<float>& b, int x0 = 0, int x1 = W) {
++    if (a.size() != b.size() || a.empty()) return 1e9;
++    const int w = static_cast<int>(a.size() / 3 / H);
++    double m = 0;
++    for (int y = 0; y < H; ++y)
++        for (int x = x0; x < x1 && x < w; ++x)
++            for (int c = 0; c < 3; ++c) {
++                const size_t i = (static_cast<size_t>(y) * w + x) * 3 + c;
++                m = std::fmax(m, std::fabs(static_cast<double>(a[i]) - b[i]));
++            }
++    return m;
++}
++
++static double mean(const std::vector<float>& a) {
++    double s = 0; for (float v : a) s += v; return a.empty() ? 0 : s / a.size();
++}
++
++static std::string fmt(double v) { char b[48]; std::snprintf(b, sizeof b, "%.3e", v); return b; }
++
++int main(int argc, char** argv) {
++    if (argc < 2) { std::printf("usage: test_dodge_burn <asset_dir>\n"); return 2; }
++    spk_engine* eng = nullptr;
++    if (spk_engine_create(argv[1], &eng) != SPK_OK) { std::printf("engine create failed\n"); return 1; }
++    std::vector<float> in = make_input();
++
++    spk_params p{}; base_params(&p);
++    const std::vector<float> plain = run(eng, in, p);
++
++    // 1. all ones == no map, byte for byte
++    std::vector<float> ones(8 * 4, 1.0f);
++    spk_params p1 = p; p1.print_exposure_map = ones.data(); p1.print_exposure_map_w = 8; p1.print_exposure_map_h = 4;
++    const std::vector<float> with_ones = run(eng, in, p1);
++    check("1 map of 1s is byte-identical to no map",
++          with_ones.size() == plain.size() && std::memcmp(with_ones.data(), plain.data(), plain.size() * sizeof(float)) == 0);
++
++    // 2. all twos == print exposure doubled
++    std::vector<float> twos(8 * 4, 2.0f);
++    spk_params p2 = p; p2.print_exposure_map = twos.data(); p2.print_exposure_map_w = 8; p2.print_exposure_map_h = 4;
++    spk_params px2 = p; px2.print_exposure = p.print_exposure * 2.0f;
++    const std::vector<float> map2 = run(eng, in, p2), exp2 = run(eng, in, px2);
++    const double d2 = max_diff(map2, exp2);
++    check("2 map of 2s equals doubling the print exposure", d2 < 1e-5, "max diff " + fmt(d2));
++
++    // 3. half and half: left burned (2), right untouched (1); compare away from the seam
++    std::vector<float> half(8 * 4);
++    for (int y = 0; y < 4; ++y) for (int x = 0; x < 8; ++x) half[y * 8 + x] = x < 4 ? 2.0f : 1.0f;
++    spk_params ph = p; ph.print_exposure_map = half.data(); ph.print_exposure_map_w = 8; ph.print_exposure_map_h = 4;
++    const std::vector<float> halfout = run(eng, in, ph);
++    const double dl = max_diff(halfout, exp2, 0, W / 2 - 16), dr = max_diff(halfout, plain, W / 2 + 16, W);
++    const double seam = max_diff(halfout, plain, W / 2 - 2, W / 2 + 2);
++    check("3 half map: left matches the doubled print", dl < 1e-5, "max diff " + fmt(dl));
++    check("3 half map: right matches the plain print", dr < 1e-5, "max diff " + fmt(dr));
++    check("3 half map: a transition exists at the seam", seam > 1e-4, "change " + fmt(seam));
++
++    // 4. with the enlarger diffusion filter on, the map is applied after it
++    spk_params pd = p;
++    pd.enlarger_diffusion_active = 1; pd.enlarger_diffusion_strength = 1.0f; pd.enlarger_diffusion_spatial_scale = 1.0f;
++    pd.enlarger_diffusion_core_intensity = 0.5f; pd.enlarger_diffusion_core_size = 2.0f;
++    pd.enlarger_diffusion_halo_intensity = 0.5f; pd.enlarger_diffusion_halo_size = 6.0f;
++    spk_params pd2 = pd; pd2.print_exposure_map = twos.data(); pd2.print_exposure_map_w = 8; pd2.print_exposure_map_h = 4;
++    spk_params pdx2 = pd; pdx2.print_exposure = pd.print_exposure * 2.0f;
++    const std::vector<float> dmap = run(eng, in, pd2), dexp = run(eng, in, pdx2), dplain = run(eng, in, pd);
++    const double dd = max_diff(dmap, dexp), dact = max_diff(dplain, plain);
++    check("4 diffusion is actually on in this case", dact > 1e-5, "diffusion changes the print by " + fmt(dact));
++    check("4 with diffusion: map of 2s equals doubled exposure", dd < 1e-4, "max diff " + fmt(dd));
++
++    // 5. the memo must not serve a stale print when only the map changes
++    std::vector<float> mapA(8 * 4, 1.0f), mapB(8 * 4, 1.0f);
++    for (int y = 0; y < 4; ++y) { mapA[y * 8 + 0] = mapA[y * 8 + 1] = 2.0f; mapB[y * 8 + 6] = mapB[y * 8 + 7] = 2.0f; }
++    spk_params pa = p, pb = p;
++    pa.print_exposure_map = mapA.data(); pa.print_exposure_map_w = 8; pa.print_exposure_map_h = 4;
++    pb.print_exposure_map = mapB.data(); pb.print_exposure_map_w = 8; pb.print_exposure_map_h = 4;
++    const std::vector<float> a1 = run(eng, in, pa), b1 = run(eng, in, pb), a2 = run(eng, in, pa);
++    check("5 a different map gives a different print (no stale memo)", max_diff(a1, b1) > 1e-4, "difference " + fmt(max_diff(a1, b1)));
++    check("5 the same map again gives the same print", a1.size() == a2.size() && std::memcmp(a1.data(), a2.data(), a1.size() * sizeof(float)) == 0);
++    // ...and a map's contents changing in place (same pointer, same size) must also be seen
++    mapA[0] = 4.0f;
++    const std::vector<float> a3 = run(eng, in, pa);
++    check("5 the same map edited in place is seen", max_diff(a1, a3) > 1e-5, "difference " + fmt(max_diff(a1, a3)));
++
++    // 6. the preview path honours the map
++    const std::vector<float> pv2 = run(eng, in, p2, true), pvx2 = run(eng, in, px2, true), pvplain = run(eng, in, p, true);
++    check("6 preview: map of 2s equals doubled exposure", !pv2.empty() && max_diff(pv2, pvx2) < 1e-5, "max diff " + fmt(max_diff(pv2, pvx2)));
++    check("6 preview: the map changes the preview", max_diff(pv2, pvplain) > 1e-4);
++
++    // 7. direction: dodge lightens, burn darkens
++    std::vector<float> halves(8 * 4, 0.5f);
++    spk_params pdg = p; pdg.print_exposure_map = halves.data(); pdg.print_exposure_map_w = 8; pdg.print_exposure_map_h = 4;
++    const std::vector<float> dodged = run(eng, in, pdg);
++    check("7 dodge (0.5) makes the print lighter", mean(dodged) > mean(plain), "mean " + fmt(mean(dodged)) + " vs " + fmt(mean(plain)));
++    check("7 burn (2) makes the print darker", mean(map2) < mean(plain), "mean " + fmt(mean(map2)) + " vs " + fmt(mean(plain)));
++
++    spk_engine_destroy(eng);
++    std::printf(failures ? "SOME FAILED (%d)\n" : "ALL PASS\n", failures);
++    return failures ? 1 : 0;
++}
+diff --git a/engine/spektra-core/src/main/kotlin/com/spectrafilm/engine/SpektraParams.kt b/engine/spektra-core/src/main/kotlin/com/spectrafilm/engine/SpektraParams.kt
+index e361f4b..c3136a3 100644
+--- a/engine/spektra-core/src/main/kotlin/com/spectrafilm/engine/SpektraParams.kt
++++ b/engine/spektra-core/src/main/kotlin/com/spectrafilm/engine/SpektraParams.kt
+@@ -74,6 +74,16 @@ data class EnlargerParams(
+     val preflashExposure: Float = 0.0f,
+     val preflashYFilterShift: Float = 0.0f,
+     val preflashMFilterShift: Float = 0.0f,
++    /**
++     * Dodge & burn (Latent): a light map over the picture that multiplies the print exposure place
++     * by place — 1 leaves it, 2 doubles the light (burn, darker), 0.5 halves it (dodge, lighter).
++     * Row-major, [printExposureMapWidth] × [printExposureMapHeight], sampled smoothly at each
++     * pixel's position, so it need not match the render's size. Null (the default) changes nothing.
++     * Last in the list, so nothing built by position can shift.
++     */
++    val printExposureMap: FloatArray? = null,
++    val printExposureMapWidth: Int = 0,
++    val printExposureMapHeight: Int = 0,
+ )
+ 
+ data class ScannerParams(
+-- 
+2.43.0
+
