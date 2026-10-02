@@ -121,6 +121,7 @@ object FilmDiffusion {
         coreIntensity: Float, coreSize: Float, haloIntensity: Float, haloSize: Float,
         bloomIntensity: Float, bloomSize: Float, haloWarmth: Float,
         pixelSizeUm: Float,
+        scatter: FloatArray? = null,
     ) {
         val base = FAMILIES[familyName] ?: FAMILIES.getValue("black_pro_mist")
         if (strength <= 0f || spatialScale <= 0f || width < 16 || height < 16) return
@@ -171,12 +172,25 @@ object FilmDiffusion {
 
         val f = data.order(ByteOrder.nativeOrder()).asFloatBuffer()
         val n = width * height
+        // Painted diffusion ("soften"): each place scatters `mix × scatter[i]` of its OWN light
+        // (never more than all of it), and that light spreads through the glow wherever it lands —
+        // as diffusing material held over part of a print spreads only the light passing through
+        // it. Glow from a softened area spills across the edge of a sharp one instead of stopping
+        // dead, so no dark ring; and light is conserved. Null: the whole picture, exactly as before.
+        val amount: FloatArray? = if (scatter == null || scatter.size != n) null
+            else FloatArray(n) { i -> min(mix * max(scatter[i].toDouble(), 0.0), 1.0).toFloat() }
+        val scattered: FloatArray? = if (amount != null) FloatArray(n) else null
         val plane = FloatArray(n)
         val sharpOut = FloatArray(n)
         val bloomOut = FloatArray(n)
 
         for (c in 0 until 3) {
             for (i in 0 until n) plane[i] = f.get(i * 3 + c)
+            // the light each place sends into the glow: all of it scaled by mix, or by the painting
+            val src: FloatArray = if (amount != null && scattered != null) {
+                for (i in 0 until n) scattered[i] = plane[i] * amount[i]
+                scattered
+            } else plane
 
             // Each channel's kernel is normalised as a whole, as the engine does, then split.
             val whole = kernelSum(radius, fam, corePx, coreW, haloPx, haloCh[c], bloomPx, bloomW)
@@ -189,7 +203,7 @@ object FilmDiffusion {
                 if (!split) v += fam.wB * expSum(r, bloomPx, bloomW)
                 main[k++] = (v / whole).toFloat()
             }
-            convolve(plane, width, height, main, mainRadius, sharpOut)
+            convolve(src, width, height, main, mainRadius, sharpOut)
 
             if (split) {
                 val sw = width / bloomStep
@@ -197,7 +211,7 @@ object FilmDiffusion {
                 val small = FloatArray(sw * sh)
                 for (y in 0 until sh) for (x in 0 until sw) {
                     var acc = 0f
-                    for (dy in 0 until bloomStep) for (dx in 0 until bloomStep) acc += plane[(y * bloomStep + dy) * width + (x * bloomStep + dx)]
+                    for (dy in 0 until bloomStep) for (dx in 0 until bloomStep) acc += src[(y * bloomStep + dy) * width + (x * bloomStep + dx)]
                     small[y * sw + x] = acc / (bloomStep * bloomStep)
                 }
                 val rb = max(radius / bloomStep, 1)
@@ -223,12 +237,13 @@ object FilmDiffusion {
 
             for (i in 0 until n) {
                 val blurred = sharpOut[i] + bloomOut[i]
-                f.put(i * 3 + c, ((1.0 - mix) * plane[i] + mix * blurred).toFloat())
+                if (amount == null) f.put(i * 3 + c, ((1.0 - mix) * plane[i] + mix * blurred).toFloat())
+                else f.put(i * 3 + c, (plane[i] - src[i] + blurred).toFloat())   // keeps what was not scattered, gains the glow
             }
         }
         Log.i(
             "Latent",
-            "diffusion: $familyName strength=$strength mix=${"%.3f".format(mix)} " +
+            "diffusion: $familyName strength=$strength mix=${"%.3f".format(mix)}${if (amount != null) " painted" else ""} " +
                 "radius=${radius}px sharp=${mainRadius}px split=$split bloom=1/$bloomStep " +
                 "λcore=${"%.1f".format(corePx.max())}px λhalo=${"%.1f".format(haloPx.max())}px λbloom=${"%.1f".format(bloomPx.max())}px " +
                 "${width}x$height in ${(System.nanoTime() - t0) / 1_000_000} ms",

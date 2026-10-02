@@ -662,18 +662,25 @@ private val DODGE_BURN_SPEC = PaintSpec(
 /** A pale haze: where the diffusion filter's glow goes. */
 private val SOFT_TINT = Color(0xFFDCE6F2)
 
+/**
+ * Soften: 0 is sharp, 1 the diffusion filter as set in FULL, 2 twice as much of a place's light
+ * scattered — so already-soft areas can be softened further. (It once stopped at 1, which made
+ * Soften do nothing on areas that started soft.)
+ */
 private val SOFTEN_SPEC = PaintSpec(
-    hint = "Paint where the diffusion glows. Sharpen paints it away. Lift to see it develop.",
+    hint = "Paint where the diffusion glows — up to twice the filter. Sharpen paints it away.",
     minusLabel = "Sharpen", plusLabel = "Soften",
-    min = 0f, max = 1f, overlayFull = 1f,
+    min = 0f, max = 2f, overlayFull = 2f,
     tintPlus = SOFT_TINT, tintMinus = SOFT_TINT,
     status = { m, r ->
         when {
             !r.diffusion -> "diffusion is off"
-            m == null -> "softened everywhere"
+            m == null -> "softened everywhere, 1×"
             else -> {
-                val pct = Math.round(m.stops.average().toFloat() * 100)
-                if (pct <= 0) "sharp everywhere" else "softened over $pct% of the picture"
+                val area = Math.round(m.stops.count { it > 0.05f } * 100f / m.stops.size)
+                val most = m.stops.maxOrNull() ?: 0f
+                if (area <= 0) "sharp everywhere"
+                else "$area% softened · up to ${String.format(Locale.US, "%.1f", most)}×"
             }
         }
     },

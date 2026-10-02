@@ -310,8 +310,13 @@ object Develop {
         log(if (softenMask != null) "diffusion filter, where painted" else "diffusion filter")
         val longest = maxOf(source.width, source.height)
         val pixelSizeUm = recipe.filmFormatMm * 1000f / longest
-        // Painted: keep the sharp picture, diffuse, then blend the two by the mask.
-        val sharp = if (softenMask != null) scratchCopy(source) else null
+        // Painted: how much of each place's own light scatters, as a multiple of the setting
+        // (0 sharp, 1 the filter as set, 2 twice as much). A mask of exactly 1 everywhere is the
+        // plain setting, so it takes the plain path and stays identical to it.
+        val scatter: FloatArray? = softenMask?.takeUnless { m -> m.stops.all { it == 1f } }?.let { m ->
+            val w = source.width; val h = source.height
+            FloatArray(w * h) { i -> m.sample((i % w + 0.5f) / w, (i / w + 0.5f) / h) }
+        }
         FilmDiffusion.apply(
             source.image.data, source.width, source.height,
             recipe.diffusionFamily, recipe.diffusionStrength, recipe.diffusionScale,
@@ -319,51 +324,11 @@ object Develop {
             recipe.diffusionHalo, recipe.diffusionHaloSize,
             recipe.diffusionBloom, recipe.diffusionBloomSize,
             recipe.diffusionWarmth, pixelSizeUm,
+            scatter = scatter,
         )
-        if (sharp != null && softenMask != null) blendByMask(source, sharp, softenMask)
         source.diffused = true
     }
 
-    /**
-     * One reusable buffer for the sharp copy, so painting does not set aside a new one on every
-     * repaint. Renders never overlap (they queue for the engine lane), so one is enough. A very
-     * large one (a full-size develop) is let go afterwards rather than held.
-     */
-    @Volatile private var scratch: java.nio.ByteBuffer? = null
-
-    private fun scratchCopy(source: Source): java.nio.ByteBuffer {
-        val n = source.width * source.height * 3 * 4
-        val buf = scratch?.takeIf { it.capacity() >= n }
-            ?: java.nio.ByteBuffer.allocateDirect(n).order(java.nio.ByteOrder.nativeOrder()).also { scratch = it }
-        buf.clear()
-        val src = source.image.data.duplicate().order(java.nio.ByteOrder.nativeOrder())
-        src.clear(); src.limit(n)
-        buf.put(src); buf.flip()
-        return buf
-    }
-
-    /**
-     * out = diffused × mask + sharp × (1 − mask), the mask sampled at each pixel's place. Written
-     * this way it is exact at both ends — a mask of 1 gives the diffused picture bit for bit, so
-     * "softened everywhere" painted is the same as the plain setting (the other form,
-     * sharp + (diffused − sharp) × mask, leaves a rounding residue at 1).
-     */
-    private fun blendByMask(source: Source, sharp: java.nio.ByteBuffer, mask: ExposureMap) {
-        val w = source.width; val h = source.height
-        val out = source.image.data.order(java.nio.ByteOrder.nativeOrder()).asFloatBuffer()
-        val sh = sharp.order(java.nio.ByteOrder.nativeOrder()).asFloatBuffer()
-        for (y in 0 until h) {
-            val v = (y + 0.5f) / h
-            for (x in 0 until w) {
-                val m = mask.sample((x + 0.5f) / w, v).coerceIn(0f, 1f)
-                val i = (y * w + x) * 3
-                for (c in 0 until 3) {
-                    out.put(i + c, out.get(i + c) * m + sh.get(i + c) * (1f - m))
-                }
-            }
-        }
-        if (sharp.capacity() > 64 * 1024 * 1024) scratch = null   // a full-size copy is not kept
-    }
 
     /**
      * The engine to develop with. Once Latent has copied the engine's assets into its own
