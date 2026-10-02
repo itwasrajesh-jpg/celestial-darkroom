@@ -12,7 +12,8 @@ import java.util.concurrent.atomic.AtomicInteger
  */
 object DevelopQueue {
 
-    data class Job(val source: Uri, val recipe: Recipe, val isRaw: Boolean)
+    /** [first]: when set, [source] is the second exposure of a double, made onto this frame. */
+    data class Job(val source: Uri, val recipe: Recipe, val isRaw: Boolean, val first: Uri? = null)
 
     /**
      * Full-resolution develop, run on the same single thread as auto-develop so two heavy
@@ -29,7 +30,7 @@ object DevelopQueue {
     }
 
     fun submitFull(context: Context, source: Uri, isRaw: Boolean, recipe: Recipe, upscale: Float = 1f,
-                   exposureMap: ExposureMap? = null, softenMask: ExposureMap? = null,
+                   exposureMap: ExposureMap? = null, softenMask: ExposureMap? = null, pairFirst: Uri? = null,
                    onStatus: (String) -> Unit, onDone: (Uri?) -> Unit): Running {
         val handle = Running()
         pending.incrementAndGet(); onChanged()
@@ -40,7 +41,7 @@ object DevelopQueue {
             try {
                 if (handle.cancelled) { Log.i("Latent", "full develop cancelled before it started"); return@execute }
                 onStatus("starting")
-                out = Develop.developFull(app, source, isRaw, recipe, upscale = upscale, exposureMap = exposureMap, softenMask = softenMask) { m -> if (!handle.cancelled) onStatus(m) }
+                out = Develop.developFull(app, source, isRaw, recipe, upscale = upscale, exposureMap = exposureMap, softenMask = softenMask, pairFirst = pairFirst) { m -> if (!handle.cancelled) onStatus(m) }
                 if (handle.cancelled) { Log.i("Latent", "full develop finished after cancel; result discarded"); out = null }
             } catch (t: Throwable) {
                 Log.e("Latent", "full develop failed", t)
@@ -85,7 +86,9 @@ object DevelopQueue {
             // Same single thread as full-size work, so the lane is only about the darkroom preview.
             val holdsLane = acquireLane(120)
             try {
-                val out = if (job.isRaw) Develop.developDng(context.applicationContext, job.source, job.recipe)
+                val out = if (job.isRaw && job.first != null)
+                              Develop.developFull(context.applicationContext, job.source, isRaw = true, recipe = job.recipe, pairFirst = job.first)
+                          else if (job.isRaw) Develop.developDng(context.applicationContext, job.source, job.recipe)
                           else Develop.developJpeg(context.applicationContext, job.source, job.recipe)
                 onDeveloped(out)
             } catch (t: Throwable) {

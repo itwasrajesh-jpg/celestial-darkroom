@@ -107,6 +107,11 @@ fun CameraScreen(
     var drawerOpen by remember { mutableStateOf(false) }
     var lastUri by remember { mutableStateOf<Uri?>(null) }
     var lastRawUri by remember { mutableStateOf<Uri?>(null) }
+    // Double exposure: the held first frame (it survives the app closing, like film not wound on),
+    // the last single RAW ("Don't advance" holds it), and its ghost over the live view.
+    var pendingFirst by remember { mutableStateOf(com.celestial.latent.develop.DoubleExposure.pending(context)) }
+    var lastSingleRaw by remember { mutableStateOf<Uri?>(null) }
+    var ghost by remember { mutableStateOf<Bitmap?>(null) }
     var glPreview by remember { mutableStateOf<com.celestial.latent.gl.FilmPreviewView?>(null) }
     var lookReady by remember { mutableStateOf(false) }
     var baking by remember { mutableStateOf(false) }
@@ -135,18 +140,48 @@ fun CameraScreen(
                         ?.use { if (it.moveToFirst()) it.getString(0) else null }
                 }.getOrNull().orEmpty()
                 if (name.endsWith(".dng", true)) lastRawUri = uri
-                if (settings.autoDevelop && name.endsWith(".dng", true) && !name.contains("BURST") && !name.contains("STACK")) {
+                val single = name.endsWith(".dng", true) && !name.contains("BURST") && !name.contains("STACK")
+                val held = pendingFirst
+                if (single && held != null && held != uri) {
+                    // The second exposure: its light is added to the held frame and the pair is
+                    // developed as one frame — even with auto-develop off, since it was asked for.
+                    com.celestial.latent.develop.DoubleExposure.record(context, held, uri)
+                    com.celestial.latent.develop.DoubleExposure.setPending(context, null)
+                    pendingFirst = null; ghost = null; lastSingleRaw = null
                     DevelopQueue.submit(context, DevelopQueue.Job(
                         uri,
-                        // The camera's exposure is the exposure: the film does not re-level it.
                         com.celestial.latent.develop.Recipes.current(context).copy(autoExposure = settings.engineAutoExposure),
-                        isRaw = true,
+                        isRaw = true, first = held,
                     ))
+                } else {
+                    if (single) lastSingleRaw = uri
+                    if (settings.autoDevelop && single) {
+                        DevelopQueue.submit(context, DevelopQueue.Job(
+                            uri,
+                            // The camera's exposure is the exposure: the film does not re-level it.
+                            com.celestial.latent.develop.Recipes.current(context).copy(autoExposure = settings.engineAutoExposure),
+                            isRaw = true,
+                        ))
+                    }
                 }
             },
         )
     }
     var surfaceRef by remember { mutableStateOf<Surface?>(null) }
+
+    // The held frame's ghost, upright to match the portrait viewfinder.
+    LaunchedEffect(pendingFirst) {
+        val held = pendingFirst
+        ghost = if (held == null) null else kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            com.celestial.latent.develop.DoubleExposure.ghost(context, held)?.let { b ->
+                // the RAW's own thumbnail (used when no JPEG was saved) can come sideways
+                if (b.width > b.height) {
+                    val m = android.graphics.Matrix().apply { postRotate(90f) }
+                    Bitmap.createBitmap(b, 0, 0, b.width, b.height, m, true)
+                } else b
+            }
+        }
+    }
 
     // Most recent Latent file at startup.
     LaunchedEffect(Unit) {
@@ -348,6 +383,9 @@ fun CameraScreen(
                     }
                 })
             }
+            // Double exposure: the first frame, faintly, so the second can be framed against it.
+            ghost?.let { Image(it.asImageBitmap(), contentDescription = "First exposure", contentScale = ContentScale.Crop,
+                alpha = 0.38f, modifier = Modifier.fillMaxSize()) }
             if (settings.gridlines) {
                 Canvas(Modifier.fillMaxSize()) {
                     val c = Color(0x66FFFFFF); val w = size.width; val h = size.height
@@ -361,6 +399,31 @@ fun CameraScreen(
                 onEv = { n -> if (!controls.manualExposure) push(controls.copy(evIndex = n)) },
                 onDismiss = { focusTap = null },
             )
+            // Double exposure, top right: hold the last frame, or show that one is held (× winds on).
+            val heldFrame = pendingFirst
+            if (heldFrame != null || lastSingleRaw != null) {
+                Column(Modifier.align(Alignment.TopEnd).padding(12.dp), horizontalAlignment = Alignment.End) {
+                    Text(
+                        if (heldFrame != null) "2ND EXPOSURE  ×" else "DON'T ADVANCE",
+                        color = if (heldFrame != null) LatentColors.AmberInk else LatentColors.TextBright,
+                        fontSize = 10.sp, letterSpacing = 1.sp,
+                        modifier = Modifier.clip(RoundedCornerShape(999.dp))
+                            .background(if (heldFrame != null) LatentColors.Amber else Color(0x99000000))
+                            .combinedClickable(onClick = {
+                                Haptics.tick(context)
+                                if (heldFrame != null) {
+                                    // wind on: the held frame stays a photo of its own
+                                    com.celestial.latent.develop.DoubleExposure.setPending(context, null); pendingFirst = null
+                                } else {
+                                    lastSingleRaw?.let { com.celestial.latent.develop.DoubleExposure.setPending(context, it); pendingFirst = it }
+                                }
+                            })
+                            .padding(horizontal = 10.dp, vertical = 5.dp),
+                    )
+                    if (heldFrame != null) Text("frame the second over the first", color = LatentColors.TextBright, fontSize = 9.sp,
+                        modifier = Modifier.padding(top = 4.dp))
+                }
+            }
             // Quiet captions overlaid on the image.
             Column(Modifier.align(Alignment.TopStart).padding(12.dp)) {
                 Text(if (settings.saveJpeg) "RAW + JPG · 12.5M" else "RAW · 12.5M", color = LatentColors.TextBright, fontSize = 10.sp, letterSpacing = 1.sp)

@@ -124,12 +124,15 @@ object Develop {
      * otherwise the edit would silently do nothing on an already-processed copy.
      */
     fun openCached(context: Context, source: Uri, isRaw: Boolean, maxEdge: Int, recipe: Recipe, iso: Int,
-                   softenMask: ExposureMap? = null, log: (String) -> Unit = {}): Source {
+                   softenMask: ExposureMap? = null, pairFirst: Uri? = null, log: (String) -> Unit = {}): Source {
         // The pristine decode is cached on its own, so changing a pre-engine setting costs a
         // copy rather than a fresh decode of the file (which was over a second every time).
-        val key = "$source@$maxEdge"
+        // A double exposure is cached as its combined light, under a key naming both frames.
+        val pair = pairFirst != null && isRaw
+        val key = if (pair) "$pairFirst+$source@$maxEdge" else "$source@$maxEdge"
         val pristine = Cache.get(key) ?: run {
-            val decoded = if (isRaw) openRaw(context, source, maxEdge, log) else openImage(context, source, maxEdge)
+            val decoded = if (pair) openPair(context, pairFirst!!, source, maxEdge, log)
+                else if (isRaw) openRaw(context, source, maxEdge, log) else openImage(context, source, maxEdge)
             Cache.put(key, decoded)
             decoded
         }
@@ -139,7 +142,8 @@ object Develop {
         val working = Cache.get(workKey)?.takeIf { it.width == pristine.width && it.height == pristine.height }
             ?: pristine.blankLike().also { Cache.put(workKey, it) }
         working.refillFrom(pristine)
-        denoiseSource(working, recipe, iso, log)
+        // A pair carries the noise of both frames: clean it for the noisier of the two.
+        denoiseSource(working, recipe, if (pair) maxOf(iso, isoOf(context, pairFirst!!)) else iso, log)
         fastDiffusionSource(working, recipe, preview = true, softenMask = softenMask, log = log)
         fastPrintDiffusionSource(working, recipe, preview = true, log = log)
         return working
@@ -621,7 +625,7 @@ object Develop {
      * document picker rather than the gallery, and such a provider need not answer a MediaStore
      * column — asking can throw. Falls back to the standard document name, then to "LATENT".
      */
-    private fun baseNameOf(context: Context, uri: Uri): String {
+    internal fun baseNameOf(context: Context, uri: Uri): String {
         val name = runCatching {
             context.contentResolver.query(uri, arrayOf(MediaStore.Images.Media.DISPLAY_NAME), null, null, null)
                 ?.use { if (it.moveToFirst()) it.getString(0) else null }
@@ -649,17 +653,20 @@ object Develop {
 
     /** Full-resolution develop with progress, logging and a new file each time. */
     fun developFull(context: Context, source: Uri, isRaw: Boolean, recipe: Recipe, maxEdge: Int = 0, upscale: Float = 1f,
-                    exposureMap: ExposureMap? = null, softenMask: ExposureMap? = null, log: (String) -> Unit = {}): Uri {
+                    exposureMap: ExposureMap? = null, softenMask: ExposureMap? = null, pairFirst: Uri? = null,
+                    log: (String) -> Unit = {}): Uri {
         log(if (maxEdge > 0) "decoding…" else "decoding at full size…")
-        val src = if (isRaw) openRaw(context, source, maxEdge, log) else openImage(context, source, maxEdge)
+        val pair = pairFirst != null && isRaw
+        val src = if (pair) openPair(context, pairFirst!!, source, maxEdge, log)
+            else if (isRaw) openRaw(context, source, maxEdge, log) else openImage(context, source, maxEdge)
         return src.use { s ->
-            denoiseSource(s, recipe, isoOf(context, source), log)
+            denoiseSource(s, recipe, if (pair) maxOf(isoOf(context, source), isoOf(context, pairFirst!!)) else isoOf(context, source), log)
             fastDiffusionSource(s, recipe, preview = false, softenMask = softenMask, log = log)
             fastPrintDiffusionSource(s, recipe, preview = false, log = log)
             log("developing ${s.width}×${s.height}…")
             val (bytes, dims) = render(context, s, recipe, preview = false, upscale = upscale, exposureMap = exposureMap, softenMask = softenMask, log = log)
             log("saving ${dims.first}×${dims.second}, ${bytes.size / 1024} KB")
-            saveDeveloped(context, bytes, source, recipe.film)
+            saveDeveloped(context, bytes, source, recipe.film, tag = if (pair) "DX" else null)
         }
     }
 
@@ -693,8 +700,59 @@ object Develop {
         )?.use { c -> if (c.moveToFirst()) android.content.ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, c.getLong(0)) else null }
     }
 
-    fun saveDeveloped(context: Context, bytes: ByteArray, source: Uri, film: String): Uri =
-        save(context, bytes, baseNameOf(context, source) + "_" + film.substringAfterLast('_') + ".jpg")
+    /**
+     * Named after its photo, so the roll pairs them: <photo>_<film>.jpg. A double exposure is named
+     * after its SECOND frame with a DX tag — <second>_DX_<film>.jpg — so that frame shows the double.
+     */
+    fun saveDeveloped(context: Context, bytes: ByteArray, source: Uri, film: String, tag: String? = null): Uri =
+        save(context, bytes, baseNameOf(context, source) + (if (tag != null) "_$tag" else "") + "_" + film.substringAfterLast('_') + ".jpg")
+
+    /**
+     * Two exposures on one frame: both RAWs decoded, and the second's light ADDED to the first's
+     * before the film sees it — as on film, where the frame simply receives both lots of light.
+     * So a black sky in one adds nothing and the other shows through; bright parts burn through
+     * and blend; and the film's own response decides how the overlap rolls off. The result takes
+     * the first frame's place in the shape of the picture.
+     */
+    fun openPair(context: Context, first: Uri, second: Uri, maxEdge: Int = 0, log: (String) -> Unit = {}): Source {
+        log("decoding both exposures…")
+        val a = openRaw(context, first, maxEdge, log)
+        try {
+            openRaw(context, second, maxEdge, log).use { b -> addLight(a, b) }
+        } catch (t: Throwable) { a.close(); throw t }
+        Log.i("Latent", "double exposure: ${a.width}x${a.height} with the second frame's light added")
+        return a
+    }
+
+    /**
+     * Adds [add]'s light into [dst]. Frames of the same size add pixel for pixel; otherwise (another
+     * lens, or the in-sensor crop) the second is fitted to cover the first's frame, centred, and
+     * sampled smoothly — the whole of what the viewfinder showed lands on the whole frame.
+     */
+    internal fun addLight(dst: Source, add: Source) {
+        val dw = dst.width; val dh = dst.height; val aw = add.width; val ah = add.height
+        val d = dst.image.data.order(ByteOrder.nativeOrder()).asFloatBuffer()
+        val a = add.image.data.order(ByteOrder.nativeOrder()).asFloatBuffer()
+        if (dw == aw && dh == ah) {
+            for (i in 0 until dw * dh * 3) d.put(i, d.get(i) + a.get(i))
+            return
+        }
+        val scale = maxOf(dw.toFloat() / aw, dh.toFloat() / ah)   // cover the frame
+        for (y in 0 until dh) {
+            val sy = ((y + 0.5f - dh / 2f) / scale + ah / 2f - 0.5f).coerceIn(0f, (ah - 1).toFloat())
+            val y0 = sy.toInt(); val y1 = minOf(y0 + 1, ah - 1); val fy = sy - y0
+            for (x in 0 until dw) {
+                val sx = ((x + 0.5f - dw / 2f) / scale + aw / 2f - 0.5f).coerceIn(0f, (aw - 1).toFloat())
+                val x0 = sx.toInt(); val x1 = minOf(x0 + 1, aw - 1); val fx = sx - x0
+                val o = (y * dw + x) * 3
+                for (c in 0 until 3) {
+                    val top = a.get((y0 * aw + x0) * 3 + c) * (1 - fx) + a.get((y0 * aw + x1) * 3 + c) * fx
+                    val bot = a.get((y1 * aw + x0) * 3 + c) * (1 - fx) + a.get((y1 * aw + x1) * 3 + c) * fx
+                    d.put(o + c, d.get(o + c) + top * (1 - fy) + bot * fy)
+                }
+            }
+        }
+    }
 
     private fun save(context: Context, bytes: ByteArray, name: String): Uri {
         val unique = uniqueName(context, name)
