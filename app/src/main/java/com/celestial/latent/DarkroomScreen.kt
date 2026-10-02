@@ -573,7 +573,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
             com.celestial.latent.develop.DarkroomPrefs.PRINT_SIZES.forEach { size ->
                 val on = printSize == size
                 Text(
-                    if (size == 1f) "1×" else "${size}×",
+                    com.celestial.latent.develop.DarkroomPrefs.label(size),
                     color = if (on) LatentColors.AmberInk else LatentColors.Text, fontSize = 11.sp,
                     modifier = Modifier.clip(RoundedCornerShape(999.dp))
                         .background(if (on) LatentColors.Amber else LatentColors.Surface)
@@ -600,7 +600,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
             // An honest estimate before you commit, rather than an explanation mid-wait.
             val heavy = recipe.diffusion || recipe.printDiffusion
             Text((if (isRaw) "FROM RAW" else "FILM OVER JPEG") + (if (heavy) " · WITH DIFFUSION, SLOW" else "") +
-                (if (printSize > 1f) " · ${printSize}× PRINT" else ""),
+                (if (printSize > 1f) " · ${com.celestial.latent.develop.DarkroomPrefs.label(printSize)} PRINT" else ""),
                 color = LatentColors.Line, fontSize = 9.sp, letterSpacing = 1.5.sp)
             Text(if (fullRunning) "Developing… ${elapsed}s" else "Develop full size", color = LatentColors.AmberInk, fontSize = 12.sp,
                 modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(LatentColors.Amber).combinedClickable(onClick = {

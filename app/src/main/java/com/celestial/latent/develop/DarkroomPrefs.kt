@@ -13,8 +13,14 @@ import android.content.Context
 object DarkroomPrefs {
     private const val FILE = "latent_darkroom"
 
-    /** The sizes offered. 2× is held back until a full-size export is measured on the phone. */
-    val PRINT_SIZES = listOf(1.0f, 1.25f, 1.5f)
+    /**
+     * The sizes offered. 1.5× was measured on the 15 Ultra (about 75 s, no trouble); 2× is offered
+     * with its memory peak logged, so 2.5× can be decided on a measurement rather than a guess.
+     */
+    val PRINT_SIZES = listOf(1.0f, 1.25f, 1.5f, 2.0f)
+
+    /** "1×", "1.25×", "2×" — never "2.0×". */
+    fun label(size: Float): String = (if (size % 1f == 0f) size.toInt().toString() else size.toString()) + "×"
 
     fun printSize(context: Context): Float =
         context.getSharedPreferences(FILE, Context.MODE_PRIVATE).getFloat("printSize", 1f)

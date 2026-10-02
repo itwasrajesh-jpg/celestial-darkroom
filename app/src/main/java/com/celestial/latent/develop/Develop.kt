@@ -1,5 +1,6 @@
 package com.celestial.latent.develop
 
+import android.app.ActivityManager
 import android.content.ContentValues
 import android.content.Context
 import android.net.Uri
@@ -9,6 +10,7 @@ import com.spectrafilm.engine.LinearImage
 import com.spectrafilm.engine.SpektraEngine
 import com.spectrafilm.libraw.RawDecoder
 import java.io.ByteArrayOutputStream
+import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
@@ -365,9 +367,15 @@ object Develop {
             Log.i("Latent", "print size ${upscale}×: ${source.width}x${source.height} -> about " +
                 "${(source.width * upscale).toInt()}x${(source.height * upscale).toInt()}")
         }
-        val jpeg = engineFor(context).use { engine ->
-            val result = if (preview) engine.simulatePreview(source.image, params) else engine.simulate(source.image, params)
-            result.use { r -> dims = r.width to r.height; toJpeg(r.data, r.width, r.height, r.colorSpace, ourSpace) }
+        // Full develops log their memory peak: it is what decides how large a print the phone can make.
+        val watch = if (!preview) MemoryWatch(context) else null
+        val jpeg = try {
+            engineFor(context).use { engine ->
+                val result = if (preview) engine.simulatePreview(source.image, params) else engine.simulate(source.image, params)
+                result.use { r -> dims = r.width to r.height; toJpeg(r.data, r.width, r.height, r.colorSpace, ourSpace) }
+            }
+        } finally {
+            watch?.finish("full develop ${dims.first}x${dims.second}" + (if (upscale > 1.001f) " at $upscale×" else ""))
         }
         Log.i("Latent", "render done: ${dims.first}x${dims.second} in ${(System.nanoTime() - t) / 1_000_000} ms")
         log((if (preview) "preview" else "full") + " ${dims.first}×${dims.second} in ${(System.nanoTime() - t) / 1_000_000} ms" +
@@ -375,6 +383,42 @@ object Develop {
         return jpeg to dims
     }
 
+
+    /**
+     * Watches this app's memory during a full develop, on a background thread, and logs the peak.
+     *
+     * Large prints are limited by memory, not time: the engine works in double precision, so a
+     * 50-megapixel image is over a gigabyte per working copy. If the phone runs short, Android simply
+     * ends the app, with no error to show. This measures how close a develop came, so the next size
+     * up is decided on numbers. Reads /proc/self/status (resident memory) every 100 ms.
+     */
+    private class MemoryWatch(context: Context) {
+        private fun residentMb(): Long = runCatching {
+            File("/proc/self/status").readLines().first { it.startsWith("VmRSS:") }
+                .trim().split(Regex("\\s+"))[1].toLong() / 1024
+        }.getOrDefault(-1L)
+        private val beforeMb = residentMb()
+        private val phone = ActivityManager.MemoryInfo().also {
+            (context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager).getMemoryInfo(it)
+        }
+        @Volatile private var peakMb = beforeMb
+        @Volatile private var watching = true
+        private val sampler = Thread {
+            while (watching) {
+                val now = residentMb(); if (now > peakMb) peakMb = now
+                try { Thread.sleep(100) } catch (_: InterruptedException) { break }
+            }
+        }.apply { isDaemon = true; start() }
+
+        fun finish(what: String) {
+            watching = false
+            sampler.interrupt(); runCatching { sampler.join(300) }
+            val end = residentMb(); if (end > peakMb) peakMb = end
+            Log.i("Latent", "memory for $what: ${beforeMb} MB before, peak ${peakMb} MB (+${peakMb - beforeMb} MB); " +
+                "the phone had ${phone.availMem / 1048576} MB free of ${phone.totalMem / 1048576} MB when it started" +
+                (if (phone.lowMemory) " (already low)" else ""))
+        }
+    }
 
     /**
      * The engine returns display-referred FLOAT RGB (three floats per pixel, 0..1) in its output
