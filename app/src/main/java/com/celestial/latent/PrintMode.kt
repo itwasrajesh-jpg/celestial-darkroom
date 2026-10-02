@@ -276,14 +276,17 @@ private fun stripAt(pos: Offset, areaW: Float, areaH: Float, aspect: Float): Int
 /** The three steps of printing. Steps that exist are tappable; one that doesn't yet says so. */
 @Composable
 private fun StepIndicator(active: Int, available: Int, onSelect: (Int) -> Unit, modifier: Modifier = Modifier) {
-    val steps = listOf("TEST STRIP", "COLOUR", "DODGE & BURN")
-    Row(modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+    // Four names in one row, measured: "TEST STRIP" and 16 dp gaps would need ~394 dp of the ~357
+    // a phone has, and the last would be crushed. "STRIP", 12 dp gaps and 1.2 sp letter spacing
+    // come to about 331 dp.
+    val steps = listOf("STRIP", "COLOUR", "DODGE & BURN", "SOFTEN")
+    Row(modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         steps.forEachIndexed { i, label ->
             val on = i == active
             val bar by animateFloatAsState(if (on) 1f else 0f, tween(260), label = "step")
             Column(Modifier.pointerInput(i) { detectTapGestures(onTap = { onSelect(i) }) }) {
                 Text("${i + 1}  $label", color = when { on -> LatentColors.Amber; i < available -> LatentColors.TextDim; else -> LatentColors.Line },
-                    fontSize = 10.sp, letterSpacing = 1.5.sp)
+                    fontSize = 10.sp, letterSpacing = 1.2.sp, maxLines = 1, softWrap = false)
                 Box(Modifier.padding(top = 4.dp).height(2.dp).width((40 * bar).dp).clip(RoundedCornerShape(1.dp)).background(LatentColors.Amber))
             }
         }
@@ -330,7 +333,8 @@ private class PrintCache {
 
 /**
  * PRINT mode: the darkroom done the way a printer works — by trying and choosing, not by sliders.
- * Test strip for how long, ring-around for what colour, then dodge and burn — where the light falls.
+ * Test strip for how long, ring-around for what colour, dodge and burn for where the light
+ * falls, and soften for where the diffusion glows.
  *
  * @param renderAt develops a preview of a recipe at a given size. It blocks and queues for the
  *   engine itself, so it is only ever called off the main thread.
@@ -343,7 +347,10 @@ fun PrintPanel(
     onFilters: (Float, Float) -> Unit,
     exposureMap: ExposureMap?,
     onExposureMap: (ExposureMap?) -> Unit,
-    renderWithMap: (Recipe, Int, ExposureMap?) -> Bitmap?,
+    softenMap: ExposureMap?,
+    onSoftenMap: (ExposureMap?) -> Unit,
+    onDiffusionOn: () -> Unit,
+    renderWithMasks: (Recipe, Int, ExposureMap?, ExposureMap?) -> Bitmap?,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -355,7 +362,7 @@ fun PrintPanel(
 
     Column(modifier.background(LatentColors.Background)) {
         StepIndicator(
-            active = step, available = 3,
+            active = step, available = 4,
             onSelect = { i -> if (i != step) Haptics.tick(context); step = i },
             modifier = Modifier.padding(horizontal = 18.dp).padding(top = 6.dp),
         )
@@ -376,7 +383,17 @@ fun PrintPanel(
             when (s) {
                 0 -> TestStripStep(recipe, render, onExposure, Modifier.fillMaxSize())
                 1 -> RingAroundStep(recipe, render, { r, e -> cache.peek(r, e) }, onFilters, Modifier.fillMaxSize())
-                else -> DodgeBurnStep(recipe, exposureMap, onExposureMap, renderWithMap, Modifier.fillMaxSize())
+                // each painting step shows the print with BOTH masks: it is one print
+                2 -> PaintStep(DODGE_BURN_SPEC, recipe, exposureMap, onExposureMap,
+                    renderWith = { r, e, m -> renderWithMasks(r, e, m, softenMap) },
+                    startMap = { a -> ExposureMap.blank(a) },
+                    modifier = Modifier.fillMaxSize())
+                else -> PaintStep(SOFTEN_SPEC, recipe, softenMap, onSoftenMap,
+                    renderWith = { r, e, m -> renderWithMasks(r, e, exposureMap, m) },
+                    // begin from what is on screen: softened everywhere if diffusion is on, else sharp
+                    startMap = { a -> ExposureMap.blank(a).also { if (recipe.diffusion) it.stops.fill(1f) } },
+                    modifier = Modifier.fillMaxSize(),
+                    onPaintPlus = onDiffusionOn)
             }
         }
     }
@@ -611,31 +628,89 @@ private val BURN_TINT = Color(0xFF3A1A0C)   // where light was added: warm and d
 private val DODGE_TINT = Color(0xFFF4ECE0)  // where it was held back: pale
 
 /**
- * Step three: dodge and burn — painting where the enlarger light falls. Burn adds light to a
- * place (darker), dodge holds it back (lighter), the way a printer works with a card and their
- * hands. While you paint, a soft overlay shows where; when you lift your finger, the print
+ * What one painting step paints, and how it reads: dodge & burn paints light, soften paints
+ * diffusion. The painting itself — brush, overlay, re-develop on lift, undo — is shared.
+ *
+ * min/max: the range a place can hold (stops of light; or 0..1 of diffusion).
+ * overlayFull: the value at which the guide overlay is at its strongest.
+ */
+private class PaintSpec(
+    val hint: String,
+    val minusLabel: String,
+    val plusLabel: String,
+    val min: Float,
+    val max: Float,
+    val overlayFull: Float,
+    val tintPlus: Color,
+    val tintMinus: Color,
+    val status: (ExposureMap?, Recipe) -> String,
+)
+
+private val DODGE_BURN_SPEC = PaintSpec(
+    hint = "Paint to burn (darker) or dodge (lighter). Lift your finger to see it develop.",
+    minusLabel = "Dodge", plusLabel = "Burn",
+    min = -ExposureMap.LIMIT, max = ExposureMap.LIMIT, overlayFull = ExposureMap.LIMIT,
+    tintPlus = BURN_TINT, tintMinus = DODGE_TINT,
+    status = { m, _ ->
+        if (m == null || m.isBlank) "untouched" else {
+            val (most, least) = m.extremes()
+            "+${String.format(Locale.US, "%.1f", most)} burned · −${String.format(Locale.US, "%.1f", least)} dodged"
+        }
+    },
+)
+
+/** A pale haze: where the diffusion filter's glow goes. */
+private val SOFT_TINT = Color(0xFFDCE6F2)
+
+private val SOFTEN_SPEC = PaintSpec(
+    hint = "Paint where the diffusion glows. Sharpen paints it away. Lift to see it develop.",
+    minusLabel = "Sharpen", plusLabel = "Soften",
+    min = 0f, max = 1f, overlayFull = 1f,
+    tintPlus = SOFT_TINT, tintMinus = SOFT_TINT,
+    status = { m, r ->
+        when {
+            !r.diffusion -> "diffusion is off"
+            m == null -> "softened everywhere"
+            else -> {
+                val pct = Math.round(m.stops.average().toFloat() * 100)
+                if (pct <= 0) "sharp everywhere" else "softened over $pct% of the picture"
+            }
+        }
+    },
+)
+
+/**
+ * A painting step: dodge & burn (where the enlarger light falls) or soften (where the diffusion
+ * filter glows). While you paint, a soft overlay shows where; when you lift your finger, the print
  * re-develops through the engine with the real effect and the overlay fades away.
  *
- * The mask belongs to this photo alone (see ExposureMaps) and applies wherever the photo is
- * previewed or printed. Test strips and the ring-around are made without it, as in a darkroom,
+ * Each mask belongs to this photo alone (see ExposureMaps) and applies wherever the photo is
+ * previewed or printed. Test strips and the ring-around are made without them, as in a darkroom,
  * where they come before the dodging.
+ *
+ * startMap: the mask to begin from on the first stroke, for a picture of this aspect.
+ * onPaintPlus: called when a stroke adds (burns, or softens).
  */
 @Composable
-private fun DodgeBurnStep(
+private fun PaintStep(
+    spec: PaintSpec,
     recipe: Recipe,
     map: ExposureMap?,
     onMap: (ExposureMap?) -> Unit,
     renderWith: (Recipe, Int, ExposureMap?) -> Bitmap?,
+    startMap: (Float) -> ExposureMap,
     modifier: Modifier = Modifier,
+    onPaintPlus: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val current by rememberUpdatedState(recipe)
+    val renderNow by rememberUpdatedState(renderWith)
     var working by remember { mutableStateOf(map?.copy()) }
     var print by remember { mutableStateOf<Bitmap?>(null) }
     var developing by remember { mutableStateOf(true) }
     var version by remember { mutableStateOf(0) }
-    var burn by remember { mutableStateOf(true) }
+    var plus by remember { mutableStateOf(true) }
     var brush by remember { mutableStateOf(1) }
     var strength by remember { mutableStateOf(1) }
     var showMask by remember { mutableStateOf(false) }
@@ -651,7 +726,7 @@ private fun DodgeBurnStep(
         if (version > 0) delay(180)
         developing = true
         val m = working
-        val bmp = withContext(Dispatchers.Default) { renderWith(current, DB_EDGE, m) }
+        val bmp = withContext(Dispatchers.Default) { renderNow(current, DB_EDGE, m) }
         if (!isActive) return@LaunchedEffect
         if (bmp != null) print = bmp
         developing = false
@@ -671,7 +746,7 @@ private fun DodgeBurnStep(
 
     /** Stamp the brush into the current stroke at a picture position (0..1 across and down). */
     fun stamp(u: Float, v: Float) {
-        val m = working ?: ExposureMap.blank(aspect).also { working = it }
+        val m = working ?: startMap(aspect).also { working = it }
         val st = stroke ?: FloatArray(m.width * m.height).also { stroke = it }
         val r = BRUSH[brush]
         // distances in units of the long edge, so the brush is round on any shape of picture
@@ -695,11 +770,12 @@ private fun DodgeBurnStep(
         val st = stroke ?: return
         stroke = null
         val base = working ?: return
-        val sign = if (burn) 1f else -1f
+        val sign = if (plus) 1f else -1f
         val next = base.copy()
         for (k in next.stops.indices) {
-            if (st[k] > 0f) next.stops[k] = (next.stops[k] + sign * STRENGTH[strength] * st[k]).coerceIn(-ExposureMap.LIMIT, ExposureMap.LIMIT)
+            if (st[k] > 0f) next.stops[k] = (next.stops[k] + sign * STRENGTH[strength] * st[k]).coerceIn(spec.min, spec.max)
         }
+        if (plus) onPaintPlus()
         // `working` still holds the mask as it was before the stroke (the stroke lived apart), so
         // commit records exactly that for undo
         commit(next)
@@ -709,12 +785,12 @@ private fun DodgeBurnStep(
     val overlayBitmap = remember(working, strokeTick) {
         val m = working ?: return@remember null
         val st = stroke
-        val sign = if (burn) 1f else -1f
+        val sign = if (plus) 1f else -1f
         val px = IntArray(m.width * m.height)
         for (k in px.indices) {
-            val sNow = m.stops[k] + (if (st != null) sign * STRENGTH[strength] * st[k] else 0f)
-            val a = (kotlin.math.abs(sNow) / ExposureMap.LIMIT).coerceIn(0f, 1f)
-            val tint = if (sNow >= 0f) BURN_TINT else DODGE_TINT
+            val sNow = (m.stops[k] + (if (st != null) sign * STRENGTH[strength] * st[k] else 0f)).coerceIn(spec.min, spec.max)
+            val a = (kotlin.math.abs(sNow) / spec.overlayFull).coerceIn(0f, 1f)
+            val tint = if (sNow >= 0f) spec.tintPlus else spec.tintMinus
             val alpha = (a * 200).toInt().coerceIn(0, 255)
             px[k] = (alpha shl 24) or ((tint.red * 255).toInt() shl 16) or ((tint.green * 255).toInt() shl 8) or (tint.blue * 255).toInt()
         }
@@ -723,7 +799,7 @@ private fun DodgeBurnStep(
 
     Column(modifier) {
         Text(
-            "Paint to burn (darker) or dodge (lighter). Lift your finger to see it develop.",
+            spec.hint,
             color = LatentColors.TextDim, fontSize = 11.sp,
             modifier = Modifier.padding(horizontal = 18.dp).padding(top = 10.dp),
         )
@@ -779,7 +855,7 @@ private fun DodgeBurnStep(
             horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically,
         ) {
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                listOf(false to "Dodge", true to "Burn").forEach { (b, label) -> Chip(label, on = burn == b) { burn = b } }
+                listOf(false to spec.minusLabel, true to spec.plusLabel).forEach { (b, label) -> Chip(label, on = plus == b) { plus = b } }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
                 for (i in 0..2) {
@@ -807,13 +883,8 @@ private fun DodgeBurnStep(
             Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            val (most, least) = working?.extremes() ?: Pair(0f, 0f)
             Text(
-                when {
-                    developing -> "developing…"
-                    working == null || working!!.isBlank -> "untouched"
-                    else -> "+${String.format(Locale.US, "%.1f", most)} burned · −${String.format(Locale.US, "%.1f", least)} dodged"
-                },
+                if (developing) "developing…" else spec.status(working, recipe),
                 color = LatentColors.Text, fontSize = 12.sp,
                 // takes what the buttons leave, and wraps if it must — the buttons are never squeezed
                 modifier = Modifier.weight(1f).padding(end = 8.dp),

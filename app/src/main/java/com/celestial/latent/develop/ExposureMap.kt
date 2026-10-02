@@ -84,14 +84,18 @@ class ExposureMap(val width: Int, val height: Int, val stops: FloatArray) {
 object ExposureMaps {
     private const val MAGIC = 0x4C444231   // "LDB1"
 
-    private fun file(context: Context, photo: Uri): File {
+    /** Kinds of mask, each in its own folder. */
+    const val DODGE_BURN = "dodgeburn"
+    const val SOFTEN = "soften"
+
+    private fun file(context: Context, photo: Uri, kind: String): File {
         val digest = MessageDigest.getInstance("SHA-1").digest(photo.toString().toByteArray())
         val name = digest.joinToString("") { "%02x".format(it) }
-        return File(File(context.filesDir, "dodgeburn").apply { mkdirs() }, "$name.bin")
+        return File(File(context.filesDir, kind).apply { mkdirs() }, "$name.bin")
     }
 
-    fun load(context: Context, photo: Uri): ExposureMap? = runCatching {
-        val f = file(context, photo)
+    fun load(context: Context, photo: Uri, kind: String = DODGE_BURN): ExposureMap? = runCatching {
+        val f = file(context, photo, kind)
         if (!f.exists()) return null
         DataInputStream(f.inputStream().buffered()).use { inp ->
             if (inp.readInt() != MAGIC) return null
@@ -101,11 +105,15 @@ object ExposureMaps {
         }
     }.onFailure { Log.w("Latent", "could not read a dodge & burn mask: ${it.message}") }.getOrNull()
 
-    /** Saves the mask; a blank or absent one removes the file, so an untouched photo leaves nothing. */
-    fun save(context: Context, photo: Uri, map: ExposureMap?) {
+    /**
+     * Saves the mask; an absent one removes the file. A blank dodge & burn mask is also removed (it
+     * changes nothing) — but a blank soften mask means "sharp everywhere", which is a choice, so
+     * [keepBlank] keeps it.
+     */
+    fun save(context: Context, photo: Uri, map: ExposureMap?, kind: String = DODGE_BURN, keepBlank: Boolean = false) {
         runCatching {
-            val f = file(context, photo)
-            if (map == null || map.isBlank) { f.delete(); return }
+            val f = file(context, photo, kind)
+            if (map == null || (map.isBlank && !keepBlank)) { f.delete(); return }
             val tmp = File(f.parentFile, f.name + ".tmp")
             DataOutputStream(tmp.outputStream().buffered()).use { out ->
                 out.writeInt(MAGIC); out.writeInt(map.width); out.writeInt(map.height)

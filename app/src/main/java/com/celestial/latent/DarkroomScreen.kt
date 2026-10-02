@@ -89,6 +89,8 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
     var printing by remember { mutableStateOf(false) }
     // This photo's dodge & burn — its own, never part of the shared recipe.
     var exposureMap by remember { mutableStateOf(ExposureMaps.load(context, source)) }
+    // ...and where its diffusion goes, if painted (null = the plain setting: everywhere when on).
+    var softenMap by remember { mutableStateOf(ExposureMaps.load(context, source, ExposureMaps.SOFTEN)) }
     var preview by remember { mutableStateOf<Bitmap?>(null) }
     var original by remember { mutableStateOf<Bitmap?>(null) }
     var comparing by remember { mutableStateOf(false) }
@@ -131,12 +133,12 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                 // colour noise or the fast diffusion re-decodes instead of being ignored.
                 val iso = Develop.isoOf(context, source)
                 // The working buffer belongs to the cache and is reused; never closed here.
-                src = Develop.openCached(context, source, isRaw, DECODE_EDGE, r, iso) { m -> status = m }
+                src = Develop.openCached(context, source, isRaw, DECODE_EDGE, r, iso, softenMask = softenMap) { m -> status = m }
                 // Middle of the frame first on the quick pass: it appears sooner and reads the same.
                 val target = if (cropFraction < 1f) Develop.centreCrop(src!!, cropFraction).also { cropped = it } else src!!
                 val t0 = System.nanoTime()
                 val map = exposureMap?.let { if (cropFraction < 1f) it.centreCrop(cropFraction) else it }
-                val (bytes, _) = Develop.render(context, target, r, preview = true, exposureMap = map) { m -> status = m }
+                val (bytes, _) = Develop.render(context, target, r, preview = true, exposureMap = map, softenMask = softenMap) { m -> status = m }
                 lastRenderMs = ((System.nanoTime() - t0) / 1_000_000).toInt()
                 preview = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
                 previewIsPartial = cropFraction < 1f
@@ -155,13 +157,13 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
      * the main thread; queues for the engine lane like every other render, so two engines never run
      * at once. Never called while the lane is already held.
      */
-    fun renderStill(r: Recipe, edge: Int, map: ExposureMap? = null): Bitmap? {
+    fun renderStill(r: Recipe, edge: Int, map: ExposureMap? = null, soften: ExposureMap? = null): Bitmap? {
         val q = com.celestial.latent.develop.DevelopQueue
         q.engineLane.acquire()
         return try {
             val iso = Develop.isoOf(context, source)
-            val s0 = Develop.openCached(context, source, isRaw, DECODE_EDGE, r, iso) { }
-            val (bytes, _) = Develop.render(context, s0, r.copy(previewMaxSize = edge), preview = true, exposureMap = map)
+            val s0 = Develop.openCached(context, source, isRaw, DECODE_EDGE, r, iso, softenMask = soften) { }
+            val (bytes, _) = Develop.render(context, s0, r.copy(previewMaxSize = edge), preview = true, exposureMap = map, softenMask = soften)
             BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
         } catch (t: Throwable) {
             android.util.Log.w("Latent", "print strip failed: ${t.message}"); null
@@ -204,6 +206,15 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { ExposureMaps.save(context, source, m) }
         if (!printing && src != null) render(fast = false)
     }
+    // The same for the soften mask. Kept even when all sharp: that is a choice, not "untouched".
+    LaunchedEffect(softenMap) {
+        delay(400)
+        val m = softenMap
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            ExposureMaps.save(context, source, m, ExposureMaps.SOFTEN, keepBlank = true)
+        }
+        if (!printing && src != null) render(fast = false)
+    }
     // Back from PRINT: the strips may have changed the exposure while the preview slept.
     LaunchedEffect(printing) { if (!printing && src != null) render(fast = false) }
     // The decoded copy is kept by Develop.Cache so coming back is instant; nothing to free here.
@@ -238,7 +249,10 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                     onFilters = { y, m -> set { copy(yFilterShift = y, mFilterShift = m) } },
                     exposureMap = exposureMap,
                     onExposureMap = { exposureMap = it },
-                    renderWithMap = { r, edge, m -> renderStill(r, edge, m) },
+                    softenMap = softenMap,
+                    onSoftenMap = { softenMap = it },
+                    onDiffusionOn = { if (!recipe.diffusion) set { copy(diffusion = true) } },
+                    renderWithMasks = { r, edge, m, sm -> renderStill(r, edge, m, sm) },
                     modifier = Modifier.fillMaxSize(),
                 )
             } else Column(Modifier.fillMaxSize()) {
@@ -657,7 +671,8 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
             val heavy = recipe.diffusion || recipe.printDiffusion
             Text((if (isRaw) "FROM RAW" else "FILM OVER JPEG") + (if (heavy) " · WITH DIFFUSION, SLOW" else "") +
                 (if (printSize > 1f) " · ${com.celestial.latent.develop.DarkroomPrefs.label(printSize)} PRINT" else "") +
-                (if (exposureMap?.isBlank == false) " · DODGED & BURNED" else ""),
+                (if (exposureMap?.isBlank == false) " · DODGED & BURNED" else "") +
+                (if (softenMap != null && recipe.diffusion) " · SOFTENED IN PLACES" else ""),
                 color = LatentColors.Line, fontSize = 9.sp, letterSpacing = 1.5.sp, lineHeight = 13.sp,
                 // takes the space the button leaves and wraps if it must — it used to crush the button
                 modifier = Modifier.weight(1f).padding(end = 12.dp))
@@ -668,7 +683,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                     Haptics.click(context)
                     fullRunning = true; fullStarted = System.currentTimeMillis(); status = "full size: queued"
                     fullJob = com.celestial.latent.develop.DevelopQueue.submitFull(
-                        context, source, isRaw, recipe, upscale = printSize, exposureMap = exposureMap,
+                        context, source, isRaw, recipe, upscale = printSize, exposureMap = exposureMap, softenMask = softenMap,
                         onStatus = { m -> status = "full size: $m" },
                         onDone = { out ->
                             fullRunning = false; fullJob = null

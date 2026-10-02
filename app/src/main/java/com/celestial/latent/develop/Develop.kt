@@ -123,7 +123,8 @@ object Develop {
      * pixels in place, so their settings are part of the key: changing either must re-decode,
      * otherwise the edit would silently do nothing on an already-processed copy.
      */
-    fun openCached(context: Context, source: Uri, isRaw: Boolean, maxEdge: Int, recipe: Recipe, iso: Int, log: (String) -> Unit = {}): Source {
+    fun openCached(context: Context, source: Uri, isRaw: Boolean, maxEdge: Int, recipe: Recipe, iso: Int,
+                   softenMask: ExposureMap? = null, log: (String) -> Unit = {}): Source {
         // The pristine decode is cached on its own, so changing a pre-engine setting costs a
         // copy rather than a fresh decode of the file (which was over a second every time).
         val key = "$source@$maxEdge"
@@ -139,7 +140,7 @@ object Develop {
             ?: pristine.blankLike().also { Cache.put(workKey, it) }
         working.refillFrom(pristine)
         denoiseSource(working, recipe, iso, log)
-        fastDiffusionSource(working, recipe, preview = true, log = log)
+        fastDiffusionSource(working, recipe, preview = true, softenMask = softenMask, log = log)
         fastPrintDiffusionSource(working, recipe, preview = true, log = log)
         return working
     }
@@ -299,13 +300,18 @@ object Develop {
         source.printDiffused = true
     }
 
-    fun fastDiffusionSource(source: Source, recipe: Recipe, preview: Boolean = false, log: (String) -> Unit = {}) {
-        // Previews always take the fast path; only the export honours the setting.
-        if (!((recipe.fastDiffusion || preview) && recipe.diffusion)) return
+    fun fastDiffusionSource(source: Source, recipe: Recipe, preview: Boolean = false,
+                            softenMask: ExposureMap? = null, log: (String) -> Unit = {}) {
+        // Previews always take the fast path; only the export honours the setting — except with a
+        // painted soften mask, which only this path can follow (the engine's own cannot be painted).
+        // The FULL switch stays the master: diffusion off is off everywhere, mask or not.
+        if (!((recipe.fastDiffusion || preview || softenMask != null) && recipe.diffusion)) return
         if (source.diffused) return
-        log("diffusion filter")
+        log(if (softenMask != null) "diffusion filter, where painted" else "diffusion filter")
         val longest = maxOf(source.width, source.height)
         val pixelSizeUm = recipe.filmFormatMm * 1000f / longest
+        // Painted: keep the sharp picture, diffuse, then blend the two by the mask.
+        val sharp = if (softenMask != null) scratchCopy(source) else null
         FilmDiffusion.apply(
             source.image.data, source.width, source.height,
             recipe.diffusionFamily, recipe.diffusionStrength, recipe.diffusionScale,
@@ -314,7 +320,49 @@ object Develop {
             recipe.diffusionBloom, recipe.diffusionBloomSize,
             recipe.diffusionWarmth, pixelSizeUm,
         )
+        if (sharp != null && softenMask != null) blendByMask(source, sharp, softenMask)
         source.diffused = true
+    }
+
+    /**
+     * One reusable buffer for the sharp copy, so painting does not set aside a new one on every
+     * repaint. Renders never overlap (they queue for the engine lane), so one is enough. A very
+     * large one (a full-size develop) is let go afterwards rather than held.
+     */
+    @Volatile private var scratch: java.nio.ByteBuffer? = null
+
+    private fun scratchCopy(source: Source): java.nio.ByteBuffer {
+        val n = source.width * source.height * 3 * 4
+        val buf = scratch?.takeIf { it.capacity() >= n }
+            ?: java.nio.ByteBuffer.allocateDirect(n).order(java.nio.ByteOrder.nativeOrder()).also { scratch = it }
+        buf.clear()
+        val src = source.image.data.duplicate().order(java.nio.ByteOrder.nativeOrder())
+        src.clear(); src.limit(n)
+        buf.put(src); buf.flip()
+        return buf
+    }
+
+    /**
+     * out = diffused × mask + sharp × (1 − mask), the mask sampled at each pixel's place. Written
+     * this way it is exact at both ends — a mask of 1 gives the diffused picture bit for bit, so
+     * "softened everywhere" painted is the same as the plain setting (the other form,
+     * sharp + (diffused − sharp) × mask, leaves a rounding residue at 1).
+     */
+    private fun blendByMask(source: Source, sharp: java.nio.ByteBuffer, mask: ExposureMap) {
+        val w = source.width; val h = source.height
+        val out = source.image.data.order(java.nio.ByteOrder.nativeOrder()).asFloatBuffer()
+        val sh = sharp.order(java.nio.ByteOrder.nativeOrder()).asFloatBuffer()
+        for (y in 0 until h) {
+            val v = (y + 0.5f) / h
+            for (x in 0 until w) {
+                val m = mask.sample((x + 0.5f) / w, v).coerceIn(0f, 1f)
+                val i = (y * w + x) * 3
+                for (c in 0 until 3) {
+                    out.put(i + c, out.get(i + c) * m + sh.get(i + c) * (1f - m))
+                }
+            }
+        }
+        if (sharp.capacity() > 64 * 1024 * 1024) scratch = null   // a full-size copy is not kept
     }
 
     /**
@@ -348,7 +396,7 @@ object Develop {
      *   would only get slower.
      */
     fun render(context: Context, source: Source, recipe: Recipe, preview: Boolean, upscale: Float = 1f,
-               exposureMap: ExposureMap? = null, log: (String) -> Unit = {}): Pair<ByteArray, Pair<Int, Int>> {
+               exposureMap: ExposureMap? = null, softenMask: ExposureMap? = null, log: (String) -> Unit = {}): Pair<ByteArray, Pair<Int, Int>> {
         val t = System.nanoTime()
         Log.i("Latent", "render start: source ${source.width}x${source.height}, preview=$preview, cap=${recipe.previewMaxSize}")
         Log.i("Latent", "recipe: " + sanitised(recipe).summary())
@@ -358,7 +406,7 @@ object Develop {
             // Our own filter has already run on the pixels, so the engine's LENS filter stays
             // off — but the enlarger's is a different stage, later in the chain, and is left to
             // the engine. Switching both off was dropping half the glow.
-            .let { if (it.diffusion && (it.fastDiffusion || preview)) it.copy(diffusion = false) else it }
+            .let { if (it.diffusion && (it.fastDiffusion || preview || softenMask != null)) it.copy(diffusion = false) else it }
             .let { if (it.printDiffusion && (it.fastDiffusion || preview)) it.copy(printDiffusion = false) else it }
         // Our own spaces are built from the engine's sRGB output, so ask it for sRGB.
         val ourSpace = if (OutputSpace.isOurs(base.outputColorSpace)) base.outputColorSpace else ""
@@ -636,15 +684,15 @@ object Develop {
 
     /** Full-resolution develop with progress, logging and a new file each time. */
     fun developFull(context: Context, source: Uri, isRaw: Boolean, recipe: Recipe, maxEdge: Int = 0, upscale: Float = 1f,
-                    exposureMap: ExposureMap? = null, log: (String) -> Unit = {}): Uri {
+                    exposureMap: ExposureMap? = null, softenMask: ExposureMap? = null, log: (String) -> Unit = {}): Uri {
         log(if (maxEdge > 0) "decoding…" else "decoding at full size…")
         val src = if (isRaw) openRaw(context, source, maxEdge, log) else openImage(context, source, maxEdge)
         return src.use { s ->
             denoiseSource(s, recipe, isoOf(context, source), log)
-            fastDiffusionSource(s, recipe, preview = false, log = log)
+            fastDiffusionSource(s, recipe, preview = false, softenMask = softenMask, log = log)
             fastPrintDiffusionSource(s, recipe, preview = false, log = log)
             log("developing ${s.width}×${s.height}…")
-            val (bytes, dims) = render(context, s, recipe, preview = false, upscale = upscale, exposureMap = exposureMap, log = log)
+            val (bytes, dims) = render(context, s, recipe, preview = false, upscale = upscale, exposureMap = exposureMap, softenMask = softenMask, log = log)
             log("saving ${dims.first}×${dims.second}, ${bytes.size / 1024} KB")
             saveDeveloped(context, bytes, source, recipe.film)
         }
