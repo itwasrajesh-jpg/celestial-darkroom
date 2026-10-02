@@ -378,7 +378,7 @@ fun CameraScreen(
                 )
             }
             val modes = listOfNotNull(
-                if (settings.inSensorZoomJpeg && controls.zoom > 1.001f) "ISZ" else null,
+                if (settings.inSensorZoomJpeg && Lenses.isXiaomi15Ultra && controls.zoom > 1.001f) "ISZ" else null,
                 if (settings.burstMode) "BURST" else null, if (settings.timerSeconds > 0) "${settings.timerSeconds}S" else null,
             )
             val tagLabels = remember(settings.vendorTags, lens) { if (controller.hasCharacteristics) controller.activeTagLabels() else emptyList() }
@@ -431,7 +431,7 @@ fun CameraScreen(
             if (drawerOpen) {
                 Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(8.dp).clip(RoundedCornerShape(12.dp)).background(Color(0xEE2C2C2A)).padding(8.dp)) {
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Tile("In-sensor ×2", settings.inSensorZoomJpeg, Modifier.weight(1f)) { onSettingsChange(settings.copy(inSensorZoomJpeg = it)) }
+                        if (Lenses.isXiaomi15Ultra) Tile("In-sensor ×2", settings.inSensorZoomJpeg, Modifier.weight(1f)) { onSettingsChange(settings.copy(inSensorZoomJpeg = it)) }
                         Tile("RAW + JPEG", settings.saveJpeg, Modifier.weight(1f)) { onSettingsChange(settings.copy(saveJpeg = it)) }
                         Tile("Gridlines", settings.gridlines, Modifier.weight(1f)) { onSettingsChange(settings.copy(gridlines = it)) }
                         Tile("Haptics", settings.haptics, Modifier.weight(1f)) { onSettingsChange(settings.copy(haptics = it)) }

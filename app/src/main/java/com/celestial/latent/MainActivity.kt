@@ -47,6 +47,8 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         CrashLog.install(this)
+        // Before anything reads the lens list or the saved default lens.
+        com.celestial.latent.camera.Lenses.discover(this)
         enableEdgeToEdge()
         setContent { LatentTheme { Root() } }
     }

@@ -68,7 +68,7 @@ fun SettingsScreen(settings: AppSettings, onChange: (AppSettings) -> Unit, onOpe
         ) { onChange(settings.copy(saveJpeg = it)) }
 
         Section("Shooting")
-        ToggleRow("In-sensor zoom at ×2", "Asks the driver for the sensor's native centre crop while ×2 is on (JPEG path; the RAW stays the full frame). Nothing is sent at normal zoom.", settings.inSensorZoomJpeg) { onChange(settings.copy(inSensorZoomJpeg = it)) }
+        if (Lenses.isXiaomi15Ultra) ToggleRow("In-sensor zoom at ×2", "Asks the driver for the sensor's native centre crop while ×2 is on (JPEG path; the RAW stays the full frame). Nothing is sent at normal zoom.", settings.inSensorZoomJpeg) { onChange(settings.copy(inSensorZoomJpeg = it)) }
         ToggleRow("Open tele lenses directly when zoomed", "Stops the logical camera handing the frame to another sensor mid-zoom (the visible switch and refocus).", settings.teleZoomDirect) { onChange(settings.copy(teleZoomDirect = it)) }
         ToggleRow("Volume buttons take the photo", "Either volume key acts as the shutter", settings.volumeShutter) { onChange(settings.copy(volumeShutter = it)) }
         ToggleRow("Haptics", "Click on the shutter, ticks on slider steps and lens changes", settings.haptics) { onChange(settings.copy(haptics = it)) }
@@ -93,7 +93,7 @@ fun SettingsScreen(settings: AppSettings, onChange: (AppSettings) -> Unit, onOpe
         Text("Xiaomi's own bokeh and night modes via Android's Camera Extensions. JPEG only, main camera.", color = LatentColors.TextDim, fontSize = 12.sp)
 
         Section("Diagnostics")
-        OptionRow(
+        if (Lenses.isXiaomi15Ultra) OptionRow(
             title = "Camera path",
             subtitle = "Which logical camera the lens is reached through, or open the lens directly. Vendor keys differ per path. Takes effect on next lens switch.",
             options = listOf("0" to "0", "6" to "6", "7" to "7", "Direct" to "direct"),

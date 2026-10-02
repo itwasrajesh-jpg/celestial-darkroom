@@ -88,7 +88,7 @@ class CameraController(
     private fun sessionSignature() = listOf(
         lens.physicalId, cameraPath, activeOpmode.toString(), wantJpeg.toString(),
         allTags().joinToString { it.name + it.scope + it.type + it.value },
-        (teleZoomDirect && controls.zoom > 1.001f && lens.physicalId != "2").toString(),
+        (teleZoomDirect && controls.zoom > 1.001f && !lens.isMain).toString(),
     ).joinToString("|")
     private var openSignature: String? = null
     @Volatile private var opening = false
@@ -107,7 +107,7 @@ class CameraController(
     private fun allTags(): List<VendorTagSpec> {
         // Only the tags meant for this lens: a sensor mode valid on one sensor breaks the others.
         val out = ArrayList(vendorTags.filter { it.name.isNotBlank() && (it.lens == "all" || it.lens == lens.physicalId) })
-        if (inSensorZoomJpeg && controls.zoom > 1.001f && out.none { it.name == ISZ_KEY }) out += VendorTagSpec(ISZ_KEY, "session", "i32", "1")
+        if (inSensorZoomJpeg && Lenses.isXiaomi15Ultra && controls.zoom > 1.001f && out.none { it.name == ISZ_KEY }) out += VendorTagSpec(ISZ_KEY, "session", "i32", "1")
         return out
     }
     @Volatile var onVendorEcho: (String) -> Unit = {}
@@ -160,10 +160,13 @@ class CameraController(
             this.previewSurface = surface
             // A zoom ratio on a logical multi-camera lets the driver hand the frame to another sensor
             // (visible switch + refocus). Opening the lens directly keeps it on the sensor we chose.
-            val zoomedTele = teleZoomDirect && controls.zoom > 1.001f && lens.physicalId != "2"
-            directOpen = cameraPath == "direct" || fallbackDirect || zoomedTele
+            val zoomedTele = teleZoomDirect && controls.zoom > 1.001f && !lens.isMain
+            // The camera-path choice is a 15 Ultra setting; elsewhere, the discovered logical camera.
+            val path = if (Lenses.isXiaomi15Ultra) cameraPath else Lenses.LOGICAL_ID
+            // A lens that is a camera of its own cannot be reached through the logical camera.
+            directOpen = path == "direct" || fallbackDirect || zoomedTele || lens.standalone
             if (zoomedTele) log("zoom on ${lens.name}: opening the lens directly to stop the logical camera switching sensors")
-            logicalId = if (cameraPath == "direct") Lenses.LOGICAL_ID else cameraPath
+            logicalId = if (path == "direct") Lenses.LOGICAL_ID else path
             try {
                 physChars = cm.getCameraCharacteristics(lens.physicalId)
                 afRegion = null; afTriggerPending = false; lastTransform = null; lastGains = null
@@ -292,10 +295,10 @@ class CameraController(
     }
 
     fun setControls(c: Controls) = handler.post {
-        val wasZoomedTele = teleZoomDirect && controls.zoom > 1.001f && lens.physicalId != "2"
+        val wasZoomedTele = teleZoomDirect && controls.zoom > 1.001f && !lens.isMain
         val crossedZoom = (controls.zoom > 1.001f) != (c.zoom > 1.001f)
         controls = c
-        val isZoomedTele = teleZoomDirect && c.zoom > 1.001f && lens.physicalId != "2"
+        val isZoomedTele = teleZoomDirect && c.zoom > 1.001f && !lens.isMain
         if (wasZoomedTele != isZoomedTele || (crossedZoom && inSensorZoomJpeg)) previewSurface?.let { open(lens, it) } else updatePreview()
     }
     fun setAntibanding(mode: Int) = handler.post { antibanding = mode; updatePreview() }

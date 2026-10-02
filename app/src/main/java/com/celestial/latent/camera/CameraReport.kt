@@ -25,6 +25,9 @@ object CameraReport {
         sb.appendLine("Device: ${Build.MANUFACTURER} ${Build.MODEL} (${Build.DEVICE})")
         sb.appendLine("Android ${Build.VERSION.RELEASE} (SDK ${Build.VERSION.SDK_INT}), build ${Build.DISPLAY}")
         sb.appendLine()
+        sb.appendLine("LENSES LATENT FOUND")
+        sb.appendLine(Lenses.report)
+        sb.appendLine()
 
         val ids = try { cm.cameraIdList.toList() } catch (t: Throwable) { sb.appendLine("cameraIdList failed: $t"); emptyList() }
         sb.appendLine("Public camera IDs: $ids")
