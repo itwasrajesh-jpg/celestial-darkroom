@@ -18,6 +18,8 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -26,6 +28,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
@@ -56,6 +59,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.celestial.latent.develop.PRINT_EXPOSURE_MAX
 import com.celestial.latent.develop.PRINT_EXPOSURE_MIN
+import com.celestial.latent.develop.ExposureMap
 import com.celestial.latent.develop.Recipe
 import com.celestial.latent.ui.LatentColors
 import kotlinx.coroutines.Dispatchers
@@ -326,7 +330,7 @@ private class PrintCache {
 
 /**
  * PRINT mode: the darkroom done the way a printer works — by trying and choosing, not by sliders.
- * Test strip for how long, ring-around for what colour; dodge and burn comes next.
+ * Test strip for how long, ring-around for what colour, then dodge and burn — where the light falls.
  *
  * @param renderAt develops a preview of a recipe at a given size. It blocks and queues for the
  *   engine itself, so it is only ever called off the main thread.
@@ -337,6 +341,9 @@ fun PrintPanel(
     renderAt: (Recipe, Int) -> Bitmap?,
     onExposure: (Float) -> Unit,
     onFilters: (Float, Float) -> Unit,
+    exposureMap: ExposureMap?,
+    onExposureMap: (ExposureMap?) -> Unit,
+    renderWithMap: (Recipe, Int, ExposureMap?) -> Bitmap?,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -348,11 +355,8 @@ fun PrintPanel(
 
     Column(modifier.background(LatentColors.Background)) {
         StepIndicator(
-            active = step, available = 2,
-            onSelect = { i ->
-                if (i < 2) { if (i != step) Haptics.tick(context); step = i }
-                else note = "Dodge & burn is coming next."
-            },
+            active = step, available = 3,
+            onSelect = { i -> if (i != step) Haptics.tick(context); step = i },
             modifier = Modifier.padding(horizontal = 18.dp).padding(top = 6.dp),
         )
         val noteAlpha by animateFloatAsState(if (note.isNotEmpty()) 1f else 0f, tween(240), label = "note")
@@ -371,7 +375,8 @@ fun PrintPanel(
         ) { s ->
             when (s) {
                 0 -> TestStripStep(recipe, render, onExposure, Modifier.fillMaxSize())
-                else -> RingAroundStep(recipe, render, { r, e -> cache.peek(r, e) }, onFilters, Modifier.fillMaxSize())
+                1 -> RingAroundStep(recipe, render, { r, e -> cache.peek(r, e) }, onFilters, Modifier.fillMaxSize())
+                else -> DodgeBurnStep(recipe, exposureMap, onExposureMap, renderWithMap, Modifier.fillMaxSize())
             }
         }
     }
@@ -590,4 +595,254 @@ private fun ringGeometry(w: Float, h: Float, aspect: Float, density: Float): Rin
     if (need > ah) { tileH = (ah - 3 * extra - 2 * gap) / 3f; tileW = tileH * aspect }
     val totalW = 3 * tileW + 2 * gap; val totalH = 3 * tileH + 3 * extra + 2 * gap
     return RingGeometry((w - totalW) / 2f, (h - totalH) / 2f, tileW, tileH, gap, extra)
+}
+
+// ---------------------------------------------------------------------------------------------
+// Step three: dodge and burn.
+// ---------------------------------------------------------------------------------------------
+
+/** Dodge & burn prints are viewed large, so they are developed at the darkroom's fine size. */
+private const val DB_EDGE = 640
+/** Brush radius, as a fraction of the picture's long edge: small, medium, large. */
+private val BRUSH = floatArrayOf(0.045f, 0.085f, 0.15f)
+/** Stops added by one full pass at the centre of the brush: gentle, medium, strong. */
+private val STRENGTH = floatArrayOf(0.25f, 0.5f, 1.0f)
+private val BURN_TINT = Color(0xFF3A1A0C)   // where light was added: warm and dark
+private val DODGE_TINT = Color(0xFFF4ECE0)  // where it was held back: pale
+
+/**
+ * Step three: dodge and burn — painting where the enlarger light falls. Burn adds light to a
+ * place (darker), dodge holds it back (lighter), the way a printer works with a card and their
+ * hands. While you paint, a soft overlay shows where; when you lift your finger, the print
+ * re-develops through the engine with the real effect and the overlay fades away.
+ *
+ * The mask belongs to this photo alone (see ExposureMaps) and applies wherever the photo is
+ * previewed or printed. Test strips and the ring-around are made without it, as in a darkroom,
+ * where they come before the dodging.
+ */
+@Composable
+private fun DodgeBurnStep(
+    recipe: Recipe,
+    map: ExposureMap?,
+    onMap: (ExposureMap?) -> Unit,
+    renderWith: (Recipe, Int, ExposureMap?) -> Bitmap?,
+    modifier: Modifier = Modifier,
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val current by rememberUpdatedState(recipe)
+    var working by remember { mutableStateOf(map?.copy()) }
+    var print by remember { mutableStateOf<Bitmap?>(null) }
+    var developing by remember { mutableStateOf(true) }
+    var version by remember { mutableStateOf(0) }
+    var burn by remember { mutableStateOf(true) }
+    var brush by remember { mutableStateOf(1) }
+    var strength by remember { mutableStateOf(1) }
+    var showMask by remember { mutableStateOf(false) }
+    var stroke by remember { mutableStateOf<FloatArray?>(null) }
+    var strokeTick by remember { mutableStateOf(0) }
+    val overlay = remember { Animatable(0f) }
+    val undo = remember { ArrayDeque<ExposureMap?>() }
+    val redo = remember { ArrayDeque<ExposureMap?>() }
+    var historyTick by remember { mutableStateOf(0) }
+
+    // Develop the print with the mask, a moment after the last stroke (so quick strokes coalesce).
+    LaunchedEffect(version) {
+        if (version > 0) delay(180)
+        developing = true
+        val m = working
+        val bmp = withContext(Dispatchers.Default) { renderWith(current, DB_EDGE, m) }
+        if (!isActive) return@LaunchedEffect
+        if (bmp != null) print = bmp
+        developing = false
+        // the real print now shows the effect: the guide overlay steps back
+        overlay.animateTo(if (showMask) 0.55f else 0f, tween(520, easing = FastOutSlowInEasing))
+    }
+    LaunchedEffect(showMask) { if (!developing) overlay.animateTo(if (showMask) 0.55f else 0f, tween(260)) }
+
+    val aspect = print?.let { it.width.toFloat() / it.height } ?: (3f / 4f)
+
+    /** Commit a change to the mask: remember the old one for undo, show and save the new. */
+    fun commit(next: ExposureMap?) {
+        undo.addLast(working?.copy()); if (undo.size > 30) undo.removeFirst()
+        redo.clear(); historyTick++
+        working = next; onMap(next); version++
+    }
+
+    /** Stamp the brush into the current stroke at a picture position (0..1 across and down). */
+    fun stamp(u: Float, v: Float) {
+        val m = working ?: ExposureMap.blank(aspect).also { working = it }
+        val st = stroke ?: FloatArray(m.width * m.height).also { stroke = it }
+        val r = BRUSH[brush]
+        // distances in units of the long edge, so the brush is round on any shape of picture
+        val aw = if (aspect >= 1f) 1f else aspect
+        val ah = if (aspect >= 1f) 1f / aspect else 1f
+        val i0 = ((u - r / aw) * m.width).toInt().coerceAtLeast(0); val i1 = ((u + r / aw) * m.width).toInt().coerceAtMost(m.width - 1)
+        val j0 = ((v - r / ah) * m.height).toInt().coerceAtLeast(0); val j1 = ((v + r / ah) * m.height).toInt().coerceAtMost(m.height - 1)
+        for (j in j0..j1) for (i in i0..i1) {
+            val dx = ((i + 0.5f) / m.width - u) * aw; val dy = ((j + 0.5f) / m.height - v) * ah
+            val d = kotlin.math.sqrt(dx * dx + dy * dy) / r
+            if (d >= 1f) continue
+            val t = 1f - d; val fall = t * t * (3f - 2f * t)          // soft edge, like a card's shadow
+            val k = j * m.width + i
+            if (fall > st[k]) st[k] = fall
+        }
+        strokeTick++
+    }
+
+    /** The finger lifted: add the stroke to the mask. */
+    fun endStroke() {
+        val st = stroke ?: return
+        stroke = null
+        val base = working ?: return
+        val sign = if (burn) 1f else -1f
+        val next = base.copy()
+        for (k in next.stops.indices) {
+            if (st[k] > 0f) next.stops[k] = (next.stops[k] + sign * STRENGTH[strength] * st[k]).coerceIn(-ExposureMap.LIMIT, ExposureMap.LIMIT)
+        }
+        // `working` still holds the mask as it was before the stroke (the stroke lived apart), so
+        // commit records exactly that for undo
+        commit(next)
+    }
+
+    /** The overlay image: the mask (plus the stroke being painted), tinted, at the mask's size. */
+    val overlayBitmap = remember(working, strokeTick) {
+        val m = working ?: return@remember null
+        val st = stroke
+        val sign = if (burn) 1f else -1f
+        val px = IntArray(m.width * m.height)
+        for (k in px.indices) {
+            val sNow = m.stops[k] + (if (st != null) sign * STRENGTH[strength] * st[k] else 0f)
+            val a = (kotlin.math.abs(sNow) / ExposureMap.LIMIT).coerceIn(0f, 1f)
+            val tint = if (sNow >= 0f) BURN_TINT else DODGE_TINT
+            val alpha = (a * 200).toInt().coerceIn(0, 255)
+            px[k] = (alpha shl 24) or ((tint.red * 255).toInt() shl 16) or ((tint.green * 255).toInt() shl 8) or (tint.blue * 255).toInt()
+        }
+        Bitmap.createBitmap(px, m.width, m.height, Bitmap.Config.ARGB_8888)
+    }
+
+    Column(modifier) {
+        Text(
+            "Paint to burn (darker) or dodge (lighter). Lift your finger to see it develop.",
+            color = LatentColors.TextDim, fontSize = 11.sp,
+            modifier = Modifier.padding(horizontal = 18.dp).padding(top = 10.dp),
+        )
+        Box(Modifier.fillMaxWidth().weight(1f).padding(horizontal = 18.dp, vertical = 10.dp)) {
+            Canvas(
+                Modifier.fillMaxSize().pointerInput(aspect, print != null) {
+                    if (print == null) return@pointerInput
+                    awaitEachGesture {
+                        val down = awaitFirstDown()
+                        val r = printRect(size.width.toFloat(), size.height.toFloat(), aspect)
+                        fun at(o: Offset) = Pair(((o.x - r.left) / r.width), ((o.y - r.top) / r.height))
+                        val (u0, v0) = at(down.position)
+                        if (u0 !in 0f..1f || v0 !in 0f..1f) return@awaitEachGesture
+                        Haptics.tick(context)
+                        // the guide shows at full strength while painting (gesture code cannot
+                        // animate itself, so the change is handed to a coroutine)
+                        scope.launch { overlay.snapTo(1f) }
+                        stamp(u0, v0)
+                        var last = Pair(u0, v0)
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            val change = event.changes.firstOrNull() ?: break
+                            if (!change.pressed) break
+                            val (u, v) = at(change.position)
+                            // fill the gap between touch samples, so a quick stroke stays continuous
+                            val du = u - last.first; val dv = v - last.second
+                            val steps = maxOf(1, (kotlin.math.sqrt(du * du + dv * dv) / (BRUSH[brush] / 3f)).toInt())
+                            for (k in 1..steps) stamp(last.first + du * k / steps, last.second + dv * k / steps)
+                            last = Pair(u, v)
+                            change.consume()
+                        }
+                        endStroke()
+                    }
+                },
+            ) {
+                val r = printRect(size.width, size.height, aspect)
+                val border = 6.dp.toPx()
+                drawRect(Color.Black.copy(alpha = 0.45f), Offset(r.left - border + 4.dp.toPx(), r.top - border + 8.dp.toPx()), Size(r.width + 2 * border, r.height + 2 * border))
+                drawRect(PAPER, Offset(r.left - border, r.top - border), Size(r.width + 2 * border, r.height + 2 * border))
+                print?.let { drawImage(it.asImageBitmap(), dstOffset = IntOffset(r.left.toInt(), r.top.toInt()), dstSize = IntSize(r.width.toInt(), r.height.toInt())) }
+                if (print == null) drawRect(PAPER, Offset(r.left, r.top), Size(r.width, r.height))
+                val ov = overlay.value
+                val ob = overlayBitmap
+                if (ob != null && ov > 0.001f) drawImage(ob.asImageBitmap(), dstOffset = IntOffset(r.left.toInt(), r.top.toInt()),
+                    dstSize = IntSize(r.width.toInt(), r.height.toInt()), alpha = ov)
+            }
+        }
+        // Three rows, each measured to fit a phone (about 357 dp inside the margins): one row
+        // would be ~410 dp and squeeze its last chips — the bug that once crushed the Develop button.
+        // 1. what you paint with, and how big
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 6.dp),
+            horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                listOf(false to "Dodge", true to "Burn").forEach { (b, label) -> Chip(label, on = burn == b) { burn = b } }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                for (i in 0..2) {
+                    val on = brush == i
+                    val d = (10 + i * 6).dp
+                    Box(Modifier.size(28.dp).pointerInput(i) { detectTapGestures(onTap = { Haptics.tick(context); brush = i }) },
+                        contentAlignment = Alignment.Center) {
+                        Box(Modifier.size(d).clip(RoundedCornerShape(999.dp)).background(if (on) LatentColors.Amber else LatentColors.Surface))
+                    }
+                }
+            }
+        }
+        // 2. how strongly, and whether to see the mask
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 6.dp),
+            horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                listOf("gentle", "medium", "strong").forEachIndexed { i, label -> Chip(label, on = strength == i) { strength = i } }
+            }
+            Chip("mask", on = showMask) { showMask = !showMask }
+        }
+        // 3. where the mask stands, and the way back
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            val (most, least) = working?.extremes() ?: Pair(0f, 0f)
+            Text(
+                when {
+                    developing -> "developing…"
+                    working == null || working!!.isBlank -> "untouched"
+                    else -> "+${String.format(Locale.US, "%.1f", most)} burned · −${String.format(Locale.US, "%.1f", least)} dodged"
+                },
+                color = LatentColors.Text, fontSize = 12.sp,
+                // takes what the buttons leave, and wraps if it must — the buttons are never squeezed
+                modifier = Modifier.weight(1f).padding(end = 8.dp),
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                @Suppress("UNUSED_VARIABLE") val h = historyTick   // read, so the buttons follow the history
+                Chip("undo", on = false, enabled = undo.isNotEmpty()) {
+                    redo.addLast(working?.copy()); val prev = undo.removeLast(); historyTick++
+                    working = prev; onMap(prev); version++
+                }
+                Chip("redo", on = false, enabled = redo.isNotEmpty()) {
+                    undo.addLast(working?.copy()); val next = redo.removeLast(); historyTick++
+                    working = next; onMap(next); version++
+                }
+                Chip("clear", on = false, enabled = working?.isBlank == false) { commit(null) }
+            }
+        }
+    }
+}
+
+/** A small rounded choice, amber when on. */
+@Composable
+private fun Chip(label: String, on: Boolean, enabled: Boolean = true, onTap: () -> Unit) {
+    val context = LocalContext.current
+    Text(
+        label, fontSize = 11.sp,
+        color = when { on -> LatentColors.AmberInk; enabled -> LatentColors.Text; else -> LatentColors.Line },
+        modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(if (on) LatentColors.Amber else LatentColors.Surface)
+            .pointerInput(label, on, enabled) { detectTapGestures(onTap = { if (enabled) { Haptics.tick(context); onTap() } }) }
+            .padding(horizontal = 10.dp, vertical = 5.dp),
+    )
 }

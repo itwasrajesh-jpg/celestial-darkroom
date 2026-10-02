@@ -347,7 +347,8 @@ object Develop {
      *   picture, not small grain blown up. No new detail is invented. Ignored for previews, which
      *   would only get slower.
      */
-    fun render(context: Context, source: Source, recipe: Recipe, preview: Boolean, upscale: Float = 1f, log: (String) -> Unit = {}): Pair<ByteArray, Pair<Int, Int>> {
+    fun render(context: Context, source: Source, recipe: Recipe, preview: Boolean, upscale: Float = 1f,
+               exposureMap: ExposureMap? = null, log: (String) -> Unit = {}): Pair<ByteArray, Pair<Int, Int>> {
         val t = System.nanoTime()
         Log.i("Latent", "render start: source ${source.width}x${source.height}, preview=$preview, cap=${recipe.previewMaxSize}")
         Log.i("Latent", "recipe: " + sanitised(recipe).summary())
@@ -363,6 +364,10 @@ object Develop {
         val ourSpace = if (OutputSpace.isOurs(base.outputColorSpace)) base.outputColorSpace else ""
         val params = (if (ourSpace.isEmpty()) base else base.copy(outputColorSpace = OutputSpace.ENGINE_SRGB)).toParams()
             .let { if (!preview && upscale > 1.001f) it.copy(io = it.io.copy(upscaleFactor = upscale)) else it }
+            // Dodge & burn: the engine multiplies the enlarger light by the map, place by place.
+            .let { p -> if (exposureMap == null || exposureMap.isBlank) p else p.copy(enlarger = p.enlarger.copy(
+                printExposureMap = exposureMap.multipliers(),
+                printExposureMapWidth = exposureMap.width, printExposureMapHeight = exposureMap.height)) }
         if (!preview && upscale > 1.001f) {
             Log.i("Latent", "print size ${upscale}×: ${source.width}x${source.height} -> about " +
                 "${(source.width * upscale).toInt()}x${(source.height * upscale).toInt()}")
@@ -630,7 +635,8 @@ object Develop {
         )?.use { it.count > 0 } ?: false
 
     /** Full-resolution develop with progress, logging and a new file each time. */
-    fun developFull(context: Context, source: Uri, isRaw: Boolean, recipe: Recipe, maxEdge: Int = 0, upscale: Float = 1f, log: (String) -> Unit = {}): Uri {
+    fun developFull(context: Context, source: Uri, isRaw: Boolean, recipe: Recipe, maxEdge: Int = 0, upscale: Float = 1f,
+                    exposureMap: ExposureMap? = null, log: (String) -> Unit = {}): Uri {
         log(if (maxEdge > 0) "decoding…" else "decoding at full size…")
         val src = if (isRaw) openRaw(context, source, maxEdge, log) else openImage(context, source, maxEdge)
         return src.use { s ->
@@ -638,7 +644,7 @@ object Develop {
             fastDiffusionSource(s, recipe, preview = false, log = log)
             fastPrintDiffusionSource(s, recipe, preview = false, log = log)
             log("developing ${s.width}×${s.height}…")
-            val (bytes, dims) = render(context, s, recipe, preview = false, upscale = upscale, log = log)
+            val (bytes, dims) = render(context, s, recipe, preview = false, upscale = upscale, exposureMap = exposureMap, log = log)
             log("saving ${dims.first}×${dims.second}, ${bytes.size / 1024} KB")
             saveDeveloped(context, bytes, source, recipe.film)
         }

@@ -51,6 +51,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.celestial.latent.develop.Develop
+import com.celestial.latent.develop.ExposureMap
+import com.celestial.latent.develop.ExposureMaps
 import com.celestial.latent.develop.Recipe
 import com.celestial.latent.develop.Recipes
 import com.celestial.latent.ui.LatentColors
@@ -85,6 +87,8 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
     var full by remember { mutableStateOf(false) }
     // PRINT mode: test strips (and, later, the ring-around and dodge & burn) instead of sliders.
     var printing by remember { mutableStateOf(false) }
+    // This photo's dodge & burn — its own, never part of the shared recipe.
+    var exposureMap by remember { mutableStateOf(ExposureMaps.load(context, source)) }
     var preview by remember { mutableStateOf<Bitmap?>(null) }
     var original by remember { mutableStateOf<Bitmap?>(null) }
     var comparing by remember { mutableStateOf(false) }
@@ -131,7 +135,8 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                 // Middle of the frame first on the quick pass: it appears sooner and reads the same.
                 val target = if (cropFraction < 1f) Develop.centreCrop(src!!, cropFraction).also { cropped = it } else src!!
                 val t0 = System.nanoTime()
-                val (bytes, _) = Develop.render(context, target, r, preview = true) { m -> status = m }
+                val map = exposureMap?.let { if (cropFraction < 1f) it.centreCrop(cropFraction) else it }
+                val (bytes, _) = Develop.render(context, target, r, preview = true, exposureMap = map) { m -> status = m }
                 lastRenderMs = ((System.nanoTime() - t0) / 1_000_000).toInt()
                 preview = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
                 previewIsPartial = cropFraction < 1f
@@ -150,13 +155,13 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
      * the main thread; queues for the engine lane like every other render, so two engines never run
      * at once. Never called while the lane is already held.
      */
-    fun renderStill(r: Recipe, edge: Int): Bitmap? {
+    fun renderStill(r: Recipe, edge: Int, map: ExposureMap? = null): Bitmap? {
         val q = com.celestial.latent.develop.DevelopQueue
         q.engineLane.acquire()
         return try {
             val iso = Develop.isoOf(context, source)
             val s0 = Develop.openCached(context, source, isRaw, DECODE_EDGE, r, iso) { }
-            val (bytes, _) = Develop.render(context, s0, r.copy(previewMaxSize = edge), preview = true)
+            val (bytes, _) = Develop.render(context, s0, r.copy(previewMaxSize = edge), preview = true, exposureMap = map)
             BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
         } catch (t: Throwable) {
             android.util.Log.w("Latent", "print strip failed: ${t.message}"); null
@@ -192,6 +197,13 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
         // camera picks up these edits next time it is shown.
         com.celestial.latent.develop.LookBaker.invalidate()
     }
+    // Save the mask beside its photo (a moment after the last change), and show it in the preview.
+    LaunchedEffect(exposureMap) {
+        delay(400)
+        val m = exposureMap
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { ExposureMaps.save(context, source, m) }
+        if (!printing && src != null) render(fast = false)
+    }
     // Back from PRINT: the strips may have changed the exposure while the preview slept.
     LaunchedEffect(printing) { if (!printing && src != null) render(fast = false) }
     // The decoded copy is kept by Develop.Cache so coming back is instant; nothing to free here.
@@ -224,6 +236,9 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                     renderAt = { r, edge -> renderStill(r, edge) },
                     onExposure = { e -> set { copy(printExposure = e) } },
                     onFilters = { y, m -> set { copy(yFilterShift = y, mFilterShift = m) } },
+                    exposureMap = exposureMap,
+                    onExposureMap = { exposureMap = it },
+                    renderWithMap = { r, edge, m -> renderStill(r, edge, m) },
                     modifier = Modifier.fillMaxSize(),
                 )
             } else Column(Modifier.fillMaxSize()) {
@@ -641,7 +656,8 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
             // An honest estimate before you commit, rather than an explanation mid-wait.
             val heavy = recipe.diffusion || recipe.printDiffusion
             Text((if (isRaw) "FROM RAW" else "FILM OVER JPEG") + (if (heavy) " · WITH DIFFUSION, SLOW" else "") +
-                (if (printSize > 1f) " · ${com.celestial.latent.develop.DarkroomPrefs.label(printSize)} PRINT" else ""),
+                (if (printSize > 1f) " · ${com.celestial.latent.develop.DarkroomPrefs.label(printSize)} PRINT" else "") +
+                (if (exposureMap?.isBlank == false) " · DODGED & BURNED" else ""),
                 color = LatentColors.Line, fontSize = 9.sp, letterSpacing = 1.5.sp, lineHeight = 13.sp,
                 // takes the space the button leaves and wraps if it must — it used to crush the button
                 modifier = Modifier.weight(1f).padding(end = 12.dp))
@@ -652,7 +668,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                     Haptics.click(context)
                     fullRunning = true; fullStarted = System.currentTimeMillis(); status = "full size: queued"
                     fullJob = com.celestial.latent.develop.DevelopQueue.submitFull(
-                        context, source, isRaw, recipe, upscale = printSize,
+                        context, source, isRaw, recipe, upscale = printSize, exposureMap = exposureMap,
                         onStatus = { m -> status = "full size: $m" },
                         onDone = { out ->
                             fullRunning = false; fullJob = null
