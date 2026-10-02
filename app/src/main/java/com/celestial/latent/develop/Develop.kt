@@ -6,6 +6,7 @@ import android.content.Context
 import android.net.Uri
 import android.provider.MediaStore
 import android.util.Log
+import kotlin.math.roundToLong
 import com.spectrafilm.engine.LinearImage
 import com.spectrafilm.engine.SpektraEngine
 import com.spectrafilm.libraw.RawDecoder
@@ -31,6 +32,12 @@ object Develop {
         @Volatile var denoised = false
         @Volatile var diffused = false
         @Volatile var printDiffused = false
+        /**
+         * The share of the film's width this picture shows (1 = the whole frame). Straightening
+         * crops, so the framed picture covers less film; grain, halation and glow are sized from
+         * "film width ÷ picture width", so they read this to stay at their true size.
+         */
+        @Volatile var filmScale = 1f
 
         /** Refills this image from [from], so one working buffer can be reused. */
         fun refillFrom(from: Source) {
@@ -42,6 +49,52 @@ object Develop {
             denoised = false
             diffused = false
             printDiffused = false
+            filmScale = from.filmScale
+        }
+
+        /**
+         * Refills this image from [from] as framed by [f] (this buffer must already be the framed
+         * size). An untouched framing is a plain copy; quarter turns and flips move pixels exactly;
+         * only straightening resamples, smoothly, from inside the photo.
+         */
+        fun frameFrom(from: Source, f: Framing) {
+            if (f.isIdentity) { refillFrom(from); return }
+            val sw = from.width; val sh = from.height
+            val (ow, oh) = f.outputSize(sw, sh)
+            require(ow == width && oh == height) { "frame buffer is ${width}x$height, framing needs ${ow}x$oh" }
+            val src = from.image.data.order(java.nio.ByteOrder.nativeOrder()).asFloatBuffer()
+            val dst = image.data.order(java.nio.ByteOrder.nativeOrder()).asFloatBuffer()
+            val exact = kotlin.math.abs(f.straighten) < 0.005f
+            for (y in 0 until oh) for (x in 0 until ow) {
+                val (xs, ys) = f.toSource(x + 0.5, y + 0.5, sw, sh)
+                val o = (y * ow + x) * 3
+                if (exact) {
+                    // a quarter turn or flip lands each pixel exactly on another: no blending
+                    val ix = (xs - 0.5).roundToLong().toInt().coerceIn(0, sw - 1)
+                    val iy = (ys - 0.5).roundToLong().toInt().coerceIn(0, sh - 1)
+                    val i = (iy * sw + ix) * 3
+                    dst.put(o, src.get(i)); dst.put(o + 1, src.get(i + 1)); dst.put(o + 2, src.get(i + 2))
+                } else {
+                    val fx = (xs - 0.5).coerceIn(0.0, (sw - 1).toDouble())
+                    val fy = (ys - 0.5).coerceIn(0.0, (sh - 1).toDouble())
+                    val x0 = fx.toInt(); val y0 = fy.toInt()
+                    val x1 = minOf(x0 + 1, sw - 1); val y1 = minOf(y0 + 1, sh - 1)
+                    val ax = (fx - x0).toFloat(); val ay = (fy - y0).toFloat()
+                    for (c in 0 until 3) {
+                        val top = src.get((y0 * sw + x0) * 3 + c) * (1 - ax) + src.get((y0 * sw + x1) * 3 + c) * ax
+                        val bot = src.get((y1 * sw + x0) * 3 + c) * (1 - ax) + src.get((y1 * sw + x1) * 3 + c) * ax
+                        dst.put(o + c, top * (1 - ay) + bot * ay)
+                    }
+                }
+            }
+            denoised = false; diffused = false; printDiffused = false
+            filmScale = from.filmScale * f.cropScale(sw, sh)
+        }
+
+        /** An empty image of a given size, to be framed into. */
+        fun blankSized(w: Int, h: Int): Source {
+            val buf = java.nio.ByteBuffer.allocateDirect(w * h * 3 * 4).order(java.nio.ByteOrder.nativeOrder())
+            return Source(LinearImage(buf, w, h, colorSpace = image.colorSpace), w, h)
         }
 
         /** An empty copy of the same shape, to be refilled. */
@@ -124,7 +177,8 @@ object Develop {
      * otherwise the edit would silently do nothing on an already-processed copy.
      */
     fun openCached(context: Context, source: Uri, isRaw: Boolean, maxEdge: Int, recipe: Recipe, iso: Int,
-                   softenMask: ExposureMap? = null, pairFirst: Uri? = null, log: (String) -> Unit = {}): Source {
+                   softenMask: ExposureMap? = null, pairFirst: Uri? = null, framing: Framing = Framing(),
+                   log: (String) -> Unit = {}): Source {
         // The pristine decode is cached on its own, so changing a pre-engine setting costs a
         // copy rather than a fresh decode of the file (which was over a second every time).
         // A double exposure is cached as its combined light, under a key naming both frames.
@@ -138,10 +192,13 @@ object Develop {
         }
         // One working buffer per photo and size, reused: no allocation churn while a slider
         // moves, and nothing is freed while a render might still be reading it.
+        // The framing is applied as the working copy is filled, so the untouched decode stays
+        // cached as it is and a turned or straightened picture costs no extra memory.
         val workKey = "$key|work"
-        val working = Cache.get(workKey)?.takeIf { it.width == pristine.width && it.height == pristine.height }
-            ?: pristine.blankLike().also { Cache.put(workKey, it) }
-        working.refillFrom(pristine)
+        val (fw, fh) = framing.outputSize(pristine.width, pristine.height)
+        val working = Cache.get(workKey)?.takeIf { it.width == fw && it.height == fh }
+            ?: pristine.blankSized(fw, fh).also { Cache.put(workKey, it) }
+        working.frameFrom(pristine, framing)
         // A pair carries the noise of both frames: clean it for the noisier of the two.
         denoiseSource(working, recipe, if (pair) maxOf(iso, isoOf(context, pairFirst!!)) else iso, log)
         fastDiffusionSource(working, recipe, preview = true, softenMask = softenMask, log = log)
@@ -295,7 +352,7 @@ object Develop {
             source.image.data, source.width, source.height,
             recipe.printDiffusionFamily, recipe.printDiffusionStrength, recipe.diffusionScale,
             1f, 1f, 1f, 1f, 1f, 1f, 0f,
-            recipe.filmFormatMm * 1000f / longest,
+            recipe.filmFormatMm * source.filmScale * 1000f / longest,
         )
         // And back to light.
         for (i in 0 until n) {
@@ -313,7 +370,7 @@ object Develop {
         if (source.diffused) return
         log(if (softenMask != null) "diffusion filter, where painted" else "diffusion filter")
         val longest = maxOf(source.width, source.height)
-        val pixelSizeUm = recipe.filmFormatMm * 1000f / longest
+        val pixelSizeUm = recipe.filmFormatMm * source.filmScale * 1000f / longest
         // Painted: how much of each place's own light scatters, as a multiple of the setting
         // (0 sharp, 1 the filter as set, 2 twice as much). A mask of exactly 1 everywhere is the
         // plain setting, so it takes the plain path and stays identical to it.
@@ -372,6 +429,9 @@ object Develop {
         var dims = 0 to 0
         // GPU is preview-only: a full render always goes through the CPU engine.
         val base = sanitised(if (preview) recipe else recipe.copy(gpuPreview = false))
+            // A straightened picture shows less of the film: tell the engine the film it sees is
+            // that much narrower, so grain and halation keep their true size.
+            .let { if (source.filmScale != 1f) it.copy(filmFormatMm = it.filmFormatMm * source.filmScale) else it }
             // Our own filter has already run on the pixels, so the engine's LENS filter stays
             // off — but the enlarger's is a different stage, later in the chain, and is left to
             // the engine. Switching both off was dropping half the glow.
@@ -654,11 +714,17 @@ object Develop {
     /** Full-resolution develop with progress, logging and a new file each time. */
     fun developFull(context: Context, source: Uri, isRaw: Boolean, recipe: Recipe, maxEdge: Int = 0, upscale: Float = 1f,
                     exposureMap: ExposureMap? = null, softenMask: ExposureMap? = null, pairFirst: Uri? = null,
-                    log: (String) -> Unit = {}): Uri {
+                    framing: Framing = Framing(), log: (String) -> Unit = {}): Uri {
         log(if (maxEdge > 0) "decoding…" else "decoding at full size…")
         val pair = pairFirst != null && isRaw
-        val src = if (pair) openPair(context, pairFirst!!, source, maxEdge, log)
+        val opened = if (pair) openPair(context, pairFirst!!, source, maxEdge, log)
             else if (isRaw) openRaw(context, source, maxEdge, log) else openImage(context, source, maxEdge)
+        // Framed before anything else touches the light, so the film forms on the framed picture.
+        val src = if (framing.isIdentity) opened else {
+            log("framing…")
+            val (fw, fh) = framing.outputSize(opened.width, opened.height)
+            try { opened.blankSized(fw, fh).also { it.frameFrom(opened, framing) } } finally { opened.close() }
+        }
         return src.use { s ->
             denoiseSource(s, recipe, if (pair) maxOf(isoOf(context, source), isoOf(context, pairFirst!!)) else isoOf(context, source), log)
             fastDiffusionSource(s, recipe, preview = false, softenMask = softenMask, log = log)
@@ -685,7 +751,7 @@ object Develop {
             var i = ((y0 + y) * src.width + x0) * 3
             for (x in 0 until cw * 3) { of.put(inBuf.get(i)); i++ }
         }
-        return Source(LinearImage(out, cw, ch, colorSpace = src.image.colorSpace), cw, ch)
+        return Source(LinearImage(out, cw, ch, colorSpace = src.image.colorSpace), cw, ch).also { it.filmScale = src.filmScale }
     }
 
     /** The most recent developed JPEG for a capture, if there is one. */

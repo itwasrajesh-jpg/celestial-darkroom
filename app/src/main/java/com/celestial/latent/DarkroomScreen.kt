@@ -43,6 +43,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
@@ -93,6 +94,10 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
     var softenMap by remember { mutableStateOf(ExposureMaps.load(context, source, ExposureMaps.SOFTEN)) }
     // A double exposure: this frame was made onto an earlier one, and is shown and printed as both.
     val pairFirst = remember { if (isRaw) com.celestial.latent.develop.DoubleExposure.firstFor(context, source) else null }
+    // How the photo is framed — turned, flipped, straightened. The photo's own, like its masks.
+    var framing by remember { mutableStateOf(com.celestial.latent.develop.Framings.load(context, source)) }
+    var frameOpen by remember { mutableStateOf(false) }
+    var liveStraighten by remember { mutableStateOf<Float?>(null) }
     var preview by remember { mutableStateOf<Bitmap?>(null) }
     var original by remember { mutableStateOf<Bitmap?>(null) }
     var comparing by remember { mutableStateOf(false) }
@@ -135,7 +140,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                 // colour noise or the fast diffusion re-decodes instead of being ignored.
                 val iso = Develop.isoOf(context, source)
                 // The working buffer belongs to the cache and is reused; never closed here.
-                src = Develop.openCached(context, source, isRaw, DECODE_EDGE, r, iso, softenMask = softenMap, pairFirst = pairFirst) { m -> status = m }
+                src = Develop.openCached(context, source, isRaw, DECODE_EDGE, r, iso, softenMask = softenMap, pairFirst = pairFirst, framing = framing) { m -> status = m }
                 // Middle of the frame first on the quick pass: it appears sooner and reads the same.
                 val target = if (cropFraction < 1f) Develop.centreCrop(src!!, cropFraction).also { cropped = it } else src!!
                 val t0 = System.nanoTime()
@@ -164,7 +169,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
         q.engineLane.acquire()
         return try {
             val iso = Develop.isoOf(context, source)
-            val s0 = Develop.openCached(context, source, isRaw, DECODE_EDGE, r, iso, softenMask = soften, pairFirst = pairFirst) { }
+            val s0 = Develop.openCached(context, source, isRaw, DECODE_EDGE, r, iso, softenMask = soften, pairFirst = pairFirst, framing = framing) { }
             val (bytes, _) = Develop.render(context, s0, r.copy(previewMaxSize = edge), preview = true, exposureMap = map, softenMask = soften)
             BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
         } catch (t: Throwable) {
@@ -217,6 +222,24 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
         }
         if (!printing && src != null) render(fast = false)
     }
+    /**
+     * A new framing: the masks are carried across so every mark stays over the same part of the
+     * photo, the framing is kept with the photo, and the print re-develops framed.
+     */
+    fun commitFrame(next: com.celestial.latent.develop.Framing) {
+        if (next == framing) return
+        val s0 = src
+        if (s0 != null) {
+            // the working copy is the framed picture; its shape gives the unframed photo's
+            val shown = s0.width.toFloat() / s0.height
+            val srcAspect = if (framing.quarter % 2 == 1) 1f / shown else shown
+            exposureMap = exposureMap?.let { com.celestial.latent.develop.Framings.carry(it, framing, next, srcAspect) }
+            softenMap = softenMap?.let { com.celestial.latent.develop.Framings.carry(it, framing, next, srcAspect) }
+        }
+        framing = next
+        com.celestial.latent.develop.Framings.save(context, source, next)
+    }
+    LaunchedEffect(framing) { if (src != null) render(fast = false) }
     // Back from PRINT: the strips may have changed the exposure while the preview slept.
     LaunchedEffect(printing) { if (!printing && src != null) render(fast = false) }
     // The decoded copy is kept by Develop.Cache so coming back is instant; nothing to free here.
@@ -271,7 +294,35 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                     })
                 }) {
                     val shown = if (comparing) (original ?: preview) else preview
-                    shown?.let { Image(it.asImageBitmap(), contentDescription = "Developed", contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize()) }
+                    // While straightening, the print turns live under the finger, scaled so no blank
+                    // corner shows — the real framed print develops when the finger lifts.
+                    val delta = (liveStraighten ?: framing.straighten) - framing.straighten
+                    val liveScale = shown?.let { b ->
+                        1f / com.celestial.latent.develop.Framing(straighten = delta).cropScale(b.width, b.height)
+                    } ?: 1f
+                    shown?.let { Image(it.asImageBitmap(), contentDescription = "Developed", contentScale = ContentScale.Fit,
+                        modifier = Modifier.fillMaxSize().graphicsLayer { rotationZ = delta; scaleX = liveScale; scaleY = liveScale }) }
+                    // a grid to line the horizon up against, while framing
+                    if (frameOpen && preview != null) {
+                        val b = preview!!
+                        androidx.compose.foundation.Canvas(Modifier.fillMaxSize()) {
+                            val a = b.width.toFloat() / b.height
+                            var w = size.width; var h = w / a
+                            if (h > size.height) { h = size.height; w = h * a }
+                            val l = (size.width - w) / 2f; val t = (size.height - h) / 2f
+                            val line = Color(0x66FFFFFF); val fine = Color(0x26FFFFFF)
+                            for (i in 1 until 6) {
+                                val c = if (i % 2 == 0) line else fine
+                                drawLine(c, androidx.compose.ui.geometry.Offset(l + w * i / 6f, t), androidx.compose.ui.geometry.Offset(l + w * i / 6f, t + h), 1f)
+                                drawLine(c, androidx.compose.ui.geometry.Offset(l, t + h * i / 6f), androidx.compose.ui.geometry.Offset(l + w, t + h * i / 6f), 1f)
+                            }
+                        }
+                    }
+                    Text(if (frameOpen) "FRAMING" else "FRAME", color = if (frameOpen) LatentColors.AmberInk else Color(0xE6FFFFFF), fontSize = 10.sp, letterSpacing = 1.5.sp,
+                        modifier = Modifier.align(Alignment.TopEnd).padding(10.dp).clip(RoundedCornerShape(999.dp))
+                            .background(if (frameOpen) LatentColors.Amber else Color(0x66000000))
+                            .combinedClickable(onClick = { Haptics.tick(context); frameOpen = !frameOpen; if (frameOpen) sheet = 0 })
+                            .padding(horizontal = 10.dp, vertical = 4.dp))
 
                     if (!rendering && !fullRunning && preview == null) Text(if (status.isEmpty()) "no preview yet" else status, color = LatentColors.Text, fontSize = 11.sp, modifier = Modifier.align(Alignment.Center).padding(24.dp))
                     Text(if (comparing) "ORIGINAL" else (Develop.FILMS.firstOrNull { it.first == recipe.film }?.second?.uppercase() ?: recipe.film),
@@ -279,8 +330,15 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                         modifier = Modifier.align(Alignment.TopStart).padding(12.dp))
                 }
 
-                // The sheet: drag the handle to give the controls more room.
-                Column(
+                // The sheet: drag the handle to give the controls more room. While framing, the frame
+                // panel takes its place, so the photo stays as large as it can be.
+                if (frameOpen) FramePanel(
+                    framing = framing, live = liveStraighten,
+                    onLive = { liveStraighten = it },
+                    onCommit = { commitFrame(it) },
+                    onDone = { frameOpen = false; liveStraighten = null },
+                    modifier = Modifier.fillMaxWidth().weight(1f - photoWeight),
+                ) else Column(
                     Modifier.fillMaxWidth().weight(1f - photoWeight).clip(RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)).background(Color(0xFF1D1D1B))
                         .pointerInput(Unit) {
                             detectVerticalDragGestures { _, dy ->
@@ -675,7 +733,8 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                 (if (printSize > 1f) " · ${com.celestial.latent.develop.DarkroomPrefs.label(printSize)} PRINT" else "") +
                 (if (exposureMap?.isBlank == false) " · DODGED & BURNED" else "") +
                 (if (softenMap != null && recipe.diffusion) " · SOFTENED IN PLACES" else "") +
-                (if (pairFirst != null) " · DOUBLE EXPOSURE" else ""),
+                (if (pairFirst != null) " · DOUBLE EXPOSURE" else "") +
+                (if (!framing.isIdentity) " · FRAMED" else ""),
                 color = LatentColors.Line, fontSize = 9.sp, letterSpacing = 1.5.sp, lineHeight = 13.sp,
                 // takes the space the button leaves and wraps if it must — it used to crush the button
                 modifier = Modifier.weight(1f).padding(end = 12.dp))
@@ -686,7 +745,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                     Haptics.click(context)
                     fullRunning = true; fullStarted = System.currentTimeMillis(); status = "full size: queued"
                     fullJob = com.celestial.latent.develop.DevelopQueue.submitFull(
-                        context, source, isRaw, recipe, upscale = printSize, exposureMap = exposureMap, softenMask = softenMap, pairFirst = pairFirst,
+                        context, source, isRaw, recipe, upscale = printSize, exposureMap = exposureMap, softenMask = softenMap, pairFirst = pairFirst, framing = framing,
                         onStatus = { m -> status = "full size: $m" },
                         onDone = { out ->
                             fullRunning = false; fullJob = null
