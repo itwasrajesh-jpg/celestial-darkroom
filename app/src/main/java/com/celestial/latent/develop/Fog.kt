@@ -11,25 +11,47 @@ import kotlin.math.exp
  * of the presets ("mist", "morning", "dusk", "smog") tuned by [warmth] (−1 cool … +1 warm), or
  * "picked" — light taken from a spot in the scene, as linear RGB in [picked].
  */
-data class FogLook(val mode: String = "auto", val warmth: Float = 0f, val picked: List<Float>? = null,
-                   /** How much of the painted fog is applied, 0..1 — the whole painting, dialled up or down. */
-                   val amount: Float = 1f) {
-    fun key(): String = "$mode,${"%.2f".format(Locale.US, warmth)},${"%.3f".format(Locale.US, amount)}" +
-        (picked?.joinToString(",", prefix = ",") { "%.5f".format(Locale.US, it) } ?: "")
+data class FogLook(
+    val mode: String = "auto",
+    /** Cool (−1) … warm (+1): a colour-temperature shift on top of whichever colour is chosen. */
+    val warmth: Float = 0f,
+    val picked: List<Float>? = null,
+    /** How much of the painted fog is applied, 0..1 — the whole painting, dialled up or down. */
+    val amount: Float = 1f,
+    /** Your own colour ("colour" mode): a hue, 0..360 as on a colour wheel… */
+    val hue: Float = 30f,
+    /** …and how strongly tinted, 0 neutral … 1 the strongest believable fog tint. */
+    val tint: Float = 0.5f,
+) {
+    /**
+     * Saved as "v2|mode|warmth|amount|hue|tint[|r|g|b]". The version mark matters: the older
+     * comma forms were told apart by counting parts, and a fifth field would have made a new
+     * colour indistinguishable from an old picked one.
+     */
+    fun key(): String = listOf("v2", mode, "%.3f".format(Locale.US, warmth), "%.3f".format(Locale.US, amount),
+        "%.1f".format(Locale.US, hue), "%.3f".format(Locale.US, tint)).joinToString("|") +
+        (picked?.joinToString("|", prefix = "|") { "%.5f".format(Locale.US, it) } ?: "")
 
     companion object {
         fun parse(s: String?): FogLook {
             if (s.isNullOrEmpty()) return FogLook()
             return runCatching {
-                // mode, warmth[, r, g, b] (saved before the amount existed: 2 or 5 parts), or
-                // mode, warmth, amount[, r, g, b] (3 or 6 parts) — the count tells them apart
-                val p = s.split(",")
-                val hasAmount = p.size == 3 || p.size == 6
-                val amount = if (hasAmount) p[2].toFloat() else 1f
-                val at = if (hasAmount) 3 else 2
-                FogLook(p[0], p[1].toFloat(),
-                    if (p.size >= at + 3) listOf(p[at].toFloat(), p[at + 1].toFloat(), p[at + 2].toFloat()) else null,
-                    amount.coerceIn(0f, 1f))
+                if (s.startsWith("v2|")) {
+                    val p = s.split("|")
+                    FogLook(p[1], p[2].toFloat(),
+                        if (p.size >= 9) listOf(p[6].toFloat(), p[7].toFloat(), p[8].toFloat()) else null,
+                        p[3].toFloat().coerceIn(0f, 1f), p[4].toFloat(), p[5].toFloat().coerceIn(0f, 1f))
+                } else {
+                    // the older forms: mode, warmth[, r, g, b] (2 or 5 parts), or
+                    // mode, warmth, amount[, r, g, b] (3 or 6 parts)
+                    val p = s.split(",")
+                    val hasAmount = p.size == 3 || p.size == 6
+                    val amount = if (hasAmount) p[2].toFloat() else 1f
+                    val at = if (hasAmount) 3 else 2
+                    FogLook(p[0], p[1].toFloat(),
+                        if (p.size >= at + 3) listOf(p[at].toFloat(), p[at + 1].toFloat(), p[at + 2].toFloat()) else null,
+                        amount.coerceIn(0f, 1f))
+                }
             }.getOrDefault(FogLook())
         }
     }
@@ -110,6 +132,68 @@ object Fog {
         floatArrayOf(1.2074f, 0.9162f, 0.3171f)
     )
 
+    /** 6500K, neutral: the middle of the cool–warm slider. */
+    private const val NEUTRAL_MIRED = 153.8f
+
+    /** Linear screen (sRGB) colours into linear ProPhoto, white kept white (Bradford D65→D50). */
+    private val SCREEN_TO_PROPHOTO = floatArrayOf(0.529346f, 0.330073f, 0.140581f, 0.098374f, 0.873461f, 0.028165f, 0.016883f, 0.117672f, 0.865444f)
+    /** …and back, for showing a fog colour on screen. */
+    private val PROPHOTO_TO_SCREEN = floatArrayOf(2.034076f, -0.727334f, -0.306742f, -0.228813f, 1.231730f, -0.002917f, -0.008570f, -0.153287f, 1.161856f)
+
+    private fun mul(m: FloatArray, c: FloatArray) = FloatArray(3) { r -> m[r * 3] * c[0] + m[r * 3 + 1] * c[1] + m[r * 3 + 2] * c[2] }
+
+    /**
+     * Your own colour: a hue as seen on screen, faded toward a light grey IN SCREEN TERMS until
+     * its saturation (in linear ProPhoto, where the fog works) is [tint] of the ceiling; at
+     * luminance 1. Fading in screen terms keeps the hue the eye chose — fading in linear light
+     * drifted violets toward blue by about 15° (now under 8° anywhere on the wheel).
+     */
+    fun hueChroma(hue: Float, tint: Float): FloatArray {
+        val h = ((hue % 360f) + 360f) % 360f / 60f
+        val x = 1f - kotlin.math.abs(h % 2f - 1f)
+        val disp = when (h.toInt()) { 0 -> floatArrayOf(1f, x, 0f); 1 -> floatArrayOf(x, 1f, 0f); 2 -> floatArrayOf(0f, 1f, x)
+            3 -> floatArrayOf(0f, x, 1f); 4 -> floatArrayOf(x, 0f, 1f); else -> floatArrayOf(1f, 0f, x) }
+        fun at(k: Float): FloatArray {
+            val d = FloatArray(3) { 0.8f * (1f - k) + disp[it] * k }
+            val lin = mul(SCREEN_TO_PROPHOTO, FloatArray(3) { Math.pow(d[it].toDouble(), 2.2).toFloat() })
+            val y = maxOf(lum(lin), 1e-6f)
+            return FloatArray(3) { lin[it] / y }
+        }
+        fun sat(v: FloatArray): Float { val mx = v.max(); return if (mx <= 0f) 0f else (mx - v.min()) / mx }
+        val target = tint.coerceIn(0f, 1f) * SATURATION_MAX
+        var lo = 0f; var hi = 1f
+        repeat(30) { val mid = (lo + hi) / 2f; if (sat(at(mid)) > target) hi = mid else lo = mid }
+        return at(lo)
+    }
+
+    /**
+     * A fog colour as it would look on screen, for the swatch: its chroma (at luminance 1) brought
+     * to a light grey and into display colours. Approximate — the film changes it — but honest
+     * about hue and tint.
+     */
+    fun swatch(look: FogLook): Int {
+        val base = when {
+            look.mode == "colour" -> hueChroma(look.hue, look.tint)
+            look.mode == "picked" && look.picked != null && look.picked.size == 3 -> {
+                val p = look.picked.toFloatArray(); val y = maxOf(lum(p), 1e-6f); FloatArray(3) { p[it] / y }
+            }
+            look.mode == "auto" -> floatArrayOf(1f, 1f, 1f)
+            else -> tintFor(PRESETS.firstOrNull { it.first == look.mode }?.second ?: NEUTRAL_MIRED)
+        }
+        val c = capped(withWarmth(base, look.warmth))
+        val scr = mul(PROPHOTO_TO_SCREEN, FloatArray(3) { c[it] * 0.75f })
+        val e = IntArray(3) { (Math.pow(scr[it].coerceIn(0f, 1f).toDouble(), 1 / 2.2) * 255).toInt().coerceIn(0, 255) }
+        return (0xFF shl 24) or (e[0] shl 16) or (e[1] shl 8) or e[2]
+    }
+
+    /** A colour shifted cool or warm by the slider, kept at luminance 1. */
+    private fun withWarmth(c: FloatArray, warmth: Float): FloatArray {
+        val shift = tintFor(NEUTRAL_MIRED + WARMTH_MIREDS * warmth.coerceIn(-1f, 1f))
+        val v = FloatArray(3) { c[it] * shift[it] }
+        val y = maxOf(lum(v), 1e-6f)
+        return FloatArray(3) { v[it] / y }
+    }
+
     /** The colour of light at [mired], interpolated from the table. */
     fun tintFor(mired: Float): FloatArray {
         val x = ((mired - 30f) / 10f).coerceIn(0f, (TINTS.size - 1).toFloat())
@@ -166,8 +250,10 @@ object Fog {
      * saturation ceiling, the eyedropper included — pick a vivid blue sky and the fog is a pale
      * blue mist.
      *  - auto: the scene's brightest light, at its brightness, mostly neutral with a hint of its colour;
-     *  - a preset: that colour temperature, moved by the warmth slider, at the scene's brightness;
-     *  - picked: the picked light's own colour and brightness.
+     *  - a preset: that colour temperature, at the scene's brightness;
+     *  - colour: your own hue and tint, at the scene's brightness;
+     *  - picked: the picked light's own colour and brightness;
+     * then shifted cool or warm by the slider, whichever it is.
      */
     fun light(src: Develop.Source, look: FogLook): FloatArray {
         val auto = autoLight(src)
@@ -180,12 +266,14 @@ object Fog {
                 val y = maxOf(lum(auto), 1e-6f)
                 FloatArray(3) { 1f + (auto[it] / y - 1f) * AUTO_TINT } to y
             }
+            look.mode == "colour" -> hueChroma(look.hue, look.tint) to lum(auto)
             else -> {
                 val base = PRESETS.firstOrNull { it.first == look.mode }?.second ?: PRESETS[0].second
-                tintFor(base + WARMTH_MIREDS * look.warmth.coerceIn(-1f, 1f)) to lum(auto)
+                tintFor(base) to lum(auto)
             }
         }
-        val c = capped(chroma)
+        // cool–warm works on every colour, then the ceiling keeps the result pale
+        val c = capped(withWarmth(chroma, look.warmth))
         return FloatArray(3) { c[it] * level }
     }
 

@@ -449,7 +449,8 @@ fun PrintPanel(
                         fogPicking = false
                         pickScope.launch {
                             val light = withContext(Dispatchers.Default) { sampleScene(u, v) }
-                            if (light != null) onFogLook(FogLook("picked", 0f, light.toList(), amount = fogLook.amount))
+                            // keeps warmth and amount: only the colour changes
+                            if (light != null) onFogLook(fogLook.copy(mode = "picked", picked = light.toList()))
                         }
                     },
                     extra = { FogColourRow(fogLook, picking = fogPicking, onLook = onFogLook, onPick = { fogPicking = !fogPicking }) },
@@ -848,16 +849,60 @@ private val FOG_SPEC = PaintSpec(
 )
 
 /**
- * The fog's colour: Auto (the scene's own brightest light — the safe choice), a preset with a
- * warmth slider, or picked from the scene with the eyedropper.
+ * The fog's colour: Auto (the scene's own brightest light — the safe choice), a preset, your own
+ * colour (a hue and how strongly tinted), or light taken from the photo. Cool–warm and amount
+ * apply to all of them. Every colour stays pale, as real fog is.
  */
 @Composable
 private fun FogColourRow(look: FogLook, picking: Boolean, onLook: (FogLook) -> Unit, onPick: () -> Unit) {
+    val sliderColours = androidx.compose.material3.SliderDefaults.colors(thumbColor = LatentColors.Amber,
+        activeTrackColor = LatentColors.Amber, inactiveTrackColor = LatentColors.Surface)
     Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 6.dp)) {
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            Chip("auto", on = look.mode == "auto") { onLook(FogLook("auto", amount = look.amount)) }
-            Fog.PRESETS.forEach { (name, _) -> Chip(name, on = look.mode == name) { onLook(FogLook(name, look.warmth, amount = look.amount)) } }
-            Chip(if (picking) "tap photo" else "pick", on = picking || look.mode == "picked") { onPick() }
+        // seven choices: wider than a phone, so they scroll; switching keeps warmth, amount, hue, tint
+        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            Chip("auto", on = look.mode == "auto") { onLook(look.copy(mode = "auto")) }
+            Fog.PRESETS.forEach { (name, _) -> Chip(name, on = look.mode == name) { onLook(look.copy(mode = name)) } }
+            Chip("colour", on = look.mode == "colour") { onLook(look.copy(mode = "colour")) }
+            Chip(if (picking) "tap photo" else "from photo", on = picking || look.mode == "picked") { onPick() }
+        }
+        // your own colour: a hue strip, and how strongly tinted
+        if (look.mode == "colour") {
+            var hueLive by remember(look.hue) { mutableStateOf(look.hue) }
+            var tintLive by remember(look.tint) { mutableStateOf(look.tint) }
+            Box(Modifier.fillMaxWidth().padding(top = 6.dp).height(36.dp), contentAlignment = Alignment.Center) {
+                Canvas(Modifier.fillMaxWidth().height(12.dp).padding(horizontal = 10.dp).clip(RoundedCornerShape(999.dp))) {
+                    val stops = (0..12).map { k -> Color.hsv(k * 30f % 360f, 0.55f, 0.95f) }
+                    drawRect(androidx.compose.ui.graphics.Brush.horizontalGradient(stops))
+                }
+                androidx.compose.material3.Slider(
+                    value = hueLive, onValueChange = { hueLive = it },
+                    onValueChangeFinished = { onLook(look.copy(hue = hueLive)) }, valueRange = 0f..360f,
+                    colors = androidx.compose.material3.SliderDefaults.colors(thumbColor = LatentColors.Amber,
+                        activeTrackColor = Color.Transparent, inactiveTrackColor = Color.Transparent),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("neutral", color = LatentColors.TextDim, fontSize = 10.sp)
+                androidx.compose.material3.Slider(
+                    value = tintLive, onValueChange = { tintLive = it },
+                    onValueChangeFinished = { onLook(look.copy(tint = tintLive)) }, valueRange = 0f..1f,
+                    colors = sliderColours, modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
+                )
+                Text("tinted", color = LatentColors.TextDim, fontSize = 10.sp)
+            }
+        }
+        // cool–warm, for every colour, beside a swatch of the fog's colour as it stands
+        var warmthLive by remember(look.warmth) { mutableStateOf(look.warmth) }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(14.dp).clip(RoundedCornerShape(999.dp)).background(Color(Fog.swatch(look.copy(warmth = warmthLive)))))
+            Text("cool", color = LatentColors.TextDim, fontSize = 10.sp, modifier = Modifier.padding(start = 6.dp))
+            androidx.compose.material3.Slider(
+                value = warmthLive, onValueChange = { warmthLive = it },
+                onValueChangeFinished = { onLook(look.copy(warmth = warmthLive)) }, valueRange = -1f..1f,
+                colors = sliderColours, modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
+            )
+            Text("warm", color = LatentColors.TextDim, fontSize = 10.sp)
         }
         // how much of the painted fog is applied: paint the shape, then dial the whole of it
         var amountLive by remember(look.amount) { mutableStateOf(look.amount) }
@@ -866,27 +911,9 @@ private fun FogColourRow(look: FogLook, picking: Boolean, onLook: (FogLook) -> U
             androidx.compose.material3.Slider(
                 value = amountLive, onValueChange = { amountLive = it },
                 onValueChangeFinished = { onLook(look.copy(amount = (amountLive * 100f).roundToInt() / 100f)) },
-                valueRange = 0f..1f,
-                colors = androidx.compose.material3.SliderDefaults.colors(thumbColor = LatentColors.Amber,
-                    activeTrackColor = LatentColors.Amber, inactiveTrackColor = LatentColors.Surface),
-                modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
+                valueRange = 0f..1f, colors = sliderColours, modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
             )
             Text("${(amountLive * 100f).roundToInt()}%", color = LatentColors.Text, fontSize = 10.sp)
-        }
-        // warmth fine-tunes a preset; Auto and Picked take their colour from the scene itself
-        if (Fog.PRESETS.any { it.first == look.mode }) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("cool", color = LatentColors.TextDim, fontSize = 10.sp)
-                var warmthLive by remember(look.warmth) { mutableStateOf(look.warmth) }
-                androidx.compose.material3.Slider(
-                    value = warmthLive, onValueChange = { warmthLive = it },
-                    onValueChangeFinished = { onLook(look.copy(warmth = warmthLive)) }, valueRange = -1f..1f,
-                    colors = androidx.compose.material3.SliderDefaults.colors(thumbColor = LatentColors.Amber,
-                        activeTrackColor = LatentColors.Amber, inactiveTrackColor = LatentColors.Surface),
-                    modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
-                )
-                Text("warm", color = LatentColors.TextDim, fontSize = 10.sp)
-            }
         }
     }
 }
