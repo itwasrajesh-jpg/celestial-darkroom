@@ -100,6 +100,7 @@ object ExposureMaps {
     const val DODGE_BURN = "dodgeburn"
     const val SOFTEN = "soften"
     const val FOG = "fog"
+    const val RAYS = "rays"
 
     private fun file(context: Context, photo: Uri, kind: String): File {
         val digest = MessageDigest.getInstance("SHA-1").digest(photo.toString().toByteArray())

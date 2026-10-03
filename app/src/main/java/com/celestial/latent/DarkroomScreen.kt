@@ -108,6 +108,11 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
     // ...and the fog painted into its air, with the fog's colour.
     var fogMap by remember { mutableStateOf(ExposureMaps.load(context, source, ExposureMaps.FOG)) }
     var fogLook by remember { mutableStateOf(com.celestial.latent.develop.FogLooks.load(context, source)) }
+    // ...and god rays: where the light comes from, how bright and how far, and where they may fall.
+    var raysMap by remember { mutableStateOf(ExposureMaps.load(context, source, ExposureMaps.RAYS)) }
+    var raysLook by remember { mutableStateOf(com.celestial.latent.develop.RaysLooks.load(context, source)) }
+    /** Everything painted on this photo, as one value, so no render can mix them up. */
+    fun currentMasks() = Masks(exposureMap, softenMap, fogMap, raysMap, raysOn = true)
     // A double exposure: this frame was made onto an earlier one, and is shown and printed as both.
     val pairFirst = remember { if (isRaw) com.celestial.latent.develop.DoubleExposure.firstFor(context, source) else null }
     // How the photo is framed — turned, flipped, straightened. The photo's own, like its masks.
@@ -165,7 +170,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                 val iso = Develop.isoOf(context, source)
                 // The working buffer belongs to the cache and is reused; never closed here.
                 src = Develop.openCached(context, source, isRaw, DECODE_EDGE, r, iso, softenMask = softenMap, pairFirst = pairFirst, framing = framing,
-                    fogMask = fogMap, fogLook = fogLook) { m -> status = m }
+                    fogMask = fogMap, fogLook = fogLook, raysMask = raysMap, raysLook = raysLook) { m -> status = m }
                 // Middle of the frame first on the quick pass: it appears sooner and reads the same.
                 val target = if (cropFraction < 1f) Develop.centreCrop(src!!, cropFraction).also { cropped = it } else src!!
                 val t0 = System.nanoTime()
@@ -189,14 +194,15 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
      * the main thread; queues for the engine lane like every other render, so two engines never run
      * at once. Never called while the lane is already held.
      */
-    fun renderStill(r: Recipe, edge: Int, map: ExposureMap? = null, soften: ExposureMap? = null, fog: ExposureMap? = null): Bitmap? {
+    fun renderStill(r: Recipe, edge: Int, masks: Masks = Masks()): Bitmap? {
         val q = com.celestial.latent.develop.DevelopQueue
         q.engineLane.acquire()
         return try {
             val iso = Develop.isoOf(context, source)
-            val s0 = Develop.openCached(context, source, isRaw, DECODE_EDGE, r, iso, softenMask = soften, pairFirst = pairFirst, framing = framing,
-                fogMask = fog, fogLook = fogLook) { }
-            val (bytes, _) = Develop.render(context, s0, r.copy(previewMaxSize = edge), preview = true, exposureMap = map, softenMask = soften)
+            val s0 = Develop.openCached(context, source, isRaw, DECODE_EDGE, r, iso, softenMask = masks.soften, pairFirst = pairFirst, framing = framing,
+                fogMask = masks.fog, fogLook = fogLook,
+                raysMask = masks.rays, raysLook = if (masks.raysOn) raysLook else com.celestial.latent.develop.RaysLook()) { }
+            val (bytes, _) = Develop.render(context, s0, r.copy(previewMaxSize = edge), preview = true, exposureMap = masks.dodge, softenMask = masks.soften)
             BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
         } catch (t: Throwable) {
             android.util.Log.w("Latent", "print strip failed: ${t.message}"); null
@@ -207,17 +213,17 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
      * The zoomed-in part of the print, developed sharp from the larger decode at the screen's own
      * resolution. Queues for the engine lane like every render; only called off the main thread.
      */
-    fun renderDetail(r: Recipe, region: com.celestial.latent.develop.Region, edge: Int,
-                     map: ExposureMap?, soften: ExposureMap?, fog: ExposureMap? = fogMap): Bitmap? {
+    fun renderDetail(r: Recipe, region: com.celestial.latent.develop.Region, edge: Int, masks: Masks = currentMasks()): Bitmap? {
         val q = com.celestial.latent.develop.DevelopQueue
         q.engineLane.acquire()
         return try {
             val iso = Develop.isoOf(context, source)
-            val whole = Develop.openCached(context, source, isRaw, DETAIL_EDGE, r, iso, softenMask = soften, pairFirst = pairFirst, framing = framing,
-                fogMask = fog, fogLook = fogLook) { }
+            val whole = Develop.openCached(context, source, isRaw, DETAIL_EDGE, r, iso, softenMask = masks.soften, pairFirst = pairFirst, framing = framing,
+                fogMask = masks.fog, fogLook = fogLook,
+                raysMask = masks.rays, raysLook = if (masks.raysOn) raysLook else com.celestial.latent.develop.RaysLook()) { }
             Develop.cropRegion(whole, region).use { part ->
                 val (bytes, _) = Develop.render(context, part, r.copy(previewMaxSize = edge), preview = true,
-                    exposureMap = map?.crop(region), softenMask = soften)
+                    exposureMap = masks.dodge?.crop(region), softenMask = masks.soften)
                 BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
             }
         } catch (t: Throwable) {
@@ -301,10 +307,10 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
         val region = zoom.visible(fit, viewSize.width.toFloat(), viewSize.height.toFloat())
         if (detail?.first == region) return@LaunchedEffect
         val edge = maxOf(viewSize.width, viewSize.height).coerceAtMost(1600)
-        val r = recipe; val m = exposureMap; val sm = softenMap
+        val r = recipe; val mk = currentMasks()
         sharpening = true
         try {
-            val bmp = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) { renderDetail(r, region, edge, m, sm) }
+            val bmp = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) { renderDetail(r, region, edge, mk) }
             if (bmp != null) detail = region to bmp
         } finally { sharpening = false }
     }
@@ -315,6 +321,16 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
             ExposureMaps.save(context, source, m, ExposureMaps.FOG)
             com.celestial.latent.develop.FogLooks.save(context, source, l)
+        }
+        if (!printing && src != null) render(fast = false)
+    }
+    // The rays and where they may fall, kept with the photo. A blank coverage means "nowhere": kept.
+    LaunchedEffect(raysMap, raysLook) {
+        delay(400)
+        val m = raysMap; val l = raysLook
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            ExposureMaps.save(context, source, m, ExposureMaps.RAYS, keepBlank = true)
+            com.celestial.latent.develop.RaysLooks.save(context, source, l)
         }
         if (!printing && src != null) render(fast = false)
     }
@@ -365,8 +381,12 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                         try { Develop.sampleScene(context, source, isRaw, DECODE_EDGE, pairFirst, framing, u, v) }
                         catch (t: Throwable) { null } finally { q.engineLane.release() }
                     },
-                    renderWithMasks = { r, edge, m, sm, fm -> renderStill(r, edge, m, sm, fm) },
-                    renderRegionWithMasks = { r, edge, m, sm, fm, reg -> renderDetail(r, reg, edge, m, sm, fm) },
+                    raysMap = raysMap,
+                    onRaysMap = { raysMap = it },
+                    raysLook = raysLook,
+                    onRaysLook = { raysLook = it },
+                    renderWithMasks = { r, edge, mk -> renderStill(r, edge, mk) },
+                    renderRegionWithMasks = { r, edge, mk, reg -> renderDetail(r, reg, edge, mk) },
                     modifier = Modifier.fillMaxSize(),
                 )
             } else Column(Modifier.fillMaxSize()) {
@@ -916,7 +936,8 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                 (if (softenMap != null && recipe.diffusion) " · SOFTENED IN PLACES" else "") +
                 (if (pairFirst != null) " · DOUBLE EXPOSURE" else "") +
                 (if (!framing.isIdentity) " · FRAMED" else "") +
-                (if (fogMap?.isBlank == false) " · FOGGED" else ""),
+                (if (fogMap?.isBlank == false) " · FOGGED" else "") +
+                (if (raysLook.placed) " · RAYS" else ""),
                 color = LatentColors.Line, fontSize = 9.sp, letterSpacing = 1.5.sp, lineHeight = 13.sp,
                 // takes the space the button leaves and wraps if it must — it used to crush the button
                 modifier = Modifier.weight(1f).padding(end = 12.dp))
@@ -928,7 +949,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                     fullRunning = true; fullStarted = System.currentTimeMillis(); status = "full size: queued"
                     fullJob = com.celestial.latent.develop.DevelopQueue.submitFull(
                         context, source, isRaw, recipe, upscale = printSize, exposureMap = exposureMap, softenMask = softenMap, pairFirst = pairFirst, framing = framing,
-                        fogMask = fogMap, fogLook = fogLook,
+                        fogMask = fogMap, fogLook = fogLook, raysMask = raysMap, raysLook = raysLook,
                         onStatus = { m -> status = "full size: $m" },
                         onDone = { out ->
                             fullRunning = false; fullJob = null

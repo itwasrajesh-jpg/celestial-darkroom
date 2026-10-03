@@ -32,6 +32,7 @@ object DevelopQueue {
     fun submitFull(context: Context, source: Uri, isRaw: Boolean, recipe: Recipe, upscale: Float = 1f,
                    exposureMap: ExposureMap? = null, softenMask: ExposureMap? = null, pairFirst: Uri? = null,
                    framing: Framing = Framing(), fogMask: ExposureMap? = null, fogLook: FogLook = FogLook(),
+                   raysMask: ExposureMap? = null, raysLook: RaysLook = RaysLook(),
                    onStatus: (String) -> Unit, onDone: (Uri?) -> Unit): Running {
         val handle = Running()
         pending.incrementAndGet(); onChanged()
@@ -42,7 +43,7 @@ object DevelopQueue {
             try {
                 if (handle.cancelled) { Log.i("Latent", "full develop cancelled before it started"); return@execute }
                 onStatus("starting")
-                out = Develop.developFull(app, source, isRaw, recipe, upscale = upscale, exposureMap = exposureMap, softenMask = softenMask, pairFirst = pairFirst, framing = framing, fogMask = fogMask, fogLook = fogLook) { m -> if (!handle.cancelled) onStatus(m) }
+                out = Develop.developFull(app, source, isRaw, recipe, upscale = upscale, exposureMap = exposureMap, softenMask = softenMask, pairFirst = pairFirst, framing = framing, fogMask = fogMask, fogLook = fogLook, raysMask = raysMask, raysLook = raysLook) { m -> if (!handle.cancelled) onStatus(m) }
                 if (handle.cancelled) { Log.i("Latent", "full develop finished after cancel; result discarded"); out = null }
             } catch (t: Throwable) {
                 Log.e("Latent", "full develop failed", t)

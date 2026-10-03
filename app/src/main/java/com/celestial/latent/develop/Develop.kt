@@ -194,6 +194,7 @@ object Develop {
     fun openCached(context: Context, source: Uri, isRaw: Boolean, maxEdge: Int, recipe: Recipe, iso: Int,
                    softenMask: ExposureMap? = null, pairFirst: Uri? = null, framing: Framing = Framing(),
                    fogMask: ExposureMap? = null, fogLook: FogLook = FogLook(),
+                   raysMask: ExposureMap? = null, raysLook: RaysLook = RaysLook(),
                    log: (String) -> Unit = {}): Source {
         // The pristine decode is cached on its own, so changing a pre-engine setting costs a
         // copy rather than a fresh decode of the file (which was over a second every time).
@@ -223,11 +224,13 @@ object Develop {
             recipe.copy(printExposure = 1f, yFilterShift = 0f, mFilterShift = 0f, previewMaxSize = 0).hashCode(),
             softenMask?.let { "${it.width}x${it.height}:${it.stops.contentHashCode()}" } ?: "-",
             fogMask?.let { "${it.width}x${it.height}:${it.stops.contentHashCode()}:${fogLook.key()}" } ?: "-",
+            if (raysLook.placed) "${raysLook.key()}:${raysMask?.let { "${it.width}x${it.height}:${it.stops.contentHashCode()}" } ?: "all"}" else "-",
         ).joinToString("|")
         if (working.preparedFor == prep) return working
         working.frameFrom(pristine, framing)
         // the air first — it is in front of the lens — then the lens filter
         fogMask?.let { Fog.apply(working, it, fogLook, log) }
+        Rays.apply(working, raysLook, raysMask, log)          // light in the same air
         lensFilterSource(working, recipe, log)
         // A pair carries the noise of both frames: clean it for the noisier of the two.
         denoiseSource(working, recipe, isoUsed, log)
@@ -775,6 +778,7 @@ object Develop {
     fun developFull(context: Context, source: Uri, isRaw: Boolean, recipe: Recipe, maxEdge: Int = 0, upscale: Float = 1f,
                     exposureMap: ExposureMap? = null, softenMask: ExposureMap? = null, pairFirst: Uri? = null,
                     framing: Framing = Framing(), fogMask: ExposureMap? = null, fogLook: FogLook = FogLook(),
+                    raysMask: ExposureMap? = null, raysLook: RaysLook = RaysLook(),
                     log: (String) -> Unit = {}): Uri {
         log(if (maxEdge > 0) "decoding…" else "decoding at full size…")
         val pair = pairFirst != null && isRaw
@@ -788,6 +792,7 @@ object Develop {
         }
         return src.use { s ->
             fogMask?.let { Fog.apply(s, it, fogLook, log) }
+            Rays.apply(s, raysLook, raysMask, log)
             lensFilterSource(s, recipe, log)
             denoiseSource(s, recipe, if (pair) maxOf(isoOf(context, source), isoOf(context, pairFirst!!)) else isoOf(context, source), log)
             fastDiffusionSource(s, recipe, preview = false, softenMask = softenMask, log = log)

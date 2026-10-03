@@ -11,16 +11,25 @@ import kotlin.math.exp
  * of the presets ("mist", "morning", "dusk", "smog") tuned by [warmth] (−1 cool … +1 warm), or
  * "picked" — light taken from a spot in the scene, as linear RGB in [picked].
  */
-data class FogLook(val mode: String = "auto", val warmth: Float = 0f, val picked: List<Float>? = null) {
-    fun key(): String = "$mode,${"%.2f".format(Locale.US, warmth)}" +
+data class FogLook(val mode: String = "auto", val warmth: Float = 0f, val picked: List<Float>? = null,
+                   /** How much of the painted fog is applied, 0..1 — the whole painting, dialled up or down. */
+                   val amount: Float = 1f) {
+    fun key(): String = "$mode,${"%.2f".format(Locale.US, warmth)},${"%.3f".format(Locale.US, amount)}" +
         (picked?.joinToString(",", prefix = ",") { "%.5f".format(Locale.US, it) } ?: "")
 
     companion object {
         fun parse(s: String?): FogLook {
             if (s.isNullOrEmpty()) return FogLook()
             return runCatching {
+                // mode, warmth[, r, g, b] (saved before the amount existed: 2 or 5 parts), or
+                // mode, warmth, amount[, r, g, b] (3 or 6 parts) — the count tells them apart
                 val p = s.split(",")
-                FogLook(p[0], p[1].toFloat(), if (p.size >= 5) listOf(p[2].toFloat(), p[3].toFloat(), p[4].toFloat()) else null)
+                val hasAmount = p.size == 3 || p.size == 6
+                val amount = if (hasAmount) p[2].toFloat() else 1f
+                val at = if (hasAmount) 3 else 2
+                FogLook(p[0], p[1].toFloat(),
+                    if (p.size >= at + 3) listOf(p[at].toFloat(), p[at + 1].toFloat(), p[at + 2].toFloat()) else null,
+                    amount.coerceIn(0f, 1f))
             }.getOrDefault(FogLook())
         }
     }
@@ -183,6 +192,8 @@ object Fog {
     /** Fogs [src] in place by the painted thickness [mask] and the colour [look]. */
     fun apply(src: Develop.Source, mask: ExposureMap, look: FogLook, log: (String) -> Unit = {}) {
         if (mask.isBlank) return
+        val amount = look.amount.coerceIn(0f, 1f)
+        if (amount <= 0f) return
         log("fog")
         val a = light(src, look)
         val w = src.width; val h = src.height
@@ -190,7 +201,7 @@ object Fog {
         for (y in 0 until h) {
             val v = (y + 0.5f) / h
             for (x in 0 until w) {
-                val d = mask.sample((x + 0.5f) / w, v)
+                val d = mask.sample((x + 0.5f) / w, v) * amount
                 if (d <= 0.0005f) continue
                 val t = exp(-d)
                 val o = (y * w + x) * 3
