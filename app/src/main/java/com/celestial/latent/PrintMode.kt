@@ -678,6 +678,13 @@ private class PaintSpec(
     val status: (ExposureMap?, Recipe) -> String,
     /** Scales how much one pass adds (1 = the usual gentle/medium/strong). */
     val passScale: Float = 1f,
+    /**
+     * A gradient tool: drag from near to far and the value builds smoothly along the line, from
+     * nothing where the finger lands to [gradientAmount] (gentle/medium/strong) at the far end and
+     * beyond. Null = no gradient tool.
+     */
+    val gradientAmount: FloatArray? = null,
+    val gradientHint: String = "",
 )
 
 private val DODGE_BURN_SPEC = PaintSpec(
@@ -735,6 +742,9 @@ private val FOG_SPEC = PaintSpec(
     // Haze shows most over dark places — a thickness of 0.25 already lifts a deep shadow by about
     // two stops — so fog builds up in half-size passes, fine enough to layer gradually.
     passScale = 0.5f,
+    // a full gradient: 0.5, 1 or 2 thick at the far end — about 39%, 63% or 86% veiled
+    gradientAmount = floatArrayOf(0.5f, 1f, 2f),
+    gradientHint = "Drag from near to far — the fog thickens smoothly along the line.",
     status = { m, _ ->
         if (m == null || m.isBlank) "no fog" else {
             val area = Math.round(m.stops.count { it > 0.05f } * 100f / m.stops.size)
@@ -815,6 +825,9 @@ private fun PaintStep(
     var developing by remember { mutableStateOf(true) }
     var version by remember { mutableStateOf(0) }
     var plus by remember { mutableStateOf(true) }
+    // the gradient tool, and the line being dragged (picture coordinates: from, to)
+    var gradientTool by remember { mutableStateOf(false) }
+    var line by remember { mutableStateOf<Pair<Pair<Float, Float>, Pair<Float, Float>>?>(null) }
     var brush by remember { mutableStateOf(1) }
     var strength by remember { mutableStateOf(1) }
     var showMask by remember { mutableStateOf(false) }
@@ -867,6 +880,32 @@ private fun PaintStep(
     }
 
     /** Stamp the brush into the current stroke at a picture position (0..1 across and down). */
+    /** How much a whole stroke adds where it is at full strength: a gradient's own amounts, or a brush pass. */
+    fun strokeAmount(): Float {
+        val g = spec.gradientAmount
+        return if (gradientTool && g != null) g[strength] else STRENGTH[strength] * spec.passScale
+    }
+
+    /**
+     * The gradient from (u0, v0) to (u1, v1): nothing behind the start, building smoothly to full
+     * at the end and full beyond it. Distances in units of the long edge, so a diagonal drag
+     * builds evenly on any shape of picture.
+     */
+    fun fillGradient(u0: Float, v0: Float, u1: Float, v1: Float) {
+        val m = working ?: startMap(aspect).also { working = it }
+        val st = stroke ?: FloatArray(m.width * m.height).also { stroke = it }
+        val aw = if (aspect >= 1f) 1f else aspect
+        val ah = if (aspect >= 1f) 1f / aspect else 1f
+        val dx = (u1 - u0) * aw; val dy = (v1 - v0) * ah
+        val len2 = dx * dx + dy * dy
+        for (j in 0 until m.height) for (i in 0 until m.width) {
+            val px = ((i + 0.5f) / m.width - u0) * aw; val py = ((j + 0.5f) / m.height - v0) * ah
+            val t = if (len2 < 1e-8f) 0f else ((px * dx + py * dy) / len2).coerceIn(0f, 1f)
+            st[j * m.width + i] = t * t * (3f - 2f * t)          // smooth at both ends
+        }
+        strokeTick++
+    }
+
     fun stamp(u: Float, v: Float) {
         val m = working ?: startMap(aspect).also { working = it }
         val st = stroke ?: FloatArray(m.width * m.height).also { stroke = it }
@@ -895,7 +934,7 @@ private fun PaintStep(
         val sign = if (plus) 1f else -1f
         val next = base.copy()
         for (k in next.stops.indices) {
-            if (st[k] > 0f) next.stops[k] = (next.stops[k] + sign * STRENGTH[strength] * spec.passScale * st[k]).coerceIn(spec.min, spec.max)
+            if (st[k] > 0f) next.stops[k] = (next.stops[k] + sign * strokeAmount() * st[k]).coerceIn(spec.min, spec.max)
         }
         if (plus) onPaintPlus()
         // `working` still holds the mask as it was before the stroke (the stroke lived apart), so
@@ -910,7 +949,7 @@ private fun PaintStep(
         val sign = if (plus) 1f else -1f
         val px = IntArray(m.width * m.height)
         for (k in px.indices) {
-            val sNow = (m.stops[k] + (if (st != null) sign * STRENGTH[strength] * spec.passScale * st[k] else 0f)).coerceIn(spec.min, spec.max)
+            val sNow = (m.stops[k] + (if (st != null) sign * strokeAmount() * st[k] else 0f)).coerceIn(spec.min, spec.max)
             val a = (kotlin.math.abs(sNow) / spec.overlayFull).coerceIn(0f, 1f)
             val tint = if (sNow >= 0f) spec.tintPlus else spec.tintMinus
             val alpha = (a * 200).toInt().coerceIn(0, 255)
@@ -921,7 +960,7 @@ private fun PaintStep(
 
     Column(modifier) {
         Text(
-            spec.hint,
+            if (gradientTool) spec.gradientHint else spec.hint,
             color = LatentColors.TextDim, fontSize = 11.sp,
             modifier = Modifier.padding(horizontal = 18.dp).padding(top = 10.dp),
         )
@@ -946,12 +985,13 @@ private fun PaintStep(
                         var painting = u0 in 0f..1f && v0 in 0f..1f
                         var zooming = false
                         var last = Pair(u0, v0)
+                        val dragging = gradientTool && spec.gradientAmount != null
                         if (painting) {
                             Haptics.tick(context)
                             // the guide shows at full strength while painting (gesture code cannot
                             // animate itself, so the change is handed to a coroutine)
                             scope.launch { overlay.snapTo(1f) }
-                            stamp(u0, v0)
+                            if (dragging) { fillGradient(u0, v0, u0, v0); line = Pair(u0, v0) to Pair(u0, v0) } else stamp(u0, v0)
                         }
                         while (true) {
                             val event = awaitPointerEvent()
@@ -960,7 +1000,7 @@ private fun PaintStep(
                             if (pressed.size >= 2) {
                                 // a second finger: this is a zoom, and the dab the first finger
                                 // began is not kept as a stray mark
-                                if (!zooming) { zooming = true; if (painting) { painting = false; stroke = null; strokeTick++ } }
+                                if (!zooming) { zooming = true; if (painting) { painting = false; stroke = null; line = null; strokeTick++ } }
                                 zoom.pinch(event.calculateCentroid(), event.calculatePan(), event.calculateZoom(), fit, vw, vh)
                                 event.changes.forEach { it.consume() }
                                 continue
@@ -968,6 +1008,11 @@ private fun PaintStep(
                             if (zooming || !painting) { event.changes.forEach { it.consume() }; continue }
                             val change = pressed.first()
                             val (u, v) = at(change.position)
+                            if (dragging) {
+                                // the gradient follows the finger: from where it landed to here
+                                fillGradient(u0, v0, u, v); line = Pair(u0, v0) to Pair(u, v)
+                                change.consume(); continue
+                            }
                             // fill the gap between touch samples, so a quick stroke stays continuous
                             val du = u - last.first; val dv = v - last.second
                             val steps = maxOf(1, (kotlin.math.sqrt(du * du + dv * dv) / (BRUSH[brush] / zoom.scale / 3f)).toInt())
@@ -976,6 +1021,7 @@ private fun PaintStep(
                             change.consume()
                         }
                         if (painting) endStroke()
+                        line = null
                     }
                 },
             ) {
@@ -999,6 +1045,13 @@ private fun PaintStep(
                         drawImage(tile.second.asImageBitmap(), dstOffset = IntOffset(a.x.toInt(), a.y.toInt()),
                             dstSize = IntSize((c.x - a.x).toInt(), (c.y - a.y).toInt()))
                     }
+                    line?.let { (a, b) ->
+                        val pa = zoom.toScreen(a.first, a.second, fit, size.width, size.height)
+                        val pb = zoom.toScreen(b.first, b.second, fit, size.width, size.height)
+                        drawLine(LatentColors.Amber, pa, pb, 2.dp.toPx())
+                        drawCircle(LatentColors.Amber, 6.dp.toPx(), pa, style = Stroke(2.dp.toPx()))
+                        drawCircle(LatentColors.Amber, 6.dp.toPx(), pb)
+                    }
                     val ov = overlay.value
                     val ob = overlayBitmap
                     if (ob != null && ov > 0.001f) drawImage(ob.asImageBitmap(), dstOffset = IntOffset(r.left.toInt(), r.top.toInt()),
@@ -1020,6 +1073,7 @@ private fun PaintStep(
         ) {
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 listOf(false to spec.minusLabel, true to spec.plusLabel).forEach { (b, label) -> Chip(label, on = plus == b) { plus = b } }
+                if (spec.gradientAmount != null) Chip("gradient", on = gradientTool) { gradientTool = !gradientTool }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
                 for (i in 0..2) {

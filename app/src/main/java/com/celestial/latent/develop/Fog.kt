@@ -42,15 +42,88 @@ object Fog {
     /** Luminance weights for linear ProPhoto RGB (its XYZ Y row). */
     private val LUM = floatArrayOf(0.2880f, 0.7119f, 0.0001f)
 
-    /** Preset colours, as chromaticity only: brightness always comes from the scene. */
-    val PRESETS = listOf(
-        "mist" to floatArrayOf(1.00f, 1.00f, 1.00f),     // neutral white-grey: overcast, river mist
-        "morning" to floatArrayOf(0.82f, 0.97f, 1.30f),  // cool blue: early morning valleys
-        "dusk" to floatArrayOf(1.30f, 1.00f, 0.62f),     // warm gold: low sun through dust
-        "smog" to floatArrayOf(1.12f, 1.04f, 0.72f),     // dull brownish-yellow: city haze
+    /**
+     * Presets as colour temperatures of the light the fog is lit by, in mireds (1,000,000 ÷
+     * kelvin): mist 6500K (neutral), morning 8000K, dusk 4000K, smog 5000K. Real fog is nearly
+     * colourless — its droplets scatter all colours alike — so any colour is the light's.
+     * (These replaced arbitrary colour ratios that, with the slider at cool, came out as blue
+     * paint: saturation 0.65, against 0.15 for real 8000K light.)
+     */
+    val PRESETS = listOf("mist" to 153.8f, "morning" to 125f, "dusk" to 250f, "smog" to 200f)
+
+    /** How far the warmth slider moves the colour temperature, in mireds either way. */
+    private const val WARMTH_MIREDS = 90f
+
+    /** No fog is more saturated than this ((max − min) ÷ max): fog is pale, never paint. */
+    private const val SATURATION_MAX = 0.25f
+
+    /** How much of the scene's own light colour Auto keeps; the rest is neutral, as fog is. */
+    private const val AUTO_TINT = 0.35f
+
+    /**
+     * Light of each colour temperature as linear ProPhoto RGB, relative to 6500K and at
+     * luminance 1 — every 10 mireds from 30 (33,000K) to 350 (2,860K). Blackbody light through
+     * the CIE 1931 observer, as for the 85B.
+     */
+    private val TINTS = arrayOf(
+        floatArrayOf(1.0067f, 0.9972f, 1.8190f),
+        floatArrayOf(1.0025f, 0.9989f, 1.7516f),
+        floatArrayOf(0.9986f, 1.0005f, 1.6825f),
+        floatArrayOf(0.9952f, 1.0019f, 1.6123f),
+        floatArrayOf(0.9923f, 1.0030f, 1.5419f),
+        floatArrayOf(0.9902f, 1.0039f, 1.4716f),
+        floatArrayOf(0.9888f, 1.0045f, 1.4022f),
+        floatArrayOf(0.9882f, 1.0047f, 1.3339f),
+        floatArrayOf(0.9885f, 1.0046f, 1.2672f),
+        floatArrayOf(0.9896f, 1.0042f, 1.2025f),
+        floatArrayOf(0.9916f, 1.0034f, 1.1399f),
+        floatArrayOf(0.9945f, 1.0022f, 1.0795f),
+        floatArrayOf(0.9983f, 1.0007f, 1.0216f),
+        floatArrayOf(1.0029f, 0.9988f, 0.9662f),
+        floatArrayOf(1.0084f, 0.9966f, 0.9132f),
+        floatArrayOf(1.0146f, 0.9941f, 0.8628f),
+        floatArrayOf(1.0216f, 0.9913f, 0.8147f),
+        floatArrayOf(1.0293f, 0.9882f, 0.7691f),
+        floatArrayOf(1.0377f, 0.9848f, 0.7259f),
+        floatArrayOf(1.0467f, 0.9812f, 0.6848f),
+        floatArrayOf(1.0563f, 0.9773f, 0.6460f),
+        floatArrayOf(1.0665f, 0.9732f, 0.6092f),
+        floatArrayOf(1.0772f, 0.9688f, 0.5744f),
+        floatArrayOf(1.0884f, 0.9643f, 0.5415f),
+        floatArrayOf(1.1002f, 0.9596f, 0.5105f),
+        floatArrayOf(1.1123f, 0.9546f, 0.4811f),
+        floatArrayOf(1.1249f, 0.9496f, 0.4534f),
+        floatArrayOf(1.1378f, 0.9443f, 0.4273f),
+        floatArrayOf(1.1511f, 0.9390f, 0.4026f),
+        floatArrayOf(1.1647f, 0.9334f, 0.3793f),
+        floatArrayOf(1.1787f, 0.9278f, 0.3574f),
+        floatArrayOf(1.1929f, 0.9220f, 0.3366f),
+        floatArrayOf(1.2074f, 0.9162f, 0.3171f)
     )
 
+    /** The colour of light at [mired], interpolated from the table. */
+    fun tintFor(mired: Float): FloatArray {
+        val x = ((mired - 30f) / 10f).coerceIn(0f, (TINTS.size - 1).toFloat())
+        val i = x.toInt().coerceAtMost(TINTS.size - 2); val f = x - i
+        val c = FloatArray(3) { k -> TINTS[i][k] * (1 - f) + TINTS[i + 1][k] * f }
+        // the table is rounded to four places; rescale so brightness is kept exactly
+        val y = LUM[0] * c[0] + LUM[1] * c[1] + LUM[2] * c[2]
+        return FloatArray(3) { c[it] / y }
+    }
+
     private fun lum(c: FloatArray) = LUM[0] * c[0] + LUM[1] * c[1] + LUM[2] * c[2]
+
+    /** A colour at luminance 1, made no more saturated than the ceiling by moving it toward grey. */
+    private fun capped(c: FloatArray): FloatArray {
+        fun sat(k: Float): Float {
+            val v = FloatArray(3) { 1f + (c[it] - 1f) * k }
+            val mx = v.max(); return if (mx <= 0f) 0f else (mx - v.min()) / mx
+        }
+        if (sat(1f) <= SATURATION_MAX) return c
+        var lo = 0f; var hi = 1f
+        repeat(24) { val mid = (lo + hi) / 2f; if (sat(mid) > SATURATION_MAX) hi = mid else lo = mid }
+        return FloatArray(3) { 1f + (c[it] - 1f) * lo }
+    }
 
     /**
      * The scene's own brightest light: the average colour of its brightest 5% — usually the
@@ -79,16 +152,32 @@ object Fog {
         return floatArrayOf((r / m).toFloat(), (g / m).toFloat(), (b / m).toFloat())
     }
 
-    /** The fog's light, for a look: a chosen colour at the scene's own brightness, or as picked. */
+    /**
+     * The fog's light, for a look: a pale colour at a brightness. Every mode passes the same
+     * saturation ceiling, the eyedropper included — pick a vivid blue sky and the fog is a pale
+     * blue mist.
+     *  - auto: the scene's brightest light, at its brightness, mostly neutral with a hint of its colour;
+     *  - a preset: that colour temperature, moved by the warmth slider, at the scene's brightness;
+     *  - picked: the picked light's own colour and brightness.
+     */
     fun light(src: Develop.Source, look: FogLook): FloatArray {
         val auto = autoLight(src)
-        if (look.mode == "auto") return auto
-        if (look.mode == "picked" && look.picked != null && look.picked.size == 3) return look.picked.toFloatArray()
-        val base = PRESETS.firstOrNull { it.first == look.mode }?.second ?: PRESETS[0].second
-        val w = look.warmth.coerceIn(-1f, 1f)
-        val tinted = floatArrayOf(base[0] * (1f + 0.25f * w), base[1], base[2] * (1f - 0.35f * w))
-        val scale = lum(auto) / maxOf(lum(tinted), 1e-6f)          // the scene's brightness, this colour
-        return floatArrayOf(tinted[0] * scale, tinted[1] * scale, tinted[2] * scale)
+        val (chroma, level) = when {
+            look.mode == "picked" && look.picked != null && look.picked.size == 3 -> {
+                val p = look.picked.toFloatArray(); val y = maxOf(lum(p), 1e-6f)
+                FloatArray(3) { p[it] / y } to y
+            }
+            look.mode == "auto" -> {
+                val y = maxOf(lum(auto), 1e-6f)
+                FloatArray(3) { 1f + (auto[it] / y - 1f) * AUTO_TINT } to y
+            }
+            else -> {
+                val base = PRESETS.firstOrNull { it.first == look.mode }?.second ?: PRESETS[0].second
+                tintFor(base + WARMTH_MIREDS * look.warmth.coerceIn(-1f, 1f)) to lum(auto)
+            }
+        }
+        val c = capped(chroma)
+        return FloatArray(3) { c[it] * level }
     }
 
     /** Fogs [src] in place by the painted thickness [mask] and the colour [look]. */
