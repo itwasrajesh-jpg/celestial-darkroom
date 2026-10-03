@@ -44,6 +44,15 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import kotlinx.coroutines.launch
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.input.pointer.positionChange
+import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateCentroid
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
@@ -64,6 +73,7 @@ import androidx.compose.animation.core.tween
 private const val COARSE_EDGE = 420     // while a control is moving
 private const val FINE_EDGE = 640       // the size the engine's own editor uses
 private const val DECODE_EDGE = 1200    // the RAW is decoded once at this size for the darkroom
+private const val DETAIL_EDGE = 2400    // ...and at this size, the first time you zoom in, for real detail
 
 private val TABS = listOf(
     "film" to "FILM", "halation" to "HALATION", "grain" to "GRAIN", "diffusion" to "DIFFUSION",
@@ -98,6 +108,14 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
     var framing by remember { mutableStateOf(com.celestial.latent.develop.Framings.load(context, source)) }
     var frameOpen by remember { mutableStateOf(false) }
     var liveStraighten by remember { mutableStateOf<Float?>(null) }
+    // Zoom on the photo, the photo area's size, the sharp tile developed for the zoomed-in part,
+    // and whether two fingers are down (so press-and-hold "compare" stays out of a pinch).
+    val zoom = remember { ZoomState() }
+    var viewSize by remember { mutableStateOf(androidx.compose.ui.unit.IntSize.Zero) }
+    var detail by remember { mutableStateOf<Pair<com.celestial.latent.develop.Region, Bitmap>?>(null) }
+    var pinching by remember { mutableStateOf(false) }
+    var sharpening by remember { mutableStateOf(false) }
+    val zoomScope = rememberCoroutineScope()
     var preview by remember { mutableStateOf<Bitmap?>(null) }
     var original by remember { mutableStateOf<Bitmap?>(null) }
     var comparing by remember { mutableStateOf(false) }
@@ -177,6 +195,27 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
         } finally { q.engineLane.release() }
     }
 
+    /**
+     * The zoomed-in part of the print, developed sharp from the larger decode at the screen's own
+     * resolution. Queues for the engine lane like every render; only called off the main thread.
+     */
+    fun renderDetail(r: Recipe, region: com.celestial.latent.develop.Region, edge: Int,
+                     map: ExposureMap?, soften: ExposureMap?): Bitmap? {
+        val q = com.celestial.latent.develop.DevelopQueue
+        q.engineLane.acquire()
+        return try {
+            val iso = Develop.isoOf(context, source)
+            val whole = Develop.openCached(context, source, isRaw, DETAIL_EDGE, r, iso, softenMask = soften, pairFirst = pairFirst, framing = framing) { }
+            Develop.cropRegion(whole, region).use { part ->
+                val (bytes, _) = Develop.render(context, part, r.copy(previewMaxSize = edge), preview = true,
+                    exposureMap = map?.crop(region), softenMask = soften)
+                BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+            }
+        } catch (t: Throwable) {
+            android.util.Log.w("Latent", "zoom detail failed: ${t.message}"); null
+        } finally { q.engineLane.release() }
+    }
+
     // First render, then re-render shortly after the last control change.
     LaunchedEffect(fullRunning) {
         while (fullRunning) { elapsed = ((System.currentTimeMillis() - fullStarted) / 1000).toInt(); delay(500) }
@@ -239,7 +278,26 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
         framing = next
         com.celestial.latent.develop.Framings.save(context, source, next)
     }
-    LaunchedEffect(framing) { if (src != null) render(fast = false) }
+    LaunchedEffect(framing) { zoom.reset(); detail = null; if (src != null) render(fast = false) }
+    LaunchedEffect(frameOpen) { if (frameOpen) { zoom.reset(); detail = null } }
+    // When zoomed in and still for a moment, develop the visible part sharp. A new print (any
+    // change to recipe, masks or framing) makes the old tile stale.
+    LaunchedEffect(preview) { detail = null }
+    LaunchedEffect(zoom.scale, zoom.focusU, zoom.focusV, preview, frameOpen) {
+        val b = preview ?: return@LaunchedEffect
+        if (!zoom.zoomed || frameOpen || viewSize.width == 0) return@LaunchedEffect
+        delay(320)
+        val fit = fitRect(viewSize.width.toFloat(), viewSize.height.toFloat(), b.width.toFloat() / b.height)
+        val region = zoom.visible(fit, viewSize.width.toFloat(), viewSize.height.toFloat())
+        if (detail?.first == region) return@LaunchedEffect
+        val edge = maxOf(viewSize.width, viewSize.height).coerceAtMost(1600)
+        val r = recipe; val m = exposureMap; val sm = softenMap
+        sharpening = true
+        try {
+            val bmp = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) { renderDetail(r, region, edge, m, sm) }
+            if (bmp != null) detail = region to bmp
+        } finally { sharpening = false }
+    }
     // Back from PRINT: the strips may have changed the exposure while the preview slept.
     LaunchedEffect(printing) { if (!printing && src != null) render(fast = false) }
     // The decoded copy is kept by Develop.Cache so coming back is instant; nothing to free here.
@@ -278,19 +336,56 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                     onSoftenMap = { softenMap = it },
                     onDiffusionOn = { if (!recipe.diffusion) set { copy(diffusion = true) } },
                     renderWithMasks = { r, edge, m, sm -> renderStill(r, edge, m, sm) },
+                    renderRegionWithMasks = { r, edge, m, sm, reg -> renderDetail(r, reg, edge, m, sm) },
                     modifier = Modifier.fillMaxSize(),
                 )
             } else Column(Modifier.fillMaxSize()) {
                 // Photo shrinks as the sheet is dragged up; it never disappears entirely.
                 // The sheet always keeps room; dragging shifts how much.
                 val photoWeight = when (sheet) { 0 -> 0.58f; 1 -> 0.38f; else -> 0.18f }
-                Box(Modifier.fillMaxWidth().weight(photoWeight).background(LatentColors.Surface).pointerInput(Unit) {
-                    detectTapGestures(onPress = {
-                        comparing = true
+                Box(Modifier.fillMaxWidth().weight(photoWeight).background(LatentColors.Surface)
+                    .onSizeChanged { viewSize = it }
+                    // Two fingers zoom and move; one finger slides the picture when zoomed in.
+                    .pointerInput(frameOpen, preview != null) {
+                        if (frameOpen) return@pointerInput
+                        awaitEachGesture {
+                            awaitFirstDown(requireUnconsumed = false)
+                            var travelled = 0f
+                            do {
+                                val e = awaitPointerEvent()
+                                val down = e.changes.count { it.pressed }
+                                val b = preview
+                                if (b != null) {
+                                    val vw = size.width.toFloat(); val vh = size.height.toFloat()
+                                    val fit = fitRect(vw, vh, b.width.toFloat() / b.height)
+                                    if (down >= 2) {
+                                        pinching = true; comparing = false
+                                        zoom.pinch(e.calculateCentroid(), e.calculatePan(), e.calculateZoom(), fit, vw, vh)
+                                        e.changes.forEach { it.consume() }
+                                    } else if (down == 1 && zoom.zoomed) {
+                                        val d = e.changes.first { it.pressed }.positionChange()
+                                        travelled += d.getDistance()
+                                        if (travelled > viewConfiguration.touchSlop) {
+                                            comparing = false
+                                            zoom.panBy(d.x, d.y, fit, vw, vh)
+                                            e.changes.forEach { it.consume() }
+                                        }
+                                    }
+                                }
+                            } while (e.changes.any { it.pressed })
+                            pinching = false
+                        }
+                    }
+                    .pointerInput(Unit) {
+                    detectTapGestures(
+                        onDoubleTap = { Haptics.tick(context); zoom.reset(); detail = null },
+                        onPress = {
+                        // a moment's wait, so the start of a pinch or slide never flashes the original
+                        val show = zoomScope.launch { delay(140); if (!pinching) comparing = true }
                         if (original == null) Thread {
                             original = runCatching { context.contentResolver.loadThumbnail(source, android.util.Size(1200, 1200), null) }.getOrNull()
                         }.start()
-                        tryAwaitRelease(); comparing = false
+                        tryAwaitRelease(); show.cancel(); comparing = false
                     })
                 }) {
                     val shown = if (comparing) (original ?: preview) else preview
@@ -300,8 +395,42 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                     val liveScale = shown?.let { b ->
                         1f / com.celestial.latent.develop.Framing(straighten = delta).cropScale(b.width, b.height)
                     } ?: 1f
-                    shown?.let { Image(it.asImageBitmap(), contentDescription = "Developed", contentScale = ContentScale.Fit,
-                        modifier = Modifier.fillMaxSize().graphicsLayer { rotationZ = delta; scaleX = liveScale; scaleY = liveScale }) }
+                    shown?.let { bmp ->
+                        Image(bmp.asImageBitmap(), contentDescription = "Developed", contentScale = ContentScale.Fit,
+                            modifier = Modifier.fillMaxSize().graphicsLayer {
+                                if (frameOpen) { rotationZ = delta; scaleX = liveScale; scaleY = liveScale }
+                                else if (zoom.zoomed) {
+                                    // the zoom: scaled about the view's middle, then moved so the
+                                    // focused point of the picture sits there
+                                    val fit = fitRect(size.width, size.height, bmp.width.toFloat() / bmp.height)
+                                    scaleX = zoom.scale; scaleY = zoom.scale
+                                    translationX = (0.5f - zoom.focusU) * fit.width * zoom.scale
+                                    translationY = (0.5f - zoom.focusV) * fit.height * zoom.scale
+                                }
+                            })
+                    }
+                    // the sharp tile for the zoomed-in part, laid exactly over it
+                    val tile = detail
+                    if (tile != null && zoom.zoomed && !comparing && !frameOpen && preview != null) {
+                        val pb = preview!!
+                        // each new tile fades in over the enlarged print beneath it
+                        val tileFade = remember(tile) { androidx.compose.animation.core.Animatable(0f) }
+                        LaunchedEffect(tile) { tileFade.animateTo(1f, androidx.compose.animation.core.tween(260)) }
+                        val tileAlpha = tileFade.value
+                        androidx.compose.foundation.Canvas(Modifier.fillMaxSize()) {
+                            val fit = fitRect(size.width, size.height, pb.width.toFloat() / pb.height)
+                            val a = zoom.toScreen(tile.first.u0, tile.first.v0, fit, size.width, size.height)
+                            val c = zoom.toScreen(tile.first.u1, tile.first.v1, fit, size.width, size.height)
+                            drawImage(tile.second.asImageBitmap(),
+                                dstOffset = androidx.compose.ui.unit.IntOffset(a.x.toInt(), a.y.toInt()),
+                                dstSize = androidx.compose.ui.unit.IntSize((c.x - a.x).toInt(), (c.y - a.y).toInt()), alpha = tileAlpha)
+                        }
+                    }
+                    if (zoom.zoomed && !frameOpen) Text("${String.format(java.util.Locale.US, "%.1f", zoom.scale)}×  · " +
+                        (if (sharpening) "sharpening…" else "double-tap for the whole print"),
+                        color = Color(0xE6FFFFFF), fontSize = 10.sp,
+                        modifier = Modifier.align(Alignment.BottomCenter).padding(8.dp).clip(RoundedCornerShape(999.dp))
+                            .background(Color(0x66000000)).padding(horizontal = 10.dp, vertical = 3.dp))
                     // a grid to line the horizon up against, while framing
                     if (frameOpen && preview != null) {
                         val b = preview!!

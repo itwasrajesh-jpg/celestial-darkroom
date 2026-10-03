@@ -38,6 +38,13 @@ object Develop {
          * "film width ÷ picture width", so they read this to stay at their true size.
          */
         @Volatile var filmScale = 1f
+        /**
+         * What this working copy was last prepared for (framing, noise cleaning, diffusion). A
+         * render never writes into its source — the engine reads it as const, and Latent's own
+         * render step only reads it — so a copy prepared for the same things can be used again
+         * without preparing it twice. Cleared whenever the pixels are refilled.
+         */
+        @Volatile var preparedFor: String? = null
 
         /** Refills this image from [from], so one working buffer can be reused. */
         fun refillFrom(from: Source) {
@@ -50,6 +57,7 @@ object Develop {
             diffused = false
             printDiffused = false
             filmScale = from.filmScale
+            preparedFor = null
         }
 
         /**
@@ -89,6 +97,7 @@ object Develop {
             }
             denoised = false; diffused = false; printDiffused = false
             filmScale = from.filmScale * f.cropScale(sw, sh)
+            preparedFor = null
         }
 
         /** An empty image of a given size, to be framed into. */
@@ -198,11 +207,22 @@ object Develop {
         val (fw, fh) = framing.outputSize(pristine.width, pristine.height)
         val working = Cache.get(workKey)?.takeIf { it.width == fw && it.height == fh }
             ?: pristine.blankSized(fw, fh).also { Cache.put(workKey, it) }
+        // Prepared for exactly this already? Then it is ready: the print exposure, the filters
+        // and the preview size are used only later, by the engine, so test strips and the
+        // ring-around — which change nothing else — no longer clean and diffuse every print again.
+        val isoUsed = if (pair) maxOf(iso, isoOf(context, pairFirst!!)) else iso
+        val prep = listOf(
+            framing.key(), isoUsed,
+            recipe.copy(printExposure = 1f, yFilterShift = 0f, mFilterShift = 0f, previewMaxSize = 0).hashCode(),
+            softenMask?.let { "${it.width}x${it.height}:${it.stops.contentHashCode()}" } ?: "-",
+        ).joinToString("|")
+        if (working.preparedFor == prep) return working
         working.frameFrom(pristine, framing)
         // A pair carries the noise of both frames: clean it for the noisier of the two.
-        denoiseSource(working, recipe, if (pair) maxOf(iso, isoOf(context, pairFirst!!)) else iso, log)
+        denoiseSource(working, recipe, isoUsed, log)
         fastDiffusionSource(working, recipe, preview = true, softenMask = softenMask, log = log)
         fastPrintDiffusionSource(working, recipe, preview = true, log = log)
+        working.preparedFor = prep
         return working
     }
 
@@ -733,6 +753,28 @@ object Develop {
             val (bytes, dims) = render(context, s, recipe, preview = false, upscale = upscale, exposureMap = exposureMap, softenMask = softenMask, log = log)
             log("saving ${dims.first}×${dims.second}, ${bytes.size / 1024} KB")
             saveDeveloped(context, bytes, source, recipe.film, tag = if (pair) "DX" else null)
+        }
+    }
+
+    /**
+     * A region of the picture (0..1 across and down), for the zoomed view. It shows less of the
+     * film than the whole picture, so its film scale shrinks to match: grain, halation and glow
+     * keep their true size instead of growing as you zoom.
+     */
+    fun cropRegion(src: Source, r: Region): Source {
+        val x0 = (r.u0 * src.width).toInt().coerceIn(0, src.width - 8)
+        val y0 = (r.v0 * src.height).toInt().coerceIn(0, src.height - 8)
+        val cw = ((r.u1 - r.u0) * src.width).toInt().coerceIn(8, src.width - x0)
+        val ch = ((r.v1 - r.v0) * src.height).toInt().coerceIn(8, src.height - y0)
+        val inBuf = src.image.data.duplicate().order(ByteOrder.nativeOrder()).asFloatBuffer()
+        val out = ByteBuffer.allocateDirect(cw * ch * 3 * 4).order(ByteOrder.nativeOrder())
+        val of = out.asFloatBuffer()
+        for (y in 0 until ch) {
+            var i = ((y0 + y) * src.width + x0) * 3
+            for (x in 0 until cw * 3) { of.put(inBuf.get(i)); i++ }
+        }
+        return Source(LinearImage(out, cw, ch, colorSpace = src.image.colorSpace), cw, ch).also {
+            it.filmScale = src.filmScale * maxOf(cw, ch).toFloat() / maxOf(src.width, src.height)
         }
     }
 

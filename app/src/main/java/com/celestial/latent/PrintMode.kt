@@ -61,6 +61,11 @@ import com.celestial.latent.develop.PRINT_EXPOSURE_MAX
 import com.celestial.latent.develop.PRINT_EXPOSURE_MIN
 import com.celestial.latent.develop.ExposureMap
 import com.celestial.latent.develop.Recipe
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateCentroid
+import com.celestial.latent.develop.Region
 import com.celestial.latent.ui.LatentColors
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -351,6 +356,7 @@ fun PrintPanel(
     onSoftenMap: (ExposureMap?) -> Unit,
     onDiffusionOn: () -> Unit,
     renderWithMasks: (Recipe, Int, ExposureMap?, ExposureMap?) -> Bitmap?,
+    renderRegionWithMasks: ((Recipe, Int, ExposureMap?, ExposureMap?, Region) -> Bitmap?)? = null,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -387,13 +393,15 @@ fun PrintPanel(
                 2 -> PaintStep(DODGE_BURN_SPEC, recipe, exposureMap, onExposureMap,
                     renderWith = { r, e, m -> renderWithMasks(r, e, m, softenMap) },
                     startMap = { a -> ExposureMap.blank(a) },
-                    modifier = Modifier.fillMaxSize())
+                    modifier = Modifier.fillMaxSize(),
+                    renderRegion = renderRegionWithMasks?.let { f -> { r, e, m, reg -> f(r, e, m, softenMap, reg) } })
                 else -> PaintStep(SOFTEN_SPEC, recipe, softenMap, onSoftenMap,
                     renderWith = { r, e, m -> renderWithMasks(r, e, exposureMap, m) },
                     // begin from what is on screen: softened everywhere if diffusion is on, else sharp
                     startMap = { a -> ExposureMap.blank(a).also { if (recipe.diffusion) it.stops.fill(1f) } },
                     modifier = Modifier.fillMaxSize(),
-                    onPaintPlus = onDiffusionOn)
+                    onPaintPlus = onDiffusionOn,
+                    renderRegion = renderRegionWithMasks?.let { f -> { r, e, m, reg -> f(r, e, exposureMap, m, reg) } })
             }
         }
     }
@@ -708,11 +716,17 @@ private fun PaintStep(
     startMap: (Float) -> ExposureMap,
     modifier: Modifier = Modifier,
     onPaintPlus: () -> Unit = {},
+    renderRegion: ((Recipe, Int, ExposureMap?, Region) -> Bitmap?)? = null,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val current by rememberUpdatedState(recipe)
     val renderNow by rememberUpdatedState(renderWith)
+    // Zoom: two fingers; the brush keeps its size on screen; the zoomed part develops sharp.
+    val zoom = remember { ZoomState() }
+    var detail by remember { mutableStateOf<Pair<Region, Bitmap>?>(null) }
+    var canvasSize by remember { mutableStateOf(IntSize.Zero) }
+    var sharpening by remember { mutableStateOf(false) }
     var working by remember { mutableStateOf(map?.copy()) }
     var print by remember { mutableStateOf<Bitmap?>(null) }
     var developing by remember { mutableStateOf(true) }
@@ -743,6 +757,24 @@ private fun PaintStep(
     LaunchedEffect(showMask) { if (!developing) overlay.animateTo(if (showMask) 0.55f else 0f, tween(260)) }
 
     val aspect = print?.let { it.width.toFloat() / it.height } ?: (3f / 4f)
+    // The zoomed-in part, developed sharp once the zoom settles or the print changes.
+    LaunchedEffect(print) { detail = null }
+    LaunchedEffect(zoom.scale, zoom.focusU, zoom.focusV, print) {
+        val ask = renderRegion ?: return@LaunchedEffect
+        if (!zoom.zoomed || print == null || canvasSize.width == 0) return@LaunchedEffect
+        delay(320)
+        val vw = canvasSize.width.toFloat(); val vh = canvasSize.height.toFloat()
+        val pr = printRect(vw, vh, aspect)
+        val region = zoom.visible(FitRect(pr.left, pr.top, pr.width, pr.height), vw, vh)
+        if (detail?.first == region) return@LaunchedEffect
+        val edge = maxOf(canvasSize.width, canvasSize.height).coerceAtMost(1600)
+        val m = working
+        sharpening = true
+        try {
+            val bmp = withContext(Dispatchers.Default) { ask(current, edge, m, region) }
+            if (bmp != null && isActive) detail = region to bmp
+        } finally { sharpening = false }
+    }
 
     /** Commit a change to the mask: remember the old one for undo, show and save the new. */
     fun commit(next: ExposureMap?) {
@@ -755,7 +787,7 @@ private fun PaintStep(
     fun stamp(u: Float, v: Float) {
         val m = working ?: startMap(aspect).also { working = it }
         val st = stroke ?: FloatArray(m.width * m.height).also { stroke = it }
-        val r = BRUSH[brush]
+        val r = BRUSH[brush] / zoom.scale      // the same size on screen at any zoom
         // distances in units of the long edge, so the brush is round on any shape of picture
         val aw = if (aspect >= 1f) 1f else aspect
         val ah = if (aspect >= 1f) 1f / aspect else 1f
@@ -812,47 +844,81 @@ private fun PaintStep(
         )
         Box(Modifier.fillMaxWidth().weight(1f).padding(horizontal = 18.dp, vertical = 10.dp)) {
             Canvas(
-                Modifier.fillMaxSize().pointerInput(aspect, print != null) {
+                Modifier.fillMaxSize().onSizeChanged { canvasSize = it }.pointerInput(aspect, print != null) {
                     if (print == null) return@pointerInput
                     awaitEachGesture {
                         val down = awaitFirstDown()
-                        val r = printRect(size.width.toFloat(), size.height.toFloat(), aspect)
-                        fun at(o: Offset) = Pair(((o.x - r.left) / r.width), ((o.y - r.top) / r.height))
+                        val vw = size.width.toFloat(); val vh = size.height.toFloat()
+                        val pr = printRect(vw, vh, aspect)
+                        val fit = FitRect(pr.left, pr.top, pr.width, pr.height)
+                        fun at(o: Offset) = zoom.toPicture(o.x, o.y, fit, vw, vh)
                         val (u0, v0) = at(down.position)
-                        if (u0 !in 0f..1f || v0 !in 0f..1f) return@awaitEachGesture
-                        Haptics.tick(context)
-                        // the guide shows at full strength while painting (gesture code cannot
-                        // animate itself, so the change is handed to a coroutine)
-                        scope.launch { overlay.snapTo(1f) }
-                        stamp(u0, v0)
+                        var painting = u0 in 0f..1f && v0 in 0f..1f
+                        var zooming = false
                         var last = Pair(u0, v0)
+                        if (painting) {
+                            Haptics.tick(context)
+                            // the guide shows at full strength while painting (gesture code cannot
+                            // animate itself, so the change is handed to a coroutine)
+                            scope.launch { overlay.snapTo(1f) }
+                            stamp(u0, v0)
+                        }
                         while (true) {
                             val event = awaitPointerEvent()
-                            val change = event.changes.firstOrNull() ?: break
-                            if (!change.pressed) break
+                            val pressed = event.changes.filter { it.pressed }
+                            if (pressed.isEmpty()) break
+                            if (pressed.size >= 2) {
+                                // a second finger: this is a zoom, and the dab the first finger
+                                // began is not kept as a stray mark
+                                if (!zooming) { zooming = true; if (painting) { painting = false; stroke = null; strokeTick++ } }
+                                zoom.pinch(event.calculateCentroid(), event.calculatePan(), event.calculateZoom(), fit, vw, vh)
+                                event.changes.forEach { it.consume() }
+                                continue
+                            }
+                            if (zooming || !painting) { event.changes.forEach { it.consume() }; continue }
+                            val change = pressed.first()
                             val (u, v) = at(change.position)
                             // fill the gap between touch samples, so a quick stroke stays continuous
                             val du = u - last.first; val dv = v - last.second
-                            val steps = maxOf(1, (kotlin.math.sqrt(du * du + dv * dv) / (BRUSH[brush] / 3f)).toInt())
+                            val steps = maxOf(1, (kotlin.math.sqrt(du * du + dv * dv) / (BRUSH[brush] / zoom.scale / 3f)).toInt())
                             for (k in 1..steps) stamp(last.first + du * k / steps, last.second + dv * k / steps)
                             last = Pair(u, v)
                             change.consume()
                         }
-                        endStroke()
+                        if (painting) endStroke()
                     }
                 },
             ) {
-                val r = printRect(size.width, size.height, aspect)
+                val pr = printRect(size.width, size.height, aspect)
+                val fit = FitRect(pr.left, pr.top, pr.width, pr.height)
+                // the whole print's place on screen, through the zoom (at 1× it is the fitted place)
+                val tl = zoom.toScreen(0f, 0f, fit, size.width, size.height)
+                val br = zoom.toScreen(1f, 1f, fit, size.width, size.height)
+                val r = PrintRect(tl.x, tl.y, br.x - tl.x, br.y - tl.y)
                 val border = 6.dp.toPx()
-                drawRect(Color.Black.copy(alpha = 0.45f), Offset(r.left - border + 4.dp.toPx(), r.top - border + 8.dp.toPx()), Size(r.width + 2 * border, r.height + 2 * border))
-                drawRect(PAPER, Offset(r.left - border, r.top - border), Size(r.width + 2 * border, r.height + 2 * border))
-                print?.let { drawImage(it.asImageBitmap(), dstOffset = IntOffset(r.left.toInt(), r.top.toInt()), dstSize = IntSize(r.width.toInt(), r.height.toInt())) }
-                if (print == null) drawRect(PAPER, Offset(r.left, r.top), Size(r.width, r.height))
-                val ov = overlay.value
-                val ob = overlayBitmap
-                if (ob != null && ov > 0.001f) drawImage(ob.asImageBitmap(), dstOffset = IntOffset(r.left.toInt(), r.top.toInt()),
-                    dstSize = IntSize(r.width.toInt(), r.height.toInt()), alpha = ov)
+                clipRect {
+                    drawRect(Color.Black.copy(alpha = 0.45f), Offset(r.left - border + 4.dp.toPx(), r.top - border + 8.dp.toPx()), Size(r.width + 2 * border, r.height + 2 * border))
+                    drawRect(PAPER, Offset(r.left - border, r.top - border), Size(r.width + 2 * border, r.height + 2 * border))
+                    print?.let { drawImage(it.asImageBitmap(), dstOffset = IntOffset(r.left.toInt(), r.top.toInt()), dstSize = IntSize(r.width.toInt(), r.height.toInt())) }
+                    if (print == null) drawRect(PAPER, Offset(r.left, r.top), Size(r.width, r.height))
+                    // the zoomed-in part, developed sharp, laid exactly over itself
+                    val tile = detail
+                    if (tile != null && zoom.zoomed) {
+                        val a = zoom.toScreen(tile.first.u0, tile.first.v0, fit, size.width, size.height)
+                        val c = zoom.toScreen(tile.first.u1, tile.first.v1, fit, size.width, size.height)
+                        drawImage(tile.second.asImageBitmap(), dstOffset = IntOffset(a.x.toInt(), a.y.toInt()),
+                            dstSize = IntSize((c.x - a.x).toInt(), (c.y - a.y).toInt()))
+                    }
+                    val ov = overlay.value
+                    val ob = overlayBitmap
+                    if (ob != null && ov > 0.001f) drawImage(ob.asImageBitmap(), dstOffset = IntOffset(r.left.toInt(), r.top.toInt()),
+                        dstSize = IntSize(r.width.toInt(), r.height.toInt()), alpha = ov)
+                }
             }
+            if (zoom.zoomed) Text("${String.format(Locale.US, "%.1f", zoom.scale)}×  · " + (if (sharpening) "sharpening… · fit" else "fit"), color = LatentColors.AmberInk, fontSize = 10.sp,
+                modifier = Modifier.align(Alignment.TopStart).padding(6.dp).clip(RoundedCornerShape(999.dp)).background(LatentColors.Amber)
+                    .pointerInput(Unit) { detectTapGestures(onTap = { Haptics.tick(context); zoom.reset(); detail = null }) }
+                    .padding(horizontal = 10.dp, vertical = 4.dp))
         }
         // Three rows, each measured to fit a phone (about 357 dp inside the margins): one row
         // would be ~410 dp and squeeze its last chips — the bug that once crushed the Develop button.

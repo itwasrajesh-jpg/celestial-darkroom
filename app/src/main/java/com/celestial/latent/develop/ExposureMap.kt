@@ -10,6 +10,9 @@ import java.security.MessageDigest
 import kotlin.math.abs
 import kotlin.math.pow
 
+/** A region of a picture, 0..1 across (u) and down (v). */
+data class Region(val u0: Float, val v0: Float, val u1: Float, val v1: Float)
+
 /**
  * Dodge & burn for one photo: how much more or less enlarger light each part of the print gets,
  * in stops. +1 is a stop more light (burned in, darker); −1 a stop less (dodged, lighter); 0 is
@@ -56,6 +59,15 @@ class ExposureMap(val width: Int, val height: Int, val stops: FloatArray) {
         val out = FloatArray(width * height)
         for (j in 0 until height) for (i in 0 until width) {
             out[j * width + i] = sample(lo + f * (i + 0.5f) / width, lo + f * (j + 0.5f) / height)
+        }
+        return ExposureMap(width, height, out)
+    }
+
+    /** The mask for a region of the picture (0..1), matching Develop.cropRegion for the zoomed view. */
+    fun crop(r: Region): ExposureMap {
+        val out = FloatArray(width * height)
+        for (j in 0 until height) for (i in 0 until width) {
+            out[j * width + i] = sample(r.u0 + (r.u1 - r.u0) * (i + 0.5f) / width, r.v0 + (r.v1 - r.v0) * (j + 0.5f) / height)
         }
         return ExposureMap(width, height, out)
     }
