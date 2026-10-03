@@ -46,7 +46,19 @@ object FilmDiffusion {
         "black_pro_mist" to Family(Group(16.0, 1.5, 2, 0.0), Group(95.0, 2.0, 3, 0.0), Group(380.0, 2.5, 4, 3.5), 0.40, 0.47, 0.13, 0.65, 0.75),
         "pro_mist" to Family(Group(14.0, 1.5, 2, 0.0), Group(150.0, 2.0, 3, 0.0), Group(650.0, 2.5, 4, 2.9), 0.28, 0.42, 0.30, 0.40, 1.05),
         "cinebloom" to Family(Group(20.0, 1.5, 2, 0.0), Group(200.0, 2.0, 3, 0.0), Group(1000.0, 2.5, 4, 2.5), 0.22, 0.30, 0.48, 0.85, 1.00),
+        // A fog filter (Latent's own; the engine has none). Unlike the four above it is not
+        // reproduced from measured tables: it follows how fog filters behave — a very wide,
+        // even veil that lifts the shadows across the whole frame, rather than a halo hugging
+        // the highlights; colour-neutral (no warmth); more light scattered than Cinebloom.
+        // Chosen against the others on a test frame at strength 1: a far corner lifted ×1.16
+        // (the others ×1.00), glow reaching 3.3 mm on the film (Cinebloom 1.5 mm), and 54% of
+        // fine detail kept (Cinebloom 59%) — fog softens contrast, it does not erase the subject.
+        "fog" to Family(Group(10.0, 1.5, 2, 0.0), Group(250.0, 2.0, 3, 0.0), Group(4000.0, 2.5, 4, 1.8), 0.20, 0.20, 0.60, 0.0, 1.25),
     )
+
+    /** The families the engine itself knows. Any other must always take Latent's own path. */
+    private val ENGINE_FAMILIES = setOf("glimmerglass", "black_pro_mist", "pro_mist", "cinebloom")
+    fun engineHas(family: String) = family in ENGINE_FAMILIES
 
     private val STRENGTH_BREAKS = doubleArrayOf(0.125, 0.25, 0.5, 1.0, 2.0)
     private val STRENGTH_FRACTION = doubleArrayOf(0.10, 0.20, 0.35, 0.55, 0.75)

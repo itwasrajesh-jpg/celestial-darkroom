@@ -363,7 +363,8 @@ object Develop {
      * engine's own, which is faithful and takes minutes at full size.
      */
     fun fastPrintDiffusionSource(source: Source, recipe: Recipe, preview: Boolean = false, log: (String) -> Unit = {}) {
-        if (!((recipe.fastDiffusion || preview) && recipe.printDiffusion)) return
+        // the engine would quietly swap a family it does not know (fog) for Black Pro-Mist
+        if (!((recipe.fastDiffusion || preview || !FilmDiffusion.engineHas(recipe.printDiffusionFamily)) && recipe.printDiffusion)) return
         if (source.printDiffused) return
         log("enlarger filter (in density)")
         val buf = source.image.data.order(java.nio.ByteOrder.nativeOrder()).asFloatBuffer()
@@ -393,7 +394,7 @@ object Develop {
         // Previews always take the fast path; only the export honours the setting — except with a
         // painted soften mask, which only this path can follow (the engine's own cannot be painted).
         // The FULL switch stays the master: diffusion off is off everywhere, mask or not.
-        if (!((recipe.fastDiffusion || preview || softenMask != null) && recipe.diffusion)) return
+        if (!((recipe.fastDiffusion || preview || softenMask != null || !FilmDiffusion.engineHas(recipe.diffusionFamily)) && recipe.diffusion)) return
         if (source.diffused) return
         log(if (softenMask != null) "diffusion filter, where painted" else "diffusion filter")
         val longest = maxOf(source.width, source.height)
@@ -462,8 +463,8 @@ object Develop {
             // Our own filter has already run on the pixels, so the engine's LENS filter stays
             // off — but the enlarger's is a different stage, later in the chain, and is left to
             // the engine. Switching both off was dropping half the glow.
-            .let { if (it.diffusion && (it.fastDiffusion || preview || softenMask != null)) it.copy(diffusion = false) else it }
-            .let { if (it.printDiffusion && (it.fastDiffusion || preview)) it.copy(printDiffusion = false) else it }
+            .let { if (it.diffusion && (it.fastDiffusion || preview || softenMask != null || !FilmDiffusion.engineHas(it.diffusionFamily))) it.copy(diffusion = false) else it }
+            .let { if (it.printDiffusion && (it.fastDiffusion || preview || !FilmDiffusion.engineHas(it.printDiffusionFamily))) it.copy(printDiffusion = false) else it }
         // Our own spaces are built from the engine's sRGB output, so ask it for sRGB.
         val ourSpace = if (OutputSpace.isOurs(base.outputColorSpace)) base.outputColorSpace else ""
         val params = (if (ourSpace.isEmpty()) base else base.copy(outputColorSpace = OutputSpace.ENGINE_SRGB)).toParams()

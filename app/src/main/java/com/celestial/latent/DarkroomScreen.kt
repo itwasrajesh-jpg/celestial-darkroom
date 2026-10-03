@@ -82,7 +82,7 @@ private val TABS = listOf(
 )
 
 /** The four optical diffusion filters the engine models. */
-private val DIFFUSION_FAMILIES = listOf("glimmerglass", "black_pro_mist", "pro_mist", "cinebloom")
+private val DIFFUSION_FAMILIES = listOf("glimmerglass", "black_pro_mist", "pro_mist", "cinebloom", "fog")
 
 /**
  * The darkroom: a developed preview of one capture plus the controls that shape it.
