@@ -45,6 +45,8 @@ object Develop {
          * without preparing it twice. Cleared whenever the pixels are refilled.
          */
         @Volatile var preparedFor: String? = null
+        /** Film-still bars go around this picture when it is printed at full size. */
+        @Volatile var letterbox = false
 
         /** Refills this image from [from], so one working buffer can be reused. */
         fun refillFrom(from: Source) {
@@ -58,6 +60,7 @@ object Develop {
             printDiffused = false
             filmScale = from.filmScale
             preparedFor = null
+            letterbox = from.letterbox
         }
 
         /**
@@ -96,8 +99,11 @@ object Develop {
                 }
             }
             denoised = false; diffused = false; printDiffused = false
-            filmScale = from.filmScale * f.cropScale(sw, sh)
+            // straightening and a widescreen crop can both shorten the long edge: the share of
+            // the film the picture shows follows whatever survives
+            filmScale = from.filmScale * f.filmShare(sw, sh)
             preparedFor = null
+            letterbox = f.letterbox
         }
 
         /** An empty image of a given size, to be framed into. */
@@ -218,6 +224,7 @@ object Develop {
         ).joinToString("|")
         if (working.preparedFor == prep) return working
         working.frameFrom(pristine, framing)
+        lensFilterSource(working, recipe, log)
         // A pair carries the noise of both frames: clean it for the noisier of the two.
         denoiseSource(working, recipe, isoUsed, log)
         fastDiffusionSource(working, recipe, preview = true, softenMask = softenMask, log = log)
@@ -474,7 +481,14 @@ object Develop {
         val jpeg = try {
             engineFor(context).use { engine ->
                 val result = if (preview) engine.simulatePreview(source.image, params) else engine.simulate(source.image, params)
-                result.use { r -> dims = r.width to r.height; toJpeg(r.data, r.width, r.height, r.colorSpace, ourSpace) }
+                result.use { r ->
+                    // film-still bars, around the full-size print only: previews stay the bare
+                    // picture, so painting, zoom and masks all line up with what they draw on
+                    if (!preview && source.letterbox) {
+                        val (data, w, h) = letterbox(r.data, r.width, r.height)
+                        dims = w to h; toJpeg(data, w, h, r.colorSpace, ourSpace)
+                    } else { dims = r.width to r.height; toJpeg(r.data, r.width, r.height, r.colorSpace, ourSpace) }
+                }
             }
         } finally {
             watch?.finish("full develop ${dims.first}x${dims.second}" + (if (upscale > 1.001f) " at $upscale×" else ""))
@@ -520,6 +534,27 @@ object Develop {
                 "the phone had ${phone.availMem / 1048576} MB free of ${phone.totalMem / 1048576} MB when it started" +
                 (if (phone.lowMemory) " (already low)" else ""))
         }
+    }
+
+    /**
+     * The picture set in a 16:9 frame of black — bars above and below a wide picture, beside a
+     * tall one. The picture itself is untouched, centred.
+     */
+    private fun letterbox(data: ByteBuffer, w: Int, h: Int): Triple<ByteBuffer, Int, Int> {
+        val landscape = w >= h
+        val fw = if (landscape) w else maxOf(w, Math.round(h * 9f / 16f))
+        val fh = if (landscape) maxOf(h, Math.round(w * 9f / 16f)) else h
+        if (fw == w && fh == h) return Triple(data, w, h)
+        val out = ByteBuffer.allocateDirect(fw * fh * 3 * 4).order(ByteOrder.nativeOrder())   // zeroed: black
+        val src = data.duplicate().order(ByteOrder.nativeOrder()).asFloatBuffer()
+        val dst = out.asFloatBuffer()
+        val x0 = (fw - w) / 2; val y0 = (fh - h) / 2
+        val row = FloatArray(w * 3)
+        for (y in 0 until h) {
+            src.position(y * w * 3); src.get(row)
+            dst.position(((y0 + y) * fw + x0) * 3); dst.put(row)
+        }
+        return Triple(out, fw, fh)
     }
 
     /**
@@ -746,6 +781,7 @@ object Develop {
             try { opened.blankSized(fw, fh).also { it.frameFrom(opened, framing) } } finally { opened.close() }
         }
         return src.use { s ->
+            lensFilterSource(s, recipe, log)
             denoiseSource(s, recipe, if (pair) maxOf(isoOf(context, source), isoOf(context, pairFirst!!)) else isoOf(context, source), log)
             fastDiffusionSource(s, recipe, preview = false, softenMask = softenMask, log = log)
             fastPrintDiffusionSource(s, recipe, preview = false, log = log)
@@ -814,6 +850,24 @@ object Develop {
      */
     fun saveDeveloped(context: Context, bytes: ByteArray, source: Uri, film: String, tag: String? = null): Uri =
         save(context, bytes, baseNameOf(context, source) + (if (tag != null) "_$tag" else "") + "_" + film.substringAfterLast('_') + ".jpg")
+
+    /**
+     * An 85B filter on the lens, as gains on the linear ProPhoto light: the ratio of 3200K to
+     * 5500K blackbody light as ProPhoto sees it (computed from the CIE 1931 observer), green held
+     * at 1 as if the meter read through the filter. +131 mireds — exactly the 85B, which converts
+     * daylight for 3200K tungsten film such as Vision3 200T and 500T.
+     */
+    private val GAINS_85B = floatArrayOf(1.2044f, 1f, 0.4923f)
+
+    fun lensFilterSource(source: Source, recipe: Recipe, log: (String) -> Unit = {}) {
+        if (!recipe.lens85b) return
+        log("85B filter")
+        val f = source.image.data.order(ByteOrder.nativeOrder()).asFloatBuffer()
+        for (i in 0 until source.width * source.height) {
+            val o = i * 3
+            f.put(o, f.get(o) * GAINS_85B[0]); f.put(o + 2, f.get(o + 2) * GAINS_85B[2])
+        }
+    }
 
     /**
      * Two exposures on one frame: both RAWs decoded, and the second's light ADDED to the first's

@@ -47,6 +47,20 @@ data class AppSettings(
      */
     val engineAutoExposure: Boolean = false,
     val openingAnimation: Boolean = true,
+    /**
+     * Turn each photo the way the phone was held. Latent saves every RAW upright-portrait, so a
+     * shot taken sideways used to come out on its side; this records a quarter turn in the
+     * photo's own framing (the RAW is untouched, and FRAME can still change it).
+     */
+    val autoRotate: Boolean = true,
+    // Cinema mode: a motion-picture film printed on a cinema print stock, a Super 35 frame, a
+    // widescreen crop, and optionally an 85B filter and film-still bars.
+    val cinema: Boolean = false,
+    val cinemaFilm: String = "kodak_vision3_250d",
+    val cinemaPaper: String = "kodak_2383",
+    val cinemaAspect: Float = 2.39f,
+    val cinemaBars: Boolean = false,
+    val cinema85b: Boolean = false,
 ) {
     companion object {
         const val ANTIBANDING_OFF = 0
@@ -81,6 +95,13 @@ data class AppSettings(
                 filmPreview = p.getBoolean("filmPreview", true),
                 engineAutoExposure = p.getBoolean("engineAutoExposure", false),
                 openingAnimation = p.getBoolean("openingAnimation", true),
+                autoRotate = p.getBoolean("autoRotate", true),
+                cinema = p.getBoolean("cinema", false),
+                cinemaFilm = p.getString("cinemaFilm", "kodak_vision3_250d") ?: "kodak_vision3_250d",
+                cinemaPaper = p.getString("cinemaPaper", "kodak_2383") ?: "kodak_2383",
+                cinemaAspect = p.getFloat("cinemaAspect", 2.39f),
+                cinemaBars = p.getBoolean("cinemaBars", false),
+                cinema85b = p.getBoolean("cinema85b", false),
             )
         }
 
@@ -108,6 +129,13 @@ data class AppSettings(
                 .putBoolean("filmPreview", s.filmPreview)
                 .putBoolean("engineAutoExposure", s.engineAutoExposure)
                 .putBoolean("openingAnimation", s.openingAnimation)
+                .putBoolean("autoRotate", s.autoRotate)
+                .putBoolean("cinema", s.cinema)
+                .putString("cinemaFilm", s.cinemaFilm)
+                .putString("cinemaPaper", s.cinemaPaper)
+                .putFloat("cinemaAspect", s.cinemaAspect)
+                .putBoolean("cinemaBars", s.cinemaBars)
+                .putBoolean("cinema85b", s.cinema85b)
                 .apply()
         }
     }

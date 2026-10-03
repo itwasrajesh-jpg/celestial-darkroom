@@ -46,6 +46,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -112,6 +113,21 @@ fun CameraScreen(
     var pendingFirst by remember { mutableStateOf(com.celestial.latent.develop.DoubleExposure.pending(context)) }
     var lastSingleRaw by remember { mutableStateOf<Uri?>(null) }
     var ghost by remember { mutableStateOf<Bitmap?>(null) }
+    // The save handler below is built once, so it reads the settings through this, which always
+    // holds the current ones — a switch flipped in the camera takes effect on the next shot.
+    val liveSettings by rememberUpdatedState(settings)
+    // Which way the phone is held, in quarter turns clockwise from upright (0..3).
+    var deviceTurns by remember { mutableStateOf(0) }
+    DisposableEffect(Unit) {
+        val listener = object : android.view.OrientationEventListener(context) {
+            override fun onOrientationChanged(o: Int) {
+                if (o == ORIENTATION_UNKNOWN) return
+                deviceTurns = ((o + 45) / 90) % 4
+            }
+        }
+        if (listener.canDetectOrientation()) listener.enable()
+        onDispose { listener.disable() }
+    }
     var glPreview by remember { mutableStateOf<com.celestial.latent.gl.FilmPreviewView?>(null) }
     var lookReady by remember { mutableStateOf(false) }
     var baking by remember { mutableStateOf(false) }
@@ -141,6 +157,21 @@ fun CameraScreen(
                 }.getOrNull().orEmpty()
                 if (name.endsWith(".dng", true)) lastRawUri = uri
                 val single = name.endsWith(".dng", true) && !name.contains("BURST") && !name.contains("STACK")
+                // The phone's turn — and in cinema mode the widescreen crop and bars — kept in the
+                // photo's framing BEFORE any develop starts, so the develop (which reads the
+                // framing) already comes out the right way up and the right shape.
+                val cine = single && liveSettings.cinema
+                val turnNow = if (liveSettings.autoRotate) deviceTurns else 0
+                if (single && (turnNow != 0 || cine)) {
+                    com.celestial.latent.develop.Framings.save(context, uri, com.celestial.latent.develop.Framing(
+                        turns = turnNow, aspect = if (cine) liveSettings.cinemaAspect else 0f, bars = cine && liveSettings.cinemaBars))
+                }
+                // The recipe this shot develops with. A cinema shot keeps its own, so the darkroom
+                // and the roll develop it as it was shot, and the shared recipe never turns Vision3.
+                val shotRecipe = com.celestial.latent.develop.Recipes.current(context)
+                    .copy(autoExposure = liveSettings.engineAutoExposure)
+                    .let { if (cine) Cinema.recipe(it, liveSettings) else it }
+                if (cine) PhotoRecipes.save(context, uri, shotRecipe)
                 val held = pendingFirst
                 if (single && held != null && held != uri) {
                     // The second exposure: its light is added to the held frame and the pair is
@@ -150,16 +181,16 @@ fun CameraScreen(
                     pendingFirst = null; ghost = null; lastSingleRaw = null
                     DevelopQueue.submit(context, DevelopQueue.Job(
                         uri,
-                        com.celestial.latent.develop.Recipes.current(context).copy(autoExposure = settings.engineAutoExposure),
+                        shotRecipe,
                         isRaw = true, first = held,
                     ))
                 } else {
                     if (single) lastSingleRaw = uri
-                    if (settings.autoDevelop && single) {
+                    if (liveSettings.autoDevelop && single) {
                         DevelopQueue.submit(context, DevelopQueue.Job(
                             uri,
                             // The camera's exposure is the exposure: the film does not re-level it.
-                            com.celestial.latent.develop.Recipes.current(context).copy(autoExposure = settings.engineAutoExposure),
+                            shotRecipe,
                             isRaw = true,
                         ))
                     }
@@ -233,13 +264,18 @@ fun CameraScreen(
     // on screen while the new one is prepared, so the preview never flashes.
     // Bake the look once per film choice. LookBaker caches by the colour-affecting settings,
     // so this is cheap when nothing that matters has changed.
-    LaunchedEffect(settings.preset, settings.filmPreview, glPreview != null) {
+    LaunchedEffect(settings.preset, settings.filmPreview, glPreview != null,
+                   settings.cinema, settings.cinemaFilm, settings.cinemaPaper, settings.cinema85b) {
         val view = glPreview
         if (!settings.filmPreview || view == null) return@LaunchedEffect
+        // the 85B, seen through the viewfinder as it will be on the film
+        val t = if (settings.cinema && settings.cinema85b && Cinema.tungsten(settings.cinemaFilm)) Cinema.PREVIEW_TINT_85B else floatArrayOf(1f, 1f, 1f)
+        view.setTint(t[0], t[1], t[2])
         baking = true
         withContext(Dispatchers.Default) {
             val recipe = com.celestial.latent.develop.Recipes.current(context)
                 .copy(autoExposure = settings.engineAutoExposure)
+                .let { if (settings.cinema) Cinema.recipe(it, settings) else it }
             val look = com.celestial.latent.develop.LookBaker.bake(context, recipe)
             if (look != null) {
                 view.setExposureGain(look.gain)
@@ -399,6 +435,21 @@ fun CameraScreen(
                 onEv = { n -> if (!controls.manualExposure) push(controls.copy(evIndex = n)) },
                 onDismiss = { focusTap = null },
             )
+            // Cinema: the widescreen frame. The picture's long edge runs down the viewfinder, and the
+            // crop keeps it and trims the sides — held sideways, it reads as a wide frame.
+            if (settings.cinema) {
+                val a = settings.cinemaAspect
+                Canvas(Modifier.fillMaxSize()) {
+                    val band = minOf(size.width, size.height / a)
+                    val x0 = (size.width - band) / 2f
+                    val shade = Color(0xA6000000)
+                    drawRect(shade, androidx.compose.ui.geometry.Offset.Zero, androidx.compose.ui.geometry.Size(x0, size.height))
+                    drawRect(shade, androidx.compose.ui.geometry.Offset(x0 + band, 0f), androidx.compose.ui.geometry.Size(x0, size.height))
+                    val line = Color(0x99FFFFFF)
+                    drawLine(line, androidx.compose.ui.geometry.Offset(x0, 0f), androidx.compose.ui.geometry.Offset(x0, size.height), 1.5f)
+                    drawLine(line, androidx.compose.ui.geometry.Offset(x0 + band, 0f), androidx.compose.ui.geometry.Offset(x0 + band, size.height), 1.5f)
+                }
+            }
             // Double exposure, top right: hold the last frame, or show that one is held (× winds on).
             val heldFrame = pendingFirst
             if (heldFrame != null || lastSingleRaw != null) {
@@ -427,6 +478,7 @@ fun CameraScreen(
             // Quiet captions overlaid on the image.
             Column(Modifier.align(Alignment.TopStart).padding(12.dp)) {
                 Text(if (settings.saveJpeg) "RAW + JPG · 12.5M" else "RAW · 12.5M", color = LatentColors.TextBright, fontSize = 10.sp, letterSpacing = 1.sp)
+                if (settings.cinema) Text(Cinema.label(settings), color = LatentColors.Amber, fontSize = 10.sp, letterSpacing = 1.sp)
                 // Says plainly what the live image is and is not, without crowding the frame.
                 if (settings.filmPreview) Text(
                     (com.celestial.latent.develop.Presets.byId(context, settings.preset)?.name?.substringBefore(" — ")
@@ -507,6 +559,34 @@ fun CameraScreen(
                         }
                         Tile("Portrait / Night", false, Modifier.weight(1f)) { drawerOpen = false; onOpenExtension() }
                         Tile("All settings", false, Modifier.weight(1f)) { drawerOpen = false; onOpenSettings() }
+                    }
+                    // Cinema: a motion-picture film and print, a Super 35 frame, a widescreen crop.
+                    Spacer(Modifier.height(6.dp))
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Tile("Cinema", settings.cinema, Modifier.weight(1f)) { onSettingsChange(settings.copy(cinema = it)) }
+                        if (settings.cinema) {
+                            Tile("Film-still bars", settings.cinemaBars, Modifier.weight(1f)) { onSettingsChange(settings.copy(cinemaBars = it)) }
+                            // the 85B is only for tungsten film, so it is only offered with one
+                            if (Cinema.tungsten(settings.cinemaFilm))
+                                Tile("85B filter\n(daylight)", settings.cinema85b, Modifier.weight(1f)) { onSettingsChange(settings.copy(cinema85b = it)) }
+                        }
+                    }
+                    if (settings.cinema) {
+                        Spacer(Modifier.height(6.dp))
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Cinema.FILMS.forEach { (id, label) ->
+                                Tile("Vision3\n$label", settings.cinemaFilm == id, Modifier.weight(1f)) { onSettingsChange(settings.copy(cinemaFilm = id)) }
+                            }
+                        }
+                        Spacer(Modifier.height(6.dp))
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Cinema.PRINTS.forEach { (id, label) ->
+                                Tile("Print\n$label", settings.cinemaPaper == id, Modifier.weight(1f)) { onSettingsChange(settings.copy(cinemaPaper = id)) }
+                            }
+                            Cinema.ASPECTS.forEach { (a, label) ->
+                                Tile(label, kotlin.math.abs(settings.cinemaAspect - a) < 0.01f, Modifier.weight(1f)) { onSettingsChange(settings.copy(cinemaAspect = a)) }
+                            }
+                        }
                     }
                 }
             }

@@ -87,10 +87,14 @@ object DevelopQueue {
             // Same single thread as full-size work, so the lane is only about the darkroom preview.
             val holdsLane = acquireLane(120)
             try {
-                val out = if (job.isRaw && job.first != null)
-                              Develop.developFull(context.applicationContext, job.source, isRaw = true, recipe = job.recipe, pairFirst = job.first)
-                          else if (job.isRaw) Develop.developDng(context.applicationContext, job.source, job.recipe)
-                          else Develop.developJpeg(context.applicationContext, job.source, job.recipe)
+                // each photo's own framing (turned, straightened, widescreen) goes with it, and a
+                // photo with its own recipe (a cinema shot) develops with that, not the shared one
+                val framing = Framings.load(context.applicationContext, job.source)
+                val recipe = com.celestial.latent.PhotoRecipes.load(context.applicationContext, job.source) ?: job.recipe
+                val out = if (job.isRaw)
+                              Develop.developFull(context.applicationContext, job.source, isRaw = true, recipe = recipe,
+                                  pairFirst = job.first, framing = framing)
+                          else Develop.developJpeg(context.applicationContext, job.source, recipe)
                 onDeveloped(out)
             } catch (t: Throwable) {
                 Log.e("Latent", "develop failed for ${job.source}", t)

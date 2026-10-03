@@ -110,6 +110,11 @@ data class Recipe(
     val hanatosWindow: Boolean = true,
     val hanatosSurface: Boolean = false,
     val filmFormatMm: Float = 35f,
+    /**
+     * An 85B filter on the lens: the orange filter cinematographers put on to shoot tungsten
+     * (3200K) film in daylight. Applied to the light before it reaches the film.
+     */
+    val lens85b: Boolean = false,
     // Diffusion filter on the lens.
     /**
      * How the diffusion filter is computed for the EXPORT.
@@ -264,7 +269,7 @@ data class Recipe(
         "dir=$dir($dirAmount) glare=$glare " +
         "lensFilter=$diffusion${if (diffusion) "/$diffusionFamily/s=$diffusionStrength/scale=$diffusionScale/core=$diffusionCore/halo=$diffusionHalo/bloom=$diffusionBloom" else ""} " +
         "enlargerFilter=$printDiffusion${if (printDiffusion) "/$printDiffusionFamily/s=$printDiffusionStrength" else ""} " +
-        "out=$outputColorSpace/$outputGamutCompress"
+        "out=$outputColorSpace/$outputGamutCompress format=${filmFormatMm}mm${if (lens85b) " 85B" else ""}"
 
     fun toJson(): String = JSONObject().apply {
         put("film", film); put("paper", paper)
@@ -293,7 +298,7 @@ data class Recipe(
         put("meteringMethod", meteringMethod)
         put("hanatosWindow", hanatosWindow); put("hanatosSurface", hanatosSurface)
         put("printExposureCompensation", printExposureCompensation); put("normalizePrintExposure", normalizePrintExposure)
-        put("lensBlurUm", lensBlurUm.toDouble()); put("filmFormatMm", filmFormatMm.toDouble())
+        put("lensBlurUm", lensBlurUm.toDouble()); put("filmFormatMm", filmFormatMm.toDouble()); put("lens85b", lens85b)
         put("fastDiffusion", fastDiffusion)
         put("diffusion", diffusion); put("diffusionFamily", diffusionFamily); put("diffusionStrength", diffusionStrength.toDouble())
         put("diffusionScale", diffusionScale.toDouble()); put("diffusionCore", diffusionCore.toDouble()); put("diffusionCoreSize", diffusionCoreSize.toDouble())
@@ -355,6 +360,7 @@ data class Recipe(
                 printExposureCompensation = o.optBoolean("printExposureCompensation", d.printExposureCompensation),
                 normalizePrintExposure = o.optBoolean("normalizePrintExposure", d.normalizePrintExposure),
                 lensBlurUm = f("lensBlurUm", d.lensBlurUm), filmFormatMm = f("filmFormatMm", d.filmFormatMm),
+                lens85b = o.optBoolean("lens85b", d.lens85b),
                 fastDiffusion = o.optBoolean("fastDiffusion", d.fastDiffusion),
                 diffusion = o.optBoolean("diffusion", d.diffusion), diffusionFamily = o.optString("diffusionFamily", d.diffusionFamily),
                 diffusionStrength = f("diffusionStrength", d.diffusionStrength), diffusionScale = f("diffusionScale", d.diffusionScale),

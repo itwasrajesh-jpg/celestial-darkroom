@@ -92,7 +92,10 @@ private val DIFFUSION_FAMILIES = listOf("glimmerglass", "black_pro_mist", "pro_m
 fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged: (Recipe) -> Unit, onBack: () -> Unit) {
     val context = LocalContext.current
     // Opened at the brightness it was shot: the film does not re-level it here either.
-    var recipe by remember { mutableStateOf(initial.copy(autoExposure = false)) }
+    // A photo with its own recipe (a cinema shot) opens with it, and keeps its edits to itself:
+    // they must not become the recipe every new shot from the camera develops with.
+    val ownRecipe = remember { PhotoRecipes.load(context, source) }
+    var recipe by remember { mutableStateOf((ownRecipe ?: initial).copy(autoExposure = false)) }
     // An export choice, not part of the look — see DarkroomPrefs for why it lives apart.
     var printSize by remember { mutableStateOf(com.celestial.latent.develop.DarkroomPrefs.printSize(context)) }
     var full by remember { mutableStateOf(false) }
@@ -239,7 +242,8 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
         if (!printing) render(fast = true)
         delay(450)
         coarse = false
-        onRecipeChanged(recipe); Recipes.setCurrent(context, recipe)
+        if (ownRecipe != null) PhotoRecipes.save(context, source, recipe)
+        else { onRecipeChanged(recipe); Recipes.setCurrent(context, recipe) }
         if (!printing) render(fast = false)
         // The viewfinder's look is baked from the saved recipe: drop the cached one so the
         // camera picks up these edits next time it is shown.
@@ -408,6 +412,26 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                                     translationY = (0.5f - zoom.focusV) * fit.height * zoom.scale
                                 }
                             })
+                    }
+                    // film-still bars, shown around the picture as they will be printed
+                    if (framing.letterbox && !zoom.zoomed && !frameOpen && !comparing && preview != null) {
+                        val pb = preview!!
+                        androidx.compose.foundation.Canvas(Modifier.fillMaxSize()) {
+                            val fit = fitRect(size.width, size.height, pb.width.toFloat() / pb.height)
+                            if (fit.width >= fit.height) {
+                                val bar = (fit.width * 9f / 16f - fit.height) / 2f
+                                if (bar > 0f) {
+                                    drawRect(Color.Black, androidx.compose.ui.geometry.Offset(fit.left, fit.top - bar), androidx.compose.ui.geometry.Size(fit.width, bar))
+                                    drawRect(Color.Black, androidx.compose.ui.geometry.Offset(fit.left, fit.top + fit.height), androidx.compose.ui.geometry.Size(fit.width, bar))
+                                }
+                            } else {
+                                val bar = (fit.height * 9f / 16f - fit.width) / 2f
+                                if (bar > 0f) {
+                                    drawRect(Color.Black, androidx.compose.ui.geometry.Offset(fit.left - bar, fit.top), androidx.compose.ui.geometry.Size(bar, fit.height))
+                                    drawRect(Color.Black, androidx.compose.ui.geometry.Offset(fit.left + fit.width, fit.top), androidx.compose.ui.geometry.Size(bar, fit.height))
+                                }
+                            }
+                        }
                     }
                     // the sharp tile for the zoomed-in part, laid exactly over it
                     val tile = detail
@@ -693,8 +717,10 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                                 Note("How the engine judges the scene's brightness when setting its own exposure.")
                                 S("Lens blur", recipe.lensBlurUm, 0f, 40f, "%.0f µm") { set { copy(lensBlurUm = it) } }
                                 Head("FILM FORMAT", null) {}
-                                Chips(listOf("35" to "35 mm", "60" to "120 / 6×6", "100" to "Large format").map { it.first }, recipe.filmFormatMm.toInt().toString()) { set { copy(filmFormatMm = it.toFloat()) } }
-                                Note("Format changes how big grain and halation look, because they are measured in micrometres on the negative.")
+                                Chips(listOf("25" to "Super 35", "35" to "35 mm", "60" to "120 / 6×6", "100" to "Large format").map { it.first }, recipe.filmFormatMm.toInt().toString()) { set { copy(filmFormatMm = it.toFloat()) } }
+                                Note("Format changes how big grain and halation look, because they are measured in micrometres on the negative. 25 is Super 35, the cinema frame.")
+                                Toggle("85B filter", recipe.lens85b) { set { copy(lens85b = it) } }
+                                Note("The orange filter cinematographers use to shoot tungsten film (Vision3 200T, 500T) in daylight.")
                             }
                             "enlarger" -> {
                                 if (Develop.isSlideFilm(recipe.film)) {

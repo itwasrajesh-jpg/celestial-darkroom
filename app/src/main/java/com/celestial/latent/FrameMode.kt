@@ -1,6 +1,8 @@
 package com.celestial.latent
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -44,7 +46,8 @@ fun FramePanel(
 ) {
     val context = LocalContext.current
     val angle = live ?: framing.straighten
-    Column(modifier.background(LatentColors.Background).padding(horizontal = 18.dp, vertical = 12.dp)) {
+    // scrolls, in case the space below the photo is shorter than the panel
+    Column(modifier.background(LatentColors.Background).verticalScroll(rememberScrollState()).padding(horizontal = 18.dp, vertical = 12.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             Text("FRAME", color = LatentColors.TextDim, fontSize = 10.sp, letterSpacing = 1.5.sp)
             FrameChip("done", on = true) { onDone() }
@@ -78,6 +81,20 @@ fun FramePanel(
             colors = SliderDefaults.colors(thumbColor = LatentColors.Amber, activeTrackColor = LatentColors.Amber, inactiveTrackColor = LatentColors.Surface),
             modifier = Modifier.fillMaxWidth(),
         )
+        // widescreen: kept along the picture's long edge, so a landscape shot gets a wide frame
+        Text("widescreen", color = LatentColors.Text, fontSize = 12.sp, modifier = Modifier.padding(top = 10.dp))
+        Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            listOf(0f to "photo", 2.39f to "2.39", 2f to "2:1", 1.85f to "1.85", 16f / 9f to "16:9").forEach { (a, label) ->
+                FrameChip(label, on = kotlin.math.abs(framing.aspect - a) < 0.01f) {
+                    onCommit(framing.copy(aspect = a, bars = if (a <= 16f / 9f + 0.01f) false else framing.bars))
+                }
+            }
+        }
+        Row(Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 6.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            Text("film-still bars: set in a 16:9 frame", color = LatentColors.TextDim, fontSize = 11.sp)
+            // only around a picture wider than 16:9 — for anything else there is nothing to fill
+            FrameChip("bars", on = framing.bars, enabled = framing.aspect > 16f / 9f + 0.01f) { onCommit(framing.copy(bars = !framing.bars)) }
+        }
         Text(
             "Kept with this photo. Straightening crops a little, so no corner is blank — the print size can win it back. Painting turns with the picture.",
             color = LatentColors.TextDim, fontSize = 11.sp, lineHeight = 15.sp,

@@ -50,6 +50,15 @@ class FilmPreviewView(context: Context) : GLSurfaceView(context) {
      * Linear gain applied before the table, matching the engine's own auto-exposure. Eased
      * towards the new value rather than jumped, so the viewfinder settles instead of stepping.
      */
+    /**
+     * A colour filter on the lens, seen in the viewfinder: per-channel gains on the camera image
+     * before the film's table (1, 1, 1 = none). Used for the 85B in cinema mode.
+     */
+    fun setTint(r: Float, g: Float, b: Float) {
+        renderer.tint = floatArrayOf(r, g, b)
+        requestRender()
+    }
+
     fun setExposureGain(gain: Float) {
         val current = renderer.exposureGain
         renderer.exposureGain = if (current <= 0f) gain else current + (gain - current) * 0.4f
@@ -88,6 +97,7 @@ class FilmPreviewView(context: Context) : GLSurfaceView(context) {
         @Volatile var pendingLut: FloatArray? = null
         @Volatile var pendingLutSize = 33
         @Volatile var exposureGain = 1f
+        @Volatile var tint = floatArrayOf(1f, 1f, 1f)
         @Volatile var grabSize = 0
         @Volatile var onGrab: ((FloatArray, Int, Int) -> Unit)? = null
         private var readBuffer: java.nio.ByteBuffer? = null
@@ -194,6 +204,8 @@ class FilmPreviewView(context: Context) : GLSurfaceView(context) {
 
             GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(program, "uTransform"), 1, false, transform, 0)
             GLES20.glUniform1f(GLES20.glGetUniformLocation(program, "uGain"), exposureGain)
+            val t = tint
+            GLES20.glUniform3f(GLES20.glGetUniformLocation(program, "uTint"), t[0], t[1], t[2])
             GLES20.glUniform1f(GLES20.glGetUniformLocation(program, "uLutSize"), lutSize.toFloat())
             GLES20.glUniform1i(GLES20.glGetUniformLocation(program, "uHasLut"), if (lutSize > 0) 1 else 0)
 
@@ -379,6 +391,7 @@ uniform samplerExternalOES uCamera;
 uniform sampler2D uLut;
 uniform float uLutSize;
 uniform float uGain;
+uniform vec3 uTint;
 uniform int uHasLut;
 
             vec3 lookup(vec3 c) {
@@ -395,7 +408,7 @@ uniform int uHasLut;
             void main() {
                 vec3 c = texture2D(uCamera, vUv).rgb;
                 if (uHasLut == 1) {
-                    c = lookup(clamp(c * uGain, 0.0, 1.0));
+                    c = lookup(clamp(c * uGain * uTint, 0.0, 1.0));
                 }
                 gl_FragColor = vec4(c, 1.0);
             }

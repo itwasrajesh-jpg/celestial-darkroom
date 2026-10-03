@@ -20,13 +20,28 @@ import kotlin.math.sin
  * quarter turns clockwise, then the straightening turn (positive = clockwise on screen) about the
  * centre, then the centred crop.
  */
-data class Framing(val turns: Int = 0, val flip: Boolean = false, val straighten: Float = 0f) {
+data class Framing(
+    val turns: Int = 0,
+    val flip: Boolean = false,
+    val straighten: Float = 0f,
+    /**
+     * A widescreen crop, as width ÷ height along the picture's long edge (2.39, 2.0, 1.85...);
+     * 0 = the photo's own shape. It keeps the long edge and trims the short one, centred.
+     */
+    val aspect: Float = 0f,
+    /** Film-still bars: the widescreen picture set in a 16:9 frame of black. Added after the print. */
+    val bars: Boolean = false,
+) {
     /** Quarter turns clockwise, 0..3. */
     val quarter: Int get() = ((turns % 4) + 4) % 4
     private val k get() = quarter
     private val rad get() = Math.toRadians(straighten.toDouble())
 
-    val isIdentity: Boolean get() = k == 0 && !flip && abs(straighten) < 0.005f
+    /** No change to the picture's geometry (bars, which come after the print, do not count). */
+    val isIdentity: Boolean get() = k == 0 && !flip && abs(straighten) < 0.005f && aspect <= 0f
+
+    /** Bars only mean something around a widescreen crop. */
+    val letterbox: Boolean get() = bars && aspect > 0f
 
     /** Size after the quarter turns, before straightening. */
     fun turned(w: Int, h: Int): Pair<Int, Int> = if (k % 2 == 1) Pair(h, w) else Pair(w, h)
@@ -46,7 +61,23 @@ data class Framing(val turns: Int = 0, val flip: Boolean = false, val straighten
     fun outputSize(w: Int, h: Int): Pair<Int, Int> {
         val (tw, th) = turned(w, h)
         val sc = cropScale(w, h)
-        return Pair(maxOf(8, floor(tw * sc).toInt()), maxOf(8, floor(th * sc).toInt()))
+        var ow = maxOf(8, floor(tw * sc).toInt()); var oh = maxOf(8, floor(th * sc).toInt())
+        if (aspect > 0f) {
+            // along the long edge: a landscape picture gets a wide crop, a portrait one a tall one
+            if (ow >= oh) { val want = floor(ow / aspect).toInt(); if (want < oh) oh = maxOf(8, want) else ow = maxOf(8, floor(oh * aspect).toInt()) }
+            else { val want = floor(oh / aspect).toInt(); if (want < ow) ow = maxOf(8, want) else oh = maxOf(8, floor(ow * aspect).toInt()) }
+        }
+        return Pair(ow, oh)
+    }
+
+    /**
+     * The share of the turned picture's long edge that survives framing — the share of the film's
+     * width the framed picture shows, which grain and halation are sized from.
+     */
+    fun filmShare(w: Int, h: Int): Float {
+        val (tw, th) = turned(w, h)
+        val (ow, oh) = outputSize(w, h)
+        return maxOf(ow, oh).toFloat() / maxOf(tw, th)
     }
 
     /** Where an output position comes from in the source picture (w × h). */
@@ -88,7 +119,8 @@ data class Framing(val turns: Int = 0, val flip: Boolean = false, val straighten
     }
 
     /** For the record, and for telling one framing from another. */
-    fun key(): String = "$k,${if (flip) 1 else 0},${"%.2f".format(java.util.Locale.US, straighten)}"
+    fun key(): String = "$k,${if (flip) 1 else 0},${"%.2f".format(java.util.Locale.US, straighten)}," +
+        "${"%.3f".format(java.util.Locale.US, aspect)},${if (bars) 1 else 0}"
 }
 
 /**
@@ -103,13 +135,15 @@ object Framings {
     fun load(context: Context, photo: Uri): Framing {
         val v = prefs(context).getString(photo.toString(), null) ?: return Framing()
         return runCatching {
+            // older saves have three fields (turns, flip, straighten); newer add aspect and bars
             val p = v.split(",")
-            Framing(p[0].toInt(), p[1] == "1", p[2].toFloat())
+            Framing(p[0].toInt(), p[1] == "1", p[2].toFloat(),
+                aspect = p.getOrNull(3)?.toFloat() ?: 0f, bars = p.getOrNull(4) == "1")
         }.getOrDefault(Framing())
     }
 
     fun save(context: Context, photo: Uri, f: Framing) {
-        prefs(context).edit().apply { if (f.isIdentity) remove(photo.toString()) else putString(photo.toString(), f.key()) }.apply()
+        prefs(context).edit().apply { if (f.isIdentity && !f.bars) remove(photo.toString()) else putString(photo.toString(), f.key()) }.apply()
     }
 
     /**
