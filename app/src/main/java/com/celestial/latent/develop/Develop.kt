@@ -193,6 +193,7 @@ object Develop {
      */
     fun openCached(context: Context, source: Uri, isRaw: Boolean, maxEdge: Int, recipe: Recipe, iso: Int,
                    softenMask: ExposureMap? = null, pairFirst: Uri? = null, framing: Framing = Framing(),
+                   fogMask: ExposureMap? = null, fogLook: FogLook = FogLook(),
                    log: (String) -> Unit = {}): Source {
         // The pristine decode is cached on its own, so changing a pre-engine setting costs a
         // copy rather than a fresh decode of the file (which was over a second every time).
@@ -221,9 +222,12 @@ object Develop {
             framing.key(), isoUsed,
             recipe.copy(printExposure = 1f, yFilterShift = 0f, mFilterShift = 0f, previewMaxSize = 0).hashCode(),
             softenMask?.let { "${it.width}x${it.height}:${it.stops.contentHashCode()}" } ?: "-",
+            fogMask?.let { "${it.width}x${it.height}:${it.stops.contentHashCode()}:${fogLook.key()}" } ?: "-",
         ).joinToString("|")
         if (working.preparedFor == prep) return working
         working.frameFrom(pristine, framing)
+        // the air first — it is in front of the lens — then the lens filter
+        fogMask?.let { Fog.apply(working, it, fogLook, log) }
         lensFilterSource(working, recipe, log)
         // A pair carries the noise of both frames: clean it for the noisier of the two.
         denoiseSource(working, recipe, isoUsed, log)
@@ -770,7 +774,8 @@ object Develop {
     /** Full-resolution develop with progress, logging and a new file each time. */
     fun developFull(context: Context, source: Uri, isRaw: Boolean, recipe: Recipe, maxEdge: Int = 0, upscale: Float = 1f,
                     exposureMap: ExposureMap? = null, softenMask: ExposureMap? = null, pairFirst: Uri? = null,
-                    framing: Framing = Framing(), log: (String) -> Unit = {}): Uri {
+                    framing: Framing = Framing(), fogMask: ExposureMap? = null, fogLook: FogLook = FogLook(),
+                    log: (String) -> Unit = {}): Uri {
         log(if (maxEdge > 0) "decoding…" else "decoding at full size…")
         val pair = pairFirst != null && isRaw
         val opened = if (pair) openPair(context, pairFirst!!, source, maxEdge, log)
@@ -782,6 +787,7 @@ object Develop {
             try { opened.blankSized(fw, fh).also { it.frameFrom(opened, framing) } } finally { opened.close() }
         }
         return src.use { s ->
+            fogMask?.let { Fog.apply(s, it, fogLook, log) }
             lensFilterSource(s, recipe, log)
             denoiseSource(s, recipe, if (pair) maxOf(isoOf(context, source), isoOf(context, pairFirst!!)) else isoOf(context, source), log)
             fastDiffusionSource(s, recipe, preview = false, softenMask = softenMask, log = log)
@@ -791,6 +797,34 @@ object Develop {
             log("saving ${dims.first}×${dims.second}, ${bytes.size / 1024} KB")
             saveDeveloped(context, bytes, source, recipe.film, tag = if (pair) "DX" else null)
         }
+    }
+
+    /**
+     * The scene's light at a spot of the framed picture (0..1 across and down): read from the
+     * untouched decode — before fog, filters or film — and averaged over a small patch, so the
+     * eyedropper takes the light that was really there, not the print's colour of it.
+     */
+    fun sampleScene(context: Context, source: Uri, isRaw: Boolean, maxEdge: Int, pairFirst: Uri?,
+                    framing: Framing, u: Float, v: Float): FloatArray? {
+        val pair = pairFirst != null && isRaw
+        val key = if (pair) "$pairFirst+$source@$maxEdge" else "$source@$maxEdge"
+        val pristine = Cache.get(key) ?: run {
+            val decoded = if (pair) openPair(context, pairFirst!!, source, maxEdge)
+                else if (isRaw) openRaw(context, source, maxEdge) else openImage(context, source, maxEdge)
+            Cache.put(key, decoded); decoded
+        }
+        val (ow, oh) = framing.outputSize(pristine.width, pristine.height)
+        val (xs, ys) = framing.toSource((u * ow).toDouble(), (v * oh).toDouble(), pristine.width, pristine.height)
+        val cx = xs.toInt().coerceIn(0, pristine.width - 1); val cy = ys.toInt().coerceIn(0, pristine.height - 1)
+        val f = pristine.image.data.duplicate().order(ByteOrder.nativeOrder()).asFloatBuffer()
+        var r = 0.0; var g = 0.0; var b = 0.0; var n = 0
+        for (dy in -3..3) for (dx in -3..3) {
+            val x = cx + dx; val y = cy + dy
+            if (x !in 0 until pristine.width || y !in 0 until pristine.height) continue
+            val o = (y * pristine.width + x) * 3
+            r += f.get(o); g += f.get(o + 1); b += f.get(o + 2); n++
+        }
+        return if (n == 0) null else floatArrayOf((r / n).toFloat(), (g / n).toFloat(), (b / n).toFloat())
     }
 
     /**

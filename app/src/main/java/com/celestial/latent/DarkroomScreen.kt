@@ -105,6 +105,9 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
     var exposureMap by remember { mutableStateOf(ExposureMaps.load(context, source)) }
     // ...and where its diffusion goes, if painted (null = the plain setting: everywhere when on).
     var softenMap by remember { mutableStateOf(ExposureMaps.load(context, source, ExposureMaps.SOFTEN)) }
+    // ...and the fog painted into its air, with the fog's colour.
+    var fogMap by remember { mutableStateOf(ExposureMaps.load(context, source, ExposureMaps.FOG)) }
+    var fogLook by remember { mutableStateOf(com.celestial.latent.develop.FogLooks.load(context, source)) }
     // A double exposure: this frame was made onto an earlier one, and is shown and printed as both.
     val pairFirst = remember { if (isRaw) com.celestial.latent.develop.DoubleExposure.firstFor(context, source) else null }
     // How the photo is framed — turned, flipped, straightened. The photo's own, like its masks.
@@ -161,7 +164,8 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                 // colour noise or the fast diffusion re-decodes instead of being ignored.
                 val iso = Develop.isoOf(context, source)
                 // The working buffer belongs to the cache and is reused; never closed here.
-                src = Develop.openCached(context, source, isRaw, DECODE_EDGE, r, iso, softenMask = softenMap, pairFirst = pairFirst, framing = framing) { m -> status = m }
+                src = Develop.openCached(context, source, isRaw, DECODE_EDGE, r, iso, softenMask = softenMap, pairFirst = pairFirst, framing = framing,
+                    fogMask = fogMap, fogLook = fogLook) { m -> status = m }
                 // Middle of the frame first on the quick pass: it appears sooner and reads the same.
                 val target = if (cropFraction < 1f) Develop.centreCrop(src!!, cropFraction).also { cropped = it } else src!!
                 val t0 = System.nanoTime()
@@ -185,12 +189,13 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
      * the main thread; queues for the engine lane like every other render, so two engines never run
      * at once. Never called while the lane is already held.
      */
-    fun renderStill(r: Recipe, edge: Int, map: ExposureMap? = null, soften: ExposureMap? = null): Bitmap? {
+    fun renderStill(r: Recipe, edge: Int, map: ExposureMap? = null, soften: ExposureMap? = null, fog: ExposureMap? = null): Bitmap? {
         val q = com.celestial.latent.develop.DevelopQueue
         q.engineLane.acquire()
         return try {
             val iso = Develop.isoOf(context, source)
-            val s0 = Develop.openCached(context, source, isRaw, DECODE_EDGE, r, iso, softenMask = soften, pairFirst = pairFirst, framing = framing) { }
+            val s0 = Develop.openCached(context, source, isRaw, DECODE_EDGE, r, iso, softenMask = soften, pairFirst = pairFirst, framing = framing,
+                fogMask = fog, fogLook = fogLook) { }
             val (bytes, _) = Develop.render(context, s0, r.copy(previewMaxSize = edge), preview = true, exposureMap = map, softenMask = soften)
             BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
         } catch (t: Throwable) {
@@ -203,12 +208,13 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
      * resolution. Queues for the engine lane like every render; only called off the main thread.
      */
     fun renderDetail(r: Recipe, region: com.celestial.latent.develop.Region, edge: Int,
-                     map: ExposureMap?, soften: ExposureMap?): Bitmap? {
+                     map: ExposureMap?, soften: ExposureMap?, fog: ExposureMap? = fogMap): Bitmap? {
         val q = com.celestial.latent.develop.DevelopQueue
         q.engineLane.acquire()
         return try {
             val iso = Develop.isoOf(context, source)
-            val whole = Develop.openCached(context, source, isRaw, DETAIL_EDGE, r, iso, softenMask = soften, pairFirst = pairFirst, framing = framing) { }
+            val whole = Develop.openCached(context, source, isRaw, DETAIL_EDGE, r, iso, softenMask = soften, pairFirst = pairFirst, framing = framing,
+                fogMask = fog, fogLook = fogLook) { }
             Develop.cropRegion(whole, region).use { part ->
                 val (bytes, _) = Develop.render(context, part, r.copy(previewMaxSize = edge), preview = true,
                     exposureMap = map?.crop(region), softenMask = soften)
@@ -302,6 +308,16 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
             if (bmp != null) detail = region to bmp
         } finally { sharpening = false }
     }
+    // The fog and its colour, kept with the photo; a change re-develops the preview.
+    LaunchedEffect(fogMap, fogLook) {
+        delay(400)
+        val m = fogMap; val l = fogLook
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            ExposureMaps.save(context, source, m, ExposureMaps.FOG)
+            com.celestial.latent.develop.FogLooks.save(context, source, l)
+        }
+        if (!printing && src != null) render(fast = false)
+    }
     // Back from PRINT: the strips may have changed the exposure while the preview slept.
     LaunchedEffect(printing) { if (!printing && src != null) render(fast = false) }
     // The decoded copy is kept by Develop.Cache so coming back is instant; nothing to free here.
@@ -339,8 +355,18 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                     softenMap = softenMap,
                     onSoftenMap = { softenMap = it },
                     onDiffusionOn = { if (!recipe.diffusion) set { copy(diffusion = true) } },
-                    renderWithMasks = { r, edge, m, sm -> renderStill(r, edge, m, sm) },
-                    renderRegionWithMasks = { r, edge, m, sm, reg -> renderDetail(r, reg, edge, m, sm) },
+                    fogMap = fogMap,
+                    onFogMap = { fogMap = it },
+                    fogLook = fogLook,
+                    onFogLook = { fogLook = it },
+                    sampleScene = { u, v ->
+                        val q = com.celestial.latent.develop.DevelopQueue
+                        q.engineLane.acquire()
+                        try { Develop.sampleScene(context, source, isRaw, DECODE_EDGE, pairFirst, framing, u, v) }
+                        catch (t: Throwable) { null } finally { q.engineLane.release() }
+                    },
+                    renderWithMasks = { r, edge, m, sm, fm -> renderStill(r, edge, m, sm, fm) },
+                    renderRegionWithMasks = { r, edge, m, sm, fm, reg -> renderDetail(r, reg, edge, m, sm, fm) },
                     modifier = Modifier.fillMaxSize(),
                 )
             } else Column(Modifier.fillMaxSize()) {
@@ -889,7 +915,8 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                 (if (exposureMap?.isBlank == false) " · DODGED & BURNED" else "") +
                 (if (softenMap != null && recipe.diffusion) " · SOFTENED IN PLACES" else "") +
                 (if (pairFirst != null) " · DOUBLE EXPOSURE" else "") +
-                (if (!framing.isIdentity) " · FRAMED" else ""),
+                (if (!framing.isIdentity) " · FRAMED" else "") +
+                (if (fogMap?.isBlank == false) " · FOGGED" else ""),
                 color = LatentColors.Line, fontSize = 9.sp, letterSpacing = 1.5.sp, lineHeight = 13.sp,
                 // takes the space the button leaves and wraps if it must — it used to crush the button
                 modifier = Modifier.weight(1f).padding(end = 12.dp))
@@ -901,6 +928,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                     fullRunning = true; fullStarted = System.currentTimeMillis(); status = "full size: queued"
                     fullJob = com.celestial.latent.develop.DevelopQueue.submitFull(
                         context, source, isRaw, recipe, upscale = printSize, exposureMap = exposureMap, softenMask = softenMap, pairFirst = pairFirst, framing = framing,
+                        fogMask = fogMap, fogLook = fogLook,
                         onStatus = { m -> status = "full size: $m" },
                         onDone = { out ->
                             fullRunning = false; fullJob = null

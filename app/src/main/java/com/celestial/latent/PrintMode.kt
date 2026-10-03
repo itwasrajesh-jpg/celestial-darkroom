@@ -61,6 +61,8 @@ import com.celestial.latent.develop.PRINT_EXPOSURE_MAX
 import com.celestial.latent.develop.PRINT_EXPOSURE_MIN
 import com.celestial.latent.develop.ExposureMap
 import com.celestial.latent.develop.Recipe
+import com.celestial.latent.develop.Fog
+import com.celestial.latent.develop.FogLook
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.calculatePan
@@ -284,7 +286,7 @@ private fun StepIndicator(active: Int, available: Int, onSelect: (Int) -> Unit, 
     // Four names in one row, measured: "TEST STRIP" and 16 dp gaps would need ~394 dp of the ~357
     // a phone has, and the last would be crushed. "STRIP", 12 dp gaps and 1.2 sp letter spacing
     // come to about 331 dp.
-    val steps = listOf("STRIP", "COLOUR", "DODGE & BURN", "SOFTEN")
+    val steps = listOf("STRIP", "COLOUR", "DODGE & BURN", "SOFTEN", "FOG")
     Row(modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         steps.forEachIndexed { i, label ->
             val on = i == active
@@ -355,20 +357,28 @@ fun PrintPanel(
     softenMap: ExposureMap?,
     onSoftenMap: (ExposureMap?) -> Unit,
     onDiffusionOn: () -> Unit,
-    renderWithMasks: (Recipe, Int, ExposureMap?, ExposureMap?) -> Bitmap?,
-    renderRegionWithMasks: ((Recipe, Int, ExposureMap?, ExposureMap?, Region) -> Bitmap?)? = null,
+    fogMap: ExposureMap?,
+    onFogMap: (ExposureMap?) -> Unit,
+    fogLook: FogLook,
+    onFogLook: (FogLook) -> Unit,
+    sampleScene: (Float, Float) -> FloatArray?,
+    renderWithMasks: (Recipe, Int, ExposureMap?, ExposureMap?, ExposureMap?) -> Bitmap?,
+    renderRegionWithMasks: ((Recipe, Int, ExposureMap?, ExposureMap?, ExposureMap?, Region) -> Bitmap?)? = null,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
     val cache = remember { PrintCache() }
     var step by remember { mutableStateOf(0) }
+    // the fog step's eyedropper: on, the next tap on the print takes the scene's light there
+    var fogPicking by remember { mutableStateOf(false) }
+    val pickScope = rememberCoroutineScope()
     var note by remember { mutableStateOf("") }
     val render: (Recipe, Int) -> Bitmap? = { r, e -> cache.peek(r, e) ?: renderAt(r, e)?.also { cache.put(r, it) } }
     LaunchedEffect(note) { if (note.isNotEmpty()) { delay(2600); note = "" } }
 
     Column(modifier.background(LatentColors.Background)) {
         StepIndicator(
-            active = step, available = 4,
+            active = step, available = 5,
             onSelect = { i -> if (i != step) Haptics.tick(context); step = i },
             modifier = Modifier.padding(horizontal = 18.dp).padding(top = 6.dp),
         )
@@ -391,17 +401,31 @@ fun PrintPanel(
                 1 -> RingAroundStep(recipe, render, { r, e -> cache.peek(r, e) }, onFilters, Modifier.fillMaxSize())
                 // each painting step shows the print with BOTH masks: it is one print
                 2 -> PaintStep(DODGE_BURN_SPEC, recipe, exposureMap, onExposureMap,
-                    renderWith = { r, e, m -> renderWithMasks(r, e, m, softenMap) },
+                    renderWith = { r, e, m -> renderWithMasks(r, e, m, softenMap, fogMap) },
                     startMap = { a -> ExposureMap.blank(a) },
                     modifier = Modifier.fillMaxSize(),
-                    renderRegion = renderRegionWithMasks?.let { f -> { r, e, m, reg -> f(r, e, m, softenMap, reg) } })
-                else -> PaintStep(SOFTEN_SPEC, recipe, softenMap, onSoftenMap,
-                    renderWith = { r, e, m -> renderWithMasks(r, e, exposureMap, m) },
+                    renderRegion = renderRegionWithMasks?.let { f -> { r, e, m, reg -> f(r, e, m, softenMap, fogMap, reg) } })
+                3 -> PaintStep(SOFTEN_SPEC, recipe, softenMap, onSoftenMap,
+                    renderWith = { r, e, m -> renderWithMasks(r, e, exposureMap, m, fogMap) },
                     // begin from what is on screen: softened everywhere if diffusion is on, else sharp
                     startMap = { a -> ExposureMap.blank(a).also { if (recipe.diffusion) it.stops.fill(1f) } },
                     modifier = Modifier.fillMaxSize(),
                     onPaintPlus = onDiffusionOn,
-                    renderRegion = renderRegionWithMasks?.let { f -> { r, e, m, reg -> f(r, e, exposureMap, m, reg) } })
+                    renderRegion = renderRegionWithMasks?.let { f -> { r, e, m, reg -> f(r, e, exposureMap, m, fogMap, reg) } })
+                else -> PaintStep(FOG_SPEC, recipe, fogMap, onFogMap,
+                    renderWith = { r, e, m -> renderWithMasks(r, e, exposureMap, softenMap, m) },
+                    startMap = { a -> ExposureMap.blank(a) },
+                    modifier = Modifier.fillMaxSize(),
+                    renderRegion = renderRegionWithMasks?.let { f -> { r, e, m, reg -> f(r, e, exposureMap, softenMap, m, reg) } },
+                    pickMode = fogPicking,
+                    onPick = { u, v ->
+                        fogPicking = false
+                        pickScope.launch {
+                            val light = withContext(Dispatchers.Default) { sampleScene(u, v) }
+                            if (light != null) onFogLook(FogLook("picked", 0f, light.toList()))
+                        }
+                    },
+                    extra = { FogColourRow(fogLook, picking = fogPicking, onLook = onFogLook, onPick = { fogPicking = !fogPicking }) })
             }
         }
     }
@@ -652,6 +676,8 @@ private class PaintSpec(
     val tintPlus: Color,
     val tintMinus: Color,
     val status: (ExposureMap?, Recipe) -> String,
+    /** Scales how much one pass adds (1 = the usual gentle/medium/strong). */
+    val passScale: Float = 1f,
 )
 
 private val DODGE_BURN_SPEC = PaintSpec(
@@ -694,6 +720,58 @@ private val SOFTEN_SPEC = PaintSpec(
     },
 )
 
+/** A pale, cool haze for the fog's guide overlay. */
+private val FOG_TINT = Color(0xFFE6EBF0)
+
+/**
+ * Fog: how thick the air is in front of each place — 0 clear, up to 3 (by then only 5% of the
+ * place gets through the fog). Paint it thicker in the distance to give the picture depth.
+ */
+private val FOG_SPEC = PaintSpec(
+    hint = "Paint fog thicker where things are further away. Clear paints it away.",
+    minusLabel = "Clear", plusLabel = "Fog",
+    min = 0f, max = 3f, overlayFull = 3f,
+    tintPlus = FOG_TINT, tintMinus = FOG_TINT,
+    // Haze shows most over dark places — a thickness of 0.25 already lifts a deep shadow by about
+    // two stops — so fog builds up in half-size passes, fine enough to layer gradually.
+    passScale = 0.5f,
+    status = { m, _ ->
+        if (m == null || m.isBlank) "no fog" else {
+            val area = Math.round(m.stops.count { it > 0.05f } * 100f / m.stops.size)
+            val veil = Math.round((1f - kotlin.math.exp(-(m.stops.maxOrNull() ?: 0f))) * 100f)
+            "$area% fogged · up to $veil% veiled"
+        }
+    },
+)
+
+/**
+ * The fog's colour: Auto (the scene's own brightest light — the safe choice), a preset with a
+ * warmth slider, or picked from the scene with the eyedropper.
+ */
+@Composable
+private fun FogColourRow(look: FogLook, picking: Boolean, onLook: (FogLook) -> Unit, onPick: () -> Unit) {
+    Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 6.dp)) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            Chip("auto", on = look.mode == "auto") { onLook(FogLook("auto")) }
+            Fog.PRESETS.forEach { (name, _) -> Chip(name, on = look.mode == name) { onLook(FogLook(name, look.warmth)) } }
+            Chip(if (picking) "tap photo" else "pick", on = picking || look.mode == "picked") { onPick() }
+        }
+        // warmth fine-tunes a preset; Auto and Picked take their colour from the scene itself
+        if (Fog.PRESETS.any { it.first == look.mode }) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("cool", color = LatentColors.TextDim, fontSize = 10.sp)
+                androidx.compose.material3.Slider(
+                    value = look.warmth, onValueChange = { onLook(look.copy(warmth = it)) }, valueRange = -1f..1f,
+                    colors = androidx.compose.material3.SliderDefaults.colors(thumbColor = LatentColors.Amber,
+                        activeTrackColor = LatentColors.Amber, inactiveTrackColor = LatentColors.Surface),
+                    modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
+                )
+                Text("warm", color = LatentColors.TextDim, fontSize = 10.sp)
+            }
+        }
+    }
+}
+
 /**
  * A painting step: dodge & burn (where the enlarger light falls) or soften (where the diffusion
  * filter glows). While you paint, a soft overlay shows where; when you lift your finger, the print
@@ -717,11 +795,16 @@ private fun PaintStep(
     modifier: Modifier = Modifier,
     onPaintPlus: () -> Unit = {},
     renderRegion: ((Recipe, Int, ExposureMap?, Region) -> Bitmap?)? = null,
+    pickMode: Boolean = false,
+    onPick: ((Float, Float) -> Unit)? = null,
+    extra: (@Composable () -> Unit)? = null,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val current by rememberUpdatedState(recipe)
     val renderNow by rememberUpdatedState(renderWith)
+    val picking by rememberUpdatedState(pickMode)
+    val pickNow by rememberUpdatedState(onPick)
     // Zoom: two fingers; the brush keeps its size on screen; the zoomed part develops sharp.
     val zoom = remember { ZoomState() }
     var detail by remember { mutableStateOf<Pair<Region, Bitmap>?>(null) }
@@ -812,7 +895,7 @@ private fun PaintStep(
         val sign = if (plus) 1f else -1f
         val next = base.copy()
         for (k in next.stops.indices) {
-            if (st[k] > 0f) next.stops[k] = (next.stops[k] + sign * STRENGTH[strength] * st[k]).coerceIn(spec.min, spec.max)
+            if (st[k] > 0f) next.stops[k] = (next.stops[k] + sign * STRENGTH[strength] * spec.passScale * st[k]).coerceIn(spec.min, spec.max)
         }
         if (plus) onPaintPlus()
         // `working` still holds the mask as it was before the stroke (the stroke lived apart), so
@@ -827,7 +910,7 @@ private fun PaintStep(
         val sign = if (plus) 1f else -1f
         val px = IntArray(m.width * m.height)
         for (k in px.indices) {
-            val sNow = (m.stops[k] + (if (st != null) sign * STRENGTH[strength] * st[k] else 0f)).coerceIn(spec.min, spec.max)
+            val sNow = (m.stops[k] + (if (st != null) sign * STRENGTH[strength] * spec.passScale * st[k] else 0f)).coerceIn(spec.min, spec.max)
             val a = (kotlin.math.abs(sNow) / spec.overlayFull).coerceIn(0f, 1f)
             val tint = if (sNow >= 0f) spec.tintPlus else spec.tintMinus
             val alpha = (a * 200).toInt().coerceIn(0, 255)
@@ -853,6 +936,13 @@ private fun PaintStep(
                         val fit = FitRect(pr.left, pr.top, pr.width, pr.height)
                         fun at(o: Offset) = zoom.toPicture(o.x, o.y, fit, vw, vh)
                         val (u0, v0) = at(down.position)
+                        // eyedropper: this tap picks a colour from the picture instead of painting
+                        val pick = pickNow
+                        if (picking && pick != null) {
+                            if (u0 in 0f..1f && v0 in 0f..1f) { Haptics.tick(context); pick(u0, v0) }
+                            down.consume()
+                            return@awaitEachGesture
+                        }
                         var painting = u0 in 0f..1f && v0 in 0f..1f
                         var zooming = false
                         var last = Pair(u0, v0)
@@ -920,6 +1010,7 @@ private fun PaintStep(
                     .pointerInput(Unit) { detectTapGestures(onTap = { Haptics.tick(context); zoom.reset(); detail = null }) }
                     .padding(horizontal = 10.dp, vertical = 4.dp))
         }
+        extra?.invoke()
         // Three rows, each measured to fit a phone (about 357 dp inside the margins): one row
         // would be ~410 dp and squeeze its last chips — the bug that once crushed the Develop button.
         // 1. what you paint with, and how big
