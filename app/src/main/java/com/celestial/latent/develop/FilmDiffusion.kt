@@ -178,8 +178,13 @@ object FilmDiffusion {
         val sharpRadius = min(ceil(8.0 * max(corePx.max(), haloPx.max())).toInt().coerceAtLeast(3), radius)
         // Split only when the bloom is much wider than the sharp part; otherwise one kernel
         // containing everything is both simpler and exact.
-        val split = radius > 4 * sharpRadius
-        val bloomStep = if (split) 4 else 1
+        // ...and whenever the whole glow would be too wide to work out at full size within the
+        // memory budget. Without this a filter with a wide middle glow (fog) skipped the shortcut
+        // and asked for two 288 MB buffers at full size — over the 512 MB Android allows the app,
+        // so every full-size develop failed. The four reproduced filters decide exactly as before.
+        val fit = (MAX_FFT - 64) / 2
+        val split = radius > 4 * sharpRadius || radius > fit
+        val bloomStep = if (split) max(4, ceil(radius.toDouble() / fit).toInt()) else 1
         val mainRadius = if (split) sharpRadius else radius
 
         val f = data.order(ByteOrder.nativeOrder()).asFloatBuffer()
@@ -310,11 +315,13 @@ object FilmDiffusion {
     private fun convolve(src: FloatArray, w: Int, h: Int, kernel: FloatArray, r: Int, out: FloatArray) {
         // A tile plus its border must fit an FFT size the library handles well, and the largest
         // buffer we allow wins: fewer, bigger transforms beat many small ones.
-        val fftSize = if (2 * r + 64 <= MAX_FFT) MAX_FFT else nextGood(4 * r)
+        // The transform never exceeds MAX_FFT, whatever the kernel: a kernel too wide for it is
+        // trimmed at its faint outer edge. (It used to grow to fit 4× the radius, unbounded —
+        // 6144 for fog at full size, two 288 MB buffers, and out of memory.)
+        val fftSize = MAX_FFT
         val tile = fftSize - 2 * r
-        if (tile < 16) {
-            // The kernel is nearly as large as the image. One transform covering everything
-            // would need hundreds of megabytes, so the kernel is trimmed to what the largest
+        if (tile < 64) {
+            // The kernel is too wide for the largest transform allowed. It is trimmed to what the
             // buffer allows — its outer edge is far below a thousandth of the peak, so nothing
             // visible is lost, and the alternative is running out of memory.
             val rCap = (MAX_FFT - 64) / 2

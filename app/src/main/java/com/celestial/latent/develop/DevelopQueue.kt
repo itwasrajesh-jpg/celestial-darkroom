@@ -40,8 +40,15 @@ object DevelopQueue {
         pool.execute {
             val app = context.applicationContext
             var out: Uri? = null
+            // The full develop takes its turn for the engine like every other render: two at once
+            // compete for the same memory, and a preview or zoom tile starting mid-develop could
+            // push a full-size develop over the edge.
+            var holdsLane = false
             try {
                 if (handle.cancelled) { Log.i("Latent", "full develop cancelled before it started"); return@execute }
+                onStatus("waiting for the engine")
+                holdsLane = acquireLane(120)
+                if (handle.cancelled) { Log.i("Latent", "full develop cancelled while waiting"); return@execute }
                 onStatus("starting")
                 out = Develop.developFull(app, source, isRaw, recipe, upscale = upscale, exposureMap = exposureMap, softenMask = softenMask, pairFirst = pairFirst, framing = framing, fogMask = fogMask, fogLook = fogLook, raysMask = raysMask, raysLook = raysLook) { m -> if (!handle.cancelled) onStatus(m) }
                 if (handle.cancelled) { Log.i("Latent", "full develop finished after cancel; result discarded"); out = null }
@@ -49,6 +56,7 @@ object DevelopQueue {
                 Log.e("Latent", "full develop failed", t)
                 if (!handle.cancelled) onStatus("failed: ${t.message}")
             } finally {
+                if (holdsLane) engineLane.release()
                 pending.decrementAndGet(); onChanged()
                 if (!handle.cancelled) onDone(out) else onDone(null)
             }

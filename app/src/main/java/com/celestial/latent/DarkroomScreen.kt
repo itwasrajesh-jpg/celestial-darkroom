@@ -101,6 +101,9 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
     var full by remember { mutableStateOf(false) }
     // PRINT mode: test strips (and, later, the ring-around and dodge & burn) instead of sliders.
     var printing by remember { mutableStateOf(false) }
+    // Why the last full-size develop failed, in plain words — shown until the next one starts.
+    // (A failure used to show nothing: the counter just stopped and no file appeared.)
+    var fullError by remember { mutableStateOf<String?>(null) }
     // This photo's dodge & burn — its own, never part of the shared recipe.
     var exposureMap by remember { mutableStateOf(ExposureMaps.load(context, source)) }
     // ...and where its diffusion goes, if painted (null = the plain setting: everywhere when on).
@@ -927,6 +930,13 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                 modifier = Modifier.padding(horizontal = 18.dp).padding(top = 4.dp),
             )
         }
+        // A failed full-size develop says so, here, until it is tapped away or the next one starts.
+        fullError?.let { e ->
+            Text(e, color = LatentColors.AmberInk, fontSize = 11.sp,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(top = 6.dp).clip(RoundedCornerShape(8.dp))
+                    .background(LatentColors.Amber).combinedClickable(onClick = { fullError = null })
+                    .padding(horizontal = 12.dp, vertical = 8.dp))
+        }
         Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 10.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             // An honest estimate before you commit, rather than an explanation mid-wait.
             val heavy = recipe.diffusion || recipe.printDiffusion
@@ -946,14 +956,21 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                 modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(LatentColors.Amber).combinedClickable(onClick = {
                     if (fullRunning) return@combinedClickable
                     Haptics.click(context)
-                    fullRunning = true; fullStarted = System.currentTimeMillis(); status = "full size: queued"
+                    fullRunning = true; fullStarted = System.currentTimeMillis(); status = "full size: queued"; fullError = null
                     fullJob = com.celestial.latent.develop.DevelopQueue.submitFull(
                         context, source, isRaw, recipe, upscale = printSize, exposureMap = exposureMap, softenMask = softenMap, pairFirst = pairFirst, framing = framing,
                         fogMask = fogMap, fogLook = fogLook, raysMask = raysMap, raysLook = raysLook,
-                        onStatus = { m -> status = "full size: $m" },
+                        onStatus = { m ->
+                            status = "full size: $m"
+                            if (m.startsWith("failed")) fullError =
+                                if (m.contains("OutOfMemory", ignoreCase = true) || m.contains("allocate", ignoreCase = true))
+                                    "Not developed: the phone ran out of memory. Try a smaller print size."
+                                else "Not developed: " + m.removePrefix("failed: ").take(120)
+                        },
                         onDone = { out ->
                             fullRunning = false; fullJob = null
                             if (out != null) {
+                                fullError = null
                                 status = "saved to DCIM/Latent"
                                 val b = runCatching { context.contentResolver.loadThumbnail(out, android.util.Size(1600, 1600), null) }.getOrNull()
                                 if (b != null) { preview = b; previewIsPartial = false }
