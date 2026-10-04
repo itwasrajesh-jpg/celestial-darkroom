@@ -175,20 +175,31 @@ class VendorProbe(private val context: Context) {
         return out
     }
 
-    /** Compare a thumbnail to the baseline: is it the same view, the baseline's centre 2x crop, or something else? */
+    /**
+     * Compare a thumbnail to the baseline: is it the same view, the baseline's centre 2x crop, or
+     * something else? Compared by *pattern*, not level: each thumbnail has its own mean taken off
+     * and is divided by its own spread, so a mode that only changes brightness, black level or
+     * contrast still matches its own view. (Dividing by the mean alone left the RAW black level
+     * in, so a darker same-view frame scored badly and once passed for a crop — the 3× sweep's
+     * mode 4, which on the phone only changed brightness.) A crop must also beat "same view" by
+     * a clear margin, not by a hair.
+     */
     private fun classify(t: FloatArray?, base: FloatArray?): String {
         if (t == null || base == null) return "?"
-        fun norm(a: FloatArray): FloatArray { val m = a.average().toFloat().coerceAtLeast(1f); return FloatArray(a.size) { a[it] / m } }
-        val a = norm(t); val b = norm(base)
+        fun z(a: FloatArray): FloatArray {
+            val m = a.average().toFloat()
+            val sd = Math.sqrt(a.fold(0.0) { acc, v -> acc + (v - m) * (v - m) } / a.size).toFloat().coerceAtLeast(1e-6f)
+            return FloatArray(a.size) { (a[it] - m) / sd }
+        }
+        fun match(p: FloatArray, q: FloatArray): Float { var s = 0f; for (i in p.indices) s += p[i] * q[i]; return s / p.size }
+        val a = z(t)
         // centre 2x crop of baseline, upsampled to 64x48
         val c = FloatArray(64 * 48) { i -> val x = i % 64; val y = i / 64; base[(12 + y / 2) * 64 + (16 + x / 2)] }
-        val cn = norm(c)
-        fun err(p: FloatArray, q: FloatArray): Float { var e = 0f; for (i in p.indices) e += Math.abs(p[i] - q[i]); return e / p.size }
-        val eFull = err(a, b); val eCrop = err(a, cn)
+        val mFull = match(a, z(base)); val mCrop = match(a, z(c))
         return when {
-            eFull < 0.08f && eFull <= eCrop -> "same view as baseline (%.3f)".format(eFull)
-            eCrop < 0.12f && eCrop < eFull -> "≈ centre 2x crop of baseline (%.3f vs %.3f) ← IN-SENSOR CROP".format(eCrop, eFull)
-            else -> "different from both (full %.3f, crop %.3f)".format(eFull, eCrop)
+            mFull > 0.85f && mFull >= mCrop -> "same view as baseline (match %.2f)".format(mFull)
+            mCrop > 0.75f && mCrop > mFull + 0.25f -> "≈ centre 2x crop of baseline (match %.2f vs %.2f) ← IN-SENSOR CROP".format(mCrop, mFull)
+            else -> "different from both (view %.2f, crop %.2f)".format(mFull, mCrop)
         }
     }
 

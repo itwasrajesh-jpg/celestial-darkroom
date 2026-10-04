@@ -62,27 +62,42 @@ object Lenses {
 
     /** The lens the app opens on: a short tele if the phone has one (the portrait lens), else the main. */
     /**
-     * The 15 Ultra periscope's in-sensor zoom. Its 200 MP sensor can read a centre crop at full
-     * pixel density instead of merging pixels, so the RAW itself is the close-up — real detail,
-     * not an enlargement. Sensor mode 38 is a ×2 crop and 39 a ×4, sent as a request setting
-     * (sensor_meta_data.current_mode). Measured on a test target: 1.97× and 3.80× larger than
-     * the plain 4.3×; the community gives 190 and 380 mm on the 99 mm lens (1.92×, 3.84×).
+     * The 15 Ultra's in-sensor zoom. A high-resolution sensor can read a centre crop at full pixel
+     * density instead of merging pixels, so the RAW itself is the close-up — real detail, not an
+     * enlargement. Each sensor has its own mode numbers, sent as a request setting
+     * (sensor_meta_data.current_mode); a number means nothing — or something else — on another.
+     *
+     *  - periscope (200 MP): ×2 = mode 38, ×4 = mode 39 — measured 1.97× and 3.80× on a test
+     *    target; the community gives 190 and 380 mm on the 99 mm lens (1.92×, 3.84×);
+     *  - main (50 MP): ×2 = mode 3 — 48 mm on the 24 mm main in the community's list, confirmed
+     *    on this phone. A 50 MP sensor has no ×4: a quarter of each side is only ~3 MP;
+     *  - 3× (50 MP): none. The mode sweep's one candidate only changed brightness.
      */
     const val PERISCOPE_ID = "5"
+    const val MAIN_ID = "2"
     const val SENSOR_MODE_KEY = "org.codeaurora.qcamera3.sensor_meta_data.current_mode"
+    /** Lens -> (zoom button -> sensor mode and how much closer it brings the picture). */
+    private val SENSOR_ZOOM: Map<String, Map<Int, Pair<Int, Float>>> = mapOf(
+        PERISCOPE_ID to mapOf(2 to (38 to 1.95f), 4 to (39 to 3.82f)),
+        MAIN_ID to mapOf(2 to (3 to 2.0f)),
+    )
+    private fun sensorZoom(lens: Lens, zoom: Float): Pair<Int, Float>? =
+        if (!isXiaomi15Ultra || zoom <= 1.001f) null else SENSOR_ZOOM[lens.physicalId]?.get(if (zoom > 2.5f) 4 else 2)
 
-    /** The in-sensor mode for this lens at this zoom, or null: the 15 Ultra's periscope only. */
-    fun sensorZoomMode(lens: Lens, zoom: Float): Int? =
-        if (isXiaomi15Ultra && lens.physicalId == PERISCOPE_ID && zoom > 1.001f) (if (zoom > 2.5f) 39 else 38) else null
+    /** The in-sensor mode for this lens at this zoom, or null (another lens, another phone, or no zoom). */
+    fun sensorZoomMode(lens: Lens, zoom: Float): Int? = sensorZoom(lens, zoom)?.first
 
-    /** How much closer a sensor mode brings the picture: between the measured and the published figures. */
-    fun sensorZoomFactor(mode: Int): Float = if (mode == 39) 3.82f else 1.95f
+    /** How much closer this lens's sensor mode brings the picture at this zoom, or null. */
+    fun sensorZoomFactor(lens: Lens, zoom: Float): Float? = sensorZoom(lens, zoom)?.second
 
-    /** The zoom a photo really has, as a label: "4.3", or with a sensor mode "8.4" / "16". */
+    /** The zoom buttons this lens has as true sensor crops: [2, 4] on the periscope, [2] on the main. */
+    fun sensorZoomSteps(lens: Lens): List<Int> =
+        if (isXiaomi15Ultra) SENSOR_ZOOM[lens.physicalId]?.keys?.sorted().orEmpty() else emptyList()
+
+    /** The zoom a photo really has, as a label: "4.3", or with a sensor mode "8.4", "16", "2". */
     fun effectiveLabel(lens: Lens, zoom: Float): String {
-        val mode = sensorZoomMode(lens, zoom)
-        val z = lens.label.toFloat() * (mode?.let { sensorZoomFactor(it) } ?: 1f)
-        return if (mode == 39) String.format(java.util.Locale.US, "%.0f", z) else String.format(java.util.Locale.US, "%.1f", z).removeSuffix(".0")
+        val z = lens.label.toFloat() * (sensorZoomFactor(lens, zoom) ?: 1f)
+        return if (z >= 10f) String.format(java.util.Locale.US, "%.0f", z) else String.format(java.util.Locale.US, "%.1f", z).removeSuffix(".0")
     }
 
     val DEFAULT: Lens get() = ALL.firstOrNull { it.mm in 50..90 } ?: ALL.firstOrNull { it.isMain } ?: ALL.first()

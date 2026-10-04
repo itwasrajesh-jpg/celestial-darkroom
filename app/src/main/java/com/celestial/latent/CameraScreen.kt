@@ -524,12 +524,13 @@ fun CameraScreen(
                         }).padding(horizontal = 11.dp, vertical = 6.dp))
                 }
                 Spacer(Modifier.width(6.dp))
-                // ×2 multiplies the current lens. On the 15 Ultra's periscope it is the sensor's own
-                // crop, and ×4 joins it: each shows the real zoom it gives when on (8.4×, 16×).
-                val periscope = com.celestial.latent.camera.Lenses.sensorZoomMode(lens, 2f) != null
-                (if (periscope) listOf(2f, 4f) else listOf(2f)).forEach { factor ->
+                // ×2 multiplies the current lens. Where the sensor has its own crop (the 15 Ultra's
+                // main and periscope) it is that, and the periscope adds ×4: each button shows the
+                // real zoom it gives when on (2×, 8.4×, 16×). Elsewhere ×2 is as it always was.
+                val steps = com.celestial.latent.camera.Lenses.sensorZoomSteps(lens)
+                (if (4 in steps) listOf(2f, 4f) else listOf(2f)).forEach { factor ->
                     val zoomOn = controls.zoom == factor
-                    val effective = if (periscope) com.celestial.latent.camera.Lenses.effectiveLabel(lens, factor)
+                    val effective = if (steps.isNotEmpty()) com.celestial.latent.camera.Lenses.effectiveLabel(lens, factor)
                         else String.format("%.1f", lens.label.toFloat() * factor).removeSuffix(".0")
                     Text(if (zoomOn) "$effective×" else "×${factor.toInt()}", color = if (zoomOn) LatentColors.AmberInk else LatentColors.Amber, fontSize = 11.sp,
                         modifier = Modifier.padding(end = 4.dp).clip(RoundedCornerShape(999.dp)).background(if (zoomOn) LatentColors.Amber else Color.Transparent).border(0.5.dp, LatentColors.Amber, RoundedCornerShape(999.dp))

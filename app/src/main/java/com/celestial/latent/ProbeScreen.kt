@@ -88,7 +88,9 @@ fun ProbeScreen(settings: AppSettings, onBack: () -> Unit) {
             }
         }
         Spacer(Modifier.height(8.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        // One per line: side by side, the A/B button was squashed into a circle and the quality
+        // probe was pushed off the screen entirely.
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Btn("Sensor mode sweep 0–63 on ${settings.cameraPath}/${lens.physicalId}", !running) {
                 run { probe.sensorModeSweep(settings.cameraPath, lens, 0, 63) { p -> progress = p } }
             }

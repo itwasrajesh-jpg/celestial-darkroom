@@ -111,7 +111,7 @@ class CameraController(
     /** Android's JPEG_R format (Ultra HDR, base JPEG + gain map). Constant kept literal for older compile targets. */
     private val FORMAT_JPEG_R = 4101
     private val ISZ_KEY = "org.codeaurora.qcamera3.sessionParameters.EnableInsensorZoom"
-    /** The periscope's in-sensor mode at these controls (38 = ×2, 39 = ×4), or null. See [Lenses.sensorZoomMode]. */
+    /** This lens's in-sensor mode at these controls (periscope 38 / 39, main 3), or null. See [Lenses.sensorZoomMode]. */
     private fun sensorMode(c: Controls = controls): Int? = Lenses.sensorZoomMode(lens, c.zoom)
     /** A zoomed telephoto opened directly — but never for a sensor mode, which was proven through the logical camera. */
     private fun zoomedTele(c: Controls = controls) = teleZoomDirect && c.zoom > 1.001f && !lens.isMain && sensorMode(c) == null
@@ -356,7 +356,7 @@ class CameraController(
             else -> u to v
         }
         // With a zoom ratio active, the visible field is the centre 1/zoom of the sensor: map the tap into it.
-        val z = sensorMode()?.let { Lenses.sensorZoomFactor(it) } ?: controls.zoom.coerceAtLeast(1f)
+        val z = Lenses.sensorZoomFactor(lens, controls.zoom) ?: controls.zoom.coerceAtLeast(1f)
         val vx = 0.5f + (sx - 0.5f) / z
         val vy = 0.5f + (sy - 0.5f) / z
         val half = 0.06f / z
@@ -571,7 +571,7 @@ class CameraController(
                 if (baseNames.size > 8) baseNames.remove(baseNames.keys.minOrNull()!!)
                 val name = "$base.dng"
                 val ms = writeDngCreator(img, result, name)
-                sensorMode()?.let { m -> log("in-sensor ×${if (m == 39) 4 else 2} on the periscope (mode $m): the RAW itself is the ${Lenses.effectiveLabel(lens, controls.zoom)}× close-up") }
+                sensorMode()?.let { m -> log("in-sensor ×${if (controls.zoom > 2.5f) 4 else 2} on the ${lens.name} (mode $m): the RAW itself is the ${Lenses.effectiveLabel(lens, controls.zoom)}× close-up") }
                     ?: run { if (controls.zoom != 1f) log("2x: JPEG ${if (inSensorZoomJpeg) "in-sensor crop" else "digital crop"} · RAW is the full 1x frame") }
                 val took = t0?.let { (System.nanoTime() - it) / 1_000_000 } ?: -1
                 status("Saved $name (${img.width}x${img.height}) · shutter→file ${took} ms · write $ms ms")
