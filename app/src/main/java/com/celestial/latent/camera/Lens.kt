@@ -61,6 +61,30 @@ object Lenses {
     @Volatile var report: String = "lens discovery has not run"; private set
 
     /** The lens the app opens on: a short tele if the phone has one (the portrait lens), else the main. */
+    /**
+     * The 15 Ultra periscope's in-sensor zoom. Its 200 MP sensor can read a centre crop at full
+     * pixel density instead of merging pixels, so the RAW itself is the close-up — real detail,
+     * not an enlargement. Sensor mode 38 is a ×2 crop and 39 a ×4, sent as a request setting
+     * (sensor_meta_data.current_mode). Measured on a test target: 1.97× and 3.80× larger than
+     * the plain 4.3×; the community gives 190 and 380 mm on the 99 mm lens (1.92×, 3.84×).
+     */
+    const val PERISCOPE_ID = "5"
+    const val SENSOR_MODE_KEY = "org.codeaurora.qcamera3.sensor_meta_data.current_mode"
+
+    /** The in-sensor mode for this lens at this zoom, or null: the 15 Ultra's periscope only. */
+    fun sensorZoomMode(lens: Lens, zoom: Float): Int? =
+        if (isXiaomi15Ultra && lens.physicalId == PERISCOPE_ID && zoom > 1.001f) (if (zoom > 2.5f) 39 else 38) else null
+
+    /** How much closer a sensor mode brings the picture: between the measured and the published figures. */
+    fun sensorZoomFactor(mode: Int): Float = if (mode == 39) 3.82f else 1.95f
+
+    /** The zoom a photo really has, as a label: "4.3", or with a sensor mode "8.4" / "16". */
+    fun effectiveLabel(lens: Lens, zoom: Float): String {
+        val mode = sensorZoomMode(lens, zoom)
+        val z = lens.label.toFloat() * (mode?.let { sensorZoomFactor(it) } ?: 1f)
+        return if (mode == 39) String.format(java.util.Locale.US, "%.0f", z) else String.format(java.util.Locale.US, "%.1f", z).removeSuffix(".0")
+    }
+
     val DEFAULT: Lens get() = ALL.firstOrNull { it.mm in 50..90 } ?: ALL.firstOrNull { it.isMain } ?: ALL.first()
 
     private class Found(val id: String, val eqMm: Float, val raw: Boolean, val standalone: Boolean)

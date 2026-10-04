@@ -88,7 +88,7 @@ class CameraController(
     private fun sessionSignature() = listOf(
         lens.physicalId, cameraPath, activeOpmode.toString(), wantJpeg.toString(),
         allTags().joinToString { it.name + it.scope + it.type + it.value },
-        (teleZoomDirect && controls.zoom > 1.001f && !lens.isMain).toString(),
+        zoomedTele().toString(),
     ).joinToString("|")
     private var openSignature: String? = null
     @Volatile private var opening = false
@@ -111,11 +111,21 @@ class CameraController(
     /** Android's JPEG_R format (Ultra HDR, base JPEG + gain map). Constant kept literal for older compile targets. */
     private val FORMAT_JPEG_R = 4101
     private val ISZ_KEY = "org.codeaurora.qcamera3.sessionParameters.EnableInsensorZoom"
+    /** The periscope's in-sensor mode at these controls (38 = ×2, 39 = ×4), or null. See [Lenses.sensorZoomMode]. */
+    private fun sensorMode(c: Controls = controls): Int? = Lenses.sensorZoomMode(lens, c.zoom)
+    /** A zoomed telephoto opened directly — but never for a sensor mode, which was proven through the logical camera. */
+    private fun zoomedTele(c: Controls = controls) = teleZoomDirect && c.zoom > 1.001f && !lens.isMain && sensorMode(c) == null
     /** User tags plus, only while ×2 is actually on, the in-sensor-zoom hint. Nothing else is ever sent. */
     private fun allTags(): List<VendorTagSpec> {
         // Only the tags meant for this lens: a sensor mode valid on one sensor breaks the others.
         val out = ArrayList(vendorTags.filter { it.name.isNotBlank() && (it.lens == "all" || it.lens == lens.physicalId) })
-        if (inSensorZoomJpeg && Lenses.isXiaomi15Ultra && controls.zoom > 1.001f && out.none { it.name == ISZ_KEY }) out += VendorTagSpec(ISZ_KEY, "session", "i32", "1")
+        val mode = sensorMode()
+        if (mode != null) {
+            // The periscope's own sensor crop: the RAW itself becomes the close-up. Sent on every
+            // request, exactly as the Vendor codes test that proved it — and instead of the
+            // JPEG-only hint below, never with it.
+            if (out.none { it.name == Lenses.SENSOR_MODE_KEY }) out += VendorTagSpec(Lenses.SENSOR_MODE_KEY, "request", "i32", mode.toString())
+        } else if (inSensorZoomJpeg && Lenses.isXiaomi15Ultra && controls.zoom > 1.001f && out.none { it.name == ISZ_KEY }) out += VendorTagSpec(ISZ_KEY, "session", "i32", "1")
         return out
     }
     @Volatile var onVendorEcho: (String) -> Unit = {}
@@ -169,12 +179,12 @@ class CameraController(
             this.previewSurface = surface
             // A zoom ratio on a logical multi-camera lets the driver hand the frame to another sensor
             // (visible switch + refocus). Opening the lens directly keeps it on the sensor we chose.
-            val zoomedTele = teleZoomDirect && controls.zoom > 1.001f && !lens.isMain
+            val openZoomedTele = zoomedTele()
             // The camera-path choice is a 15 Ultra setting; elsewhere, the discovered logical camera.
             val path = if (Lenses.isXiaomi15Ultra) cameraPath else Lenses.LOGICAL_ID
             // A lens that is a camera of its own cannot be reached through the logical camera.
-            directOpen = path == "direct" || fallbackDirect || zoomedTele || lens.standalone
-            if (zoomedTele) log("zoom on ${lens.name}: opening the lens directly to stop the logical camera switching sensors")
+            directOpen = path == "direct" || fallbackDirect || openZoomedTele || lens.standalone
+            if (openZoomedTele) log("zoom on ${lens.name}: opening the lens directly to stop the logical camera switching sensors")
             logicalId = if (path == "direct") Lenses.LOGICAL_ID else path
             try {
                 physChars = cm.getCameraCharacteristics(lens.physicalId)
@@ -323,11 +333,14 @@ class CameraController(
     }
 
     fun setControls(c: Controls) = handler.post {
-        val wasZoomedTele = teleZoomDirect && controls.zoom > 1.001f && !lens.isMain
+        val wasZoomedTele = zoomedTele()
         val crossedZoom = (controls.zoom > 1.001f) != (c.zoom > 1.001f)
+        // The periscope's sensor modes were proven set from the session's start; changing one
+        // mid-session is untested, so off / ×2 / ×4 each gets a fresh session.
+        val modeChanged = sensorMode() != sensorMode(c)
         controls = c
-        val isZoomedTele = teleZoomDirect && c.zoom > 1.001f && !lens.isMain
-        if (wasZoomedTele != isZoomedTele || (crossedZoom && inSensorZoomJpeg)) previewSurface?.let { open(lens, it) } else updatePreview()
+        val isZoomedTele = zoomedTele()
+        if (wasZoomedTele != isZoomedTele || modeChanged || (crossedZoom && inSensorZoomJpeg)) previewSurface?.let { open(lens, it) } else updatePreview()
     }
     fun setAntibanding(mode: Int) = handler.post { antibanding = mode; updatePreview() }
 
@@ -343,7 +356,7 @@ class CameraController(
             else -> u to v
         }
         // With a zoom ratio active, the visible field is the centre 1/zoom of the sensor: map the tap into it.
-        val z = controls.zoom.coerceAtLeast(1f)
+        val z = sensorMode()?.let { Lenses.sensorZoomFactor(it) } ?: controls.zoom.coerceAtLeast(1f)
         val vx = 0.5f + (sx - 0.5f) / z
         val vy = 0.5f + (sy - 0.5f) / z
         val half = 0.06f / z
@@ -384,7 +397,7 @@ class CameraController(
         b.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
         // A ratio of exactly 1.0 still puts the driver on its zoom path (softer output, shifted AF regions),
         // so only send it when the user actually zoomed.
-        if (c.zoom > 1.001f) b.set(CaptureRequest.CONTROL_ZOOM_RATIO, c.zoom)
+        if (c.zoom > 1.001f && sensorMode(c) == null) b.set(CaptureRequest.CONTROL_ZOOM_RATIO, c.zoom)
         // Exposure
         if (c.manualExposure) {
             val exp = c.shutterNs ?: lastAutoShutterNs
@@ -558,7 +571,8 @@ class CameraController(
                 if (baseNames.size > 8) baseNames.remove(baseNames.keys.minOrNull()!!)
                 val name = "$base.dng"
                 val ms = writeDngCreator(img, result, name)
-                if (controls.zoom != 1f) log("2x: JPEG ${if (inSensorZoomJpeg) "in-sensor crop" else "digital crop"} · RAW is the full 1x frame")
+                sensorMode()?.let { m -> log("in-sensor ×${if (m == 39) 4 else 2} on the periscope (mode $m): the RAW itself is the ${Lenses.effectiveLabel(lens, controls.zoom)}× close-up") }
+                    ?: run { if (controls.zoom != 1f) log("2x: JPEG ${if (inSensorZoomJpeg) "in-sensor crop" else "digital crop"} · RAW is the full 1x frame") }
                 val took = t0?.let { (System.nanoTime() - it) / 1_000_000 } ?: -1
                 status("Saved $name (${img.width}x${img.height}) · shutter→file ${took} ms · write $ms ms")
                 if (hdrJpegSequential) captureHdrJpeg(base) else busy = false
@@ -598,7 +612,8 @@ class CameraController(
     private fun writeDngCreator(img: Image, result: TotalCaptureResult, name: String): Long {
         val creator = DngCreator(physChars, metaFor(result))
         creator.setOrientation(ExifInterface.ORIENTATION_ROTATE_90)
-        creator.setDescription("Celestial Darkroom single RAW - ${lens.name} ${lens.label}")
+        creator.setDescription("Celestial Darkroom single RAW - ${lens.name} ${Lenses.effectiveLabel(lens, controls.zoom)}" +
+            (sensorMode()?.let { " (in-sensor mode $it)" } ?: ""))
         val t = System.nanoTime()
         saveTo(name) { creator.writeImage(it, img) }
         creator.close()
@@ -624,7 +639,7 @@ class CameraController(
 
     private fun fileBase(kind: String = "RAW"): String {
         val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
-        return "LATENT_${stamp}_${lens.label.replace(".", "_")}x_$kind"
+        return "LATENT_${stamp}_${Lenses.effectiveLabel(lens, controls.zoom).replace(".", "_")}x_$kind"
     }
 
     /** Nearest known base name within 100 ms of a timestamp (JPEG and RAW stamps can differ slightly). */

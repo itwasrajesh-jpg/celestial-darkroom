@@ -504,22 +504,37 @@ fun CameraScreen(
             if (countdown > 0) Text("$countdown", color = LatentColors.TextBright, fontSize = 64.sp, modifier = Modifier.align(Alignment.Center))
             Text((if (lens.mm >= 70) "TELE" else lens.name.uppercase()) + " · ${lens.mm} MM" + (if (readout.afState.isNotEmpty()) " · AF ${readout.afState.uppercase()}" else ""),
                 color = LatentColors.TextDim, fontSize = 10.sp, letterSpacing = 1.sp, modifier = Modifier.align(Alignment.BottomStart).padding(start = 12.dp, bottom = 122.dp))
-            Text(if (controls.zoom == 2f) "×2 ON" else "", color = LatentColors.TextDim, fontSize = 10.sp, letterSpacing = 1.sp, modifier = Modifier.align(Alignment.BottomEnd).padding(end = 12.dp, bottom = 122.dp))
+            Text(when {
+                    controls.zoom == 4f -> "×4 ON"
+                    controls.zoom == 2f -> "×2 ON"
+                    else -> ""
+                }, color = LatentColors.TextDim, fontSize = 10.sp, letterSpacing = 1.sp, modifier = Modifier.align(Alignment.BottomEnd).padding(end = 12.dp, bottom = 122.dp))
+            // ×4 reads the sensor's tiny pixels one by one: noisy in dim light, and a burst cleans it up.
+            // Its own line, centred above the labels — beside them it would run into the lens label.
+            if (controls.zoom == 4f) Text("best in bright light · hold the shutter for a burst", color = LatentColors.Amber, fontSize = 10.sp,
+                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 142.dp))
             // Lens row floating on the image: plain numbers, active one larger; ×2 multiplies the current lens.
             Row(Modifier.align(Alignment.BottomCenter).padding(bottom = 84.dp), verticalAlignment = Alignment.CenterVertically) {
                 Lenses.ALL.forEach { l ->
                     val on = l == lens
                     Text(if (on) l.label + "×" else l.label, color = if (on) LatentColors.TextBright else LatentColors.Text, fontSize = if (on) 15.sp else 12.sp,
                         modifier = Modifier.combinedClickable(onClick = {
-                            if (l != lens) { Haptics.tick(context); lens = l; push(controls.copy(shutterNs = null, iso = null, focusDiopters = null)); onLensChanged(l); reopen() }
+                            // ×4 exists only on the periscope: leaving it turns ×4 off rather than becoming a digital ×4
+                            if (l != lens) { Haptics.tick(context); lens = l; push(controls.copy(shutterNs = null, iso = null, focusDiopters = null, zoom = if (controls.zoom > 2.5f) 1f else controls.zoom)); onLensChanged(l); reopen() }
                         }).padding(horizontal = 11.dp, vertical = 6.dp))
                 }
                 Spacer(Modifier.width(6.dp))
-                val zoomOn = controls.zoom == 2f
-                val effective = String.format("%.1f", lens.label.toFloat() * 2).removeSuffix(".0")
-                Text(if (zoomOn) "$effective×" else "×2", color = if (zoomOn) LatentColors.AmberInk else LatentColors.Amber, fontSize = 11.sp,
-                    modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(if (zoomOn) LatentColors.Amber else Color.Transparent).border(0.5.dp, LatentColors.Amber, RoundedCornerShape(999.dp))
-                        .combinedClickable(onClick = { Haptics.tick(context); push(controls.copy(zoom = if (zoomOn) 1f else 2f)) }).padding(horizontal = 9.dp, vertical = 3.dp))
+                // ×2 multiplies the current lens. On the 15 Ultra's periscope it is the sensor's own
+                // crop, and ×4 joins it: each shows the real zoom it gives when on (8.4×, 16×).
+                val periscope = com.celestial.latent.camera.Lenses.sensorZoomMode(lens, 2f) != null
+                (if (periscope) listOf(2f, 4f) else listOf(2f)).forEach { factor ->
+                    val zoomOn = controls.zoom == factor
+                    val effective = if (periscope) com.celestial.latent.camera.Lenses.effectiveLabel(lens, factor)
+                        else String.format("%.1f", lens.label.toFloat() * factor).removeSuffix(".0")
+                    Text(if (zoomOn) "$effective×" else "×${factor.toInt()}", color = if (zoomOn) LatentColors.AmberInk else LatentColors.Amber, fontSize = 11.sp,
+                        modifier = Modifier.padding(end = 4.dp).clip(RoundedCornerShape(999.dp)).background(if (zoomOn) LatentColors.Amber else Color.Transparent).border(0.5.dp, LatentColors.Amber, RoundedCornerShape(999.dp))
+                            .combinedClickable(onClick = { Haptics.tick(context); push(controls.copy(zoom = if (zoomOn) 1f else factor)) }).padding(horizontal = 9.dp, vertical = 3.dp))
+                }
             }
             FilmStrip(settings.preset, Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp),
                 onLongPress = { lastRawUri?.let { u -> onOpenDarkroom(u, true) } }) { id ->
