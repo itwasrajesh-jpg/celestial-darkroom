@@ -36,6 +36,15 @@ data class Atmosphere(
     val hasRays: Boolean get() = rays.placed && rays.amount > 0f
     val isEmpty: Boolean get() = !hasFog && !hasRays
 
+    /** The same air, more or less of it: ADJUST's fog and rays, as multiples of the references'. */
+    fun scaled(fogScale: Float, raysScale: Float): Atmosphere = copy(
+        fog = fog.copy(amount = (fog.amount * fogScale).coerceIn(0f, 2f)),
+        rays = rays.copy(amount = (rays.amount * raysScale).coerceIn(0f, 2f)),
+    )
+
+    /** What a full develop is given: framing, and the fog and rays with their masks. */
+    data class Parts(val framing: Framing, val fogMask: ExposureMap?, val fogLook: FogLook, val raysMask: ExposureMap?, val raysLook: RaysLook)
+
     /** A short description for the screen. */
     fun describe(): String = listOfNotNull(
         // how much of the scene the average veil hides — the fog's own e^-thickness, times its amount
@@ -228,10 +237,32 @@ data class Atmosphere(
          *
          * Returns [src] itself when nothing is framed; otherwise a new source, and [src] is closed.
          */
+        /** Whether the test shot is the very photo the reference was developed from. */
+        fun isSamePhoto(context: Context, testShot: Uri, atmo: Atmosphere): Boolean =
+            atmo.original != null && atmo.originalStem != null && Develop.baseNameOf(context, testShot) == atmo.originalStem
+
+        /**
+         * The atmosphere as a full develop takes it — chosen exactly as [applyTo] chooses for the
+         * preview, so the full-size picture shows what was judged: on the same photo, its own
+         * framing, masks and light; on another, an even veil and the light where it was.
+         */
+        fun developParts(context: Context, testShot: Uri, atmo: Atmosphere?): Parts {
+            if (atmo == null || atmo.isEmpty) return Parts(Framing(), null, FogLook(), null, RaysLook())
+            if (isSamePhoto(context, testShot, atmo)) {
+                val photo = atmo.original!!
+                return Parts(
+                    Framings.load(context, photo),
+                    ExposureMaps.load(context, photo, ExposureMaps.FOG), atmo.fog,
+                    ExposureMaps.load(context, photo, ExposureMaps.RAYS), atmo.rays,
+                )
+            }
+            val veil = if (atmo.hasFog) ExposureMap.blank(1.5f).also { m -> java.util.Arrays.fill(m.stops, atmo.fogCover) } else null
+            return Parts(Framing(), veil, atmo.fog, null, if (atmo.hasRays) atmo.rays else RaysLook())
+        }
+
         fun applyTo(context: Context, src: Develop.Source, testShot: Uri, atmo: Atmosphere?, log: (String) -> Unit = {}): Develop.Source {
             if (atmo == null || atmo.isEmpty) return src
-            val same = atmo.original != null && atmo.originalStem != null &&
-                Develop.baseNameOf(context, testShot) == atmo.originalStem
+            val same = isSamePhoto(context, testShot, atmo)
             var framed: Develop.Source = src
             return runCatching {
                 if (same) {

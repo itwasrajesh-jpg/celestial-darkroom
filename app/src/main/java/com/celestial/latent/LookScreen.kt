@@ -69,6 +69,10 @@ fun LookScreen(settings: AppSettings, onBack: () -> Unit) {
     var atmospheres by remember { mutableStateOf(com.celestial.latent.develop.LookSession.atmospheres) }
     var useAtmosphere by remember { mutableStateOf(com.celestial.latent.develop.LookSession.useAtmosphere) }
     /** The last atmosphere lookup's own words: what it found, or why it found nothing. */
+    /** The film saved from this result, if any: a full develop is then named after it. */
+    var savedStockId by remember { mutableStateOf<String?>(null) }
+    /** A full-size develop of the test shot is under way. */
+    var fullRunning by remember { mutableStateOf(false) }
     var atmosphereReport by remember { mutableStateOf(com.celestial.latent.develop.LookSession.atmosphereReport) }
     /** The air the film is matched with: the first reference that has any, when the switch is on. */
     fun activeAtmosphere(): com.celestial.latent.develop.Atmosphere? = if (useAtmosphere) atmospheres.values.firstOrNull() else null
@@ -207,7 +211,7 @@ fun LookScreen(settings: AppSettings, onBack: () -> Unit) {
                 runCatching {
                     com.celestial.latent.develop.Reconstruct.render(
                         context, best, src, testIsRaw, BASE_STOCK, current, texture,
-                        atmosphere = activeAtmosphere(),
+                        atmosphere = activeAtmosphere()?.scaled(current.fogScale, current.raysScale),
                     )?.let { bytes ->
                         BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.let { resultBitmap = it }
                     }
@@ -521,6 +525,14 @@ fun LookScreen(settings: AppSettings, onBack: () -> Unit) {
                 onChange = { tweak = tweak.copy(warmCool = it) }, onRelease = { rerender() })
             Tweaker("Green / magenta", tweak.greenMagenta, -12f, 12f, "%+.1f",
                 onChange = { tweak = tweak.copy(greenMagenta = it) }, onRelease = { rerender() })
+            // The references' own fog and light, more or less of it — only when the switch is on.
+            // The search matched the film with them exactly as they were; these change the picture.
+            activeAtmosphere()?.let { a ->
+                if (a.hasFog) Tweaker("Fog", tweak.fogScale, 0f, 2f, "%.2f×",
+                    onChange = { tweak = tweak.copy(fogScale = it) }, onRelease = { rerender() })
+                if (a.hasRays) Tweaker("Rays", tweak.raysScale, 0f, 2f, "%.2f×",
+                    onChange = { tweak = tweak.copy(raysScale = it) }, onRelease = { rerender() })
+            }
             Tweaker("Diffusion", tweak.diffusion, 0f, 1f, "%.2f",
                 onChange = { tweak = tweak.copy(diffusion = it) }, onRelease = { rerender() })
             if (tweak.diffusion > 0.001f) {
@@ -571,10 +583,39 @@ fun LookScreen(settings: AppSettings, onBack: () -> Unit) {
                 modifier = Modifier.fillMaxWidth().padding(bottom = 10.dp),
             )
             Row(Modifier.fillMaxWidth().padding(bottom = 24.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                // The test shot at full size, with this film, its texture and the atmosphere — saved
+                // to the roll like any develop, through the same queue, so failures are reported.
+                Pill(if (fullRunning) "developing…" else "develop full size", accent = !fullRunning) {
+                    val src = testShot
+                    if (fullRunning || src == null) return@Pill
+                    fullRunning = true
+                    saved = "developing full size…"
+                    val stock = savedStockId ?: "celestial_working"
+                    val atmo = activeAtmosphere()?.scaled(tweak.fogScale, tweak.raysScale)
+                    val t = tweak
+                    Thread {
+                        val recipe = com.celestial.latent.develop.Reconstruct.fullRecipe(context, best, BASE_STOCK, stock, t, texture)
+                        if (recipe == null) { saved = "could not prepare the film for developing"; fullRunning = false; return@Thread }
+                        val parts = com.celestial.latent.develop.Atmosphere.developParts(context, src, atmo)
+                        com.celestial.latent.develop.DevelopQueue.submitFull(
+                            context, src, testIsRaw, recipe,
+                            framing = parts.framing, fogMask = parts.fogMask, fogLook = parts.fogLook,
+                            raysMask = parts.raysMask, raysLook = parts.raysLook,
+                            onStatus = { m -> saved = "full size: $m" },
+                            onDone = { out ->
+                                fullRunning = false
+                                saved = if (out != null) "developed full size — it is in your roll"
+                                    else if (saved.startsWith("full size: failed")) saved
+                                    else "the full-size develop did not finish"
+                            },
+                        )
+                    }.start()
+                }
                 Pill("save as a stock", accent = stockName.isNotBlank()) {
                     if (stockName.isBlank()) saved = "give it a name first" else {
                     val name = stockName.trim()
                     val id = com.celestial.latent.develop.Reconstruct.save(context, best.shape, BASE_STOCK, name)
+                    if (id != null) savedStockId = id
                     saved = if (id == null) "could not save" else {
                         // The stock carries what was read from the references: its own grain,
                         // halation, bloom and glare, not the defaults.

@@ -22,6 +22,9 @@ data class Tweak(
     val diffusion: Float = 0f,         // 0 = none
     val diffusionFamily: String = "black_pro_mist",
     val outputSpace: String = "SRGB",
+    /** How much of the references' fog and light to use, as a multiple of what they had. */
+    val fogScale: Float = 1f,
+    val raysScale: Float = 1f,
 )
 
 object LookSession {

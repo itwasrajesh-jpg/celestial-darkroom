@@ -373,6 +373,16 @@ object Reconstruct {
      * chose, whatever was adjusted by hand afterwards, and the texture read from the references.
      * One place, so the preview, the adjustments and the saved stock cannot drift apart.
      */
+    /**
+     * The recipe for developing the test shot at full size with the fit's answer. Unless a saved
+     * stock is named, the working emulsion is written for it first — the same one the preview used.
+     */
+    fun fullRecipe(context: Context, attempt: Attempt, baseStock: String, stockId: String, tweak: Tweak, texture: Texture?): Recipe? {
+        val base = Emulsion.baseProfile(context, baseStock) ?: return null
+        if (stockId == "celestial_working") Emulsion.write(base, attempt.shape, stockId, "Working") ?: return null
+        return recipeFor(stockId, attempt, printFor(base), tweak, texture, previewSize = 0)
+    }
+
     fun recipeFor(
         stockId: String,
         attempt: Attempt,
