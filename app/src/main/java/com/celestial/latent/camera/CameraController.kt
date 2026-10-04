@@ -92,6 +92,14 @@ class CameraController(
     ).joinToString("|")
     private var openSignature: String? = null
     @Volatile private var opening = false
+    /**
+     * Which open is current. Every open takes a new number, and closing (the app going to the
+     * background) moves it on — so a camera that finishes opening late, after the app was
+     * minimised or another open began, can tell it is out of date. Its viewfinder surface may
+     * already be gone; connecting to it crashed the app ("Surface was abandoned"). Only touched
+     * on the camera thread.
+     */
+    private var openGeneration = 0
     private val wantJpeg get() = saveJpeg
 
     /** Rebuilds the session if any stream- or tag-affecting setting changed since it was opened. */
@@ -154,6 +162,7 @@ class CameraController(
     fun open(lens: Lens, surface: Surface, attempt: Int = 0) {
         handler.post {
             closeInternal()
+            val gen = ++openGeneration
             opening = true
             openSignature = sessionSignature()        // claim these settings now, so a sync during the open does not loop
             this.lens = lens
@@ -190,7 +199,17 @@ class CameraController(
                 status("Opening ${lens.name} (${lens.label}) · RAW ${rawSize.width}x${rawSize.height}")
                 val idToOpen = if (directOpen) lens.physicalId else logicalId
                 cm.openCamera(idToOpen, object : CameraDevice.StateCallback() {
-                    override fun onOpened(cam: CameraDevice) { log("opened camera $idToOpen for lens ${lens.physicalId}${if (directOpen) " (direct)" else ""}"); device = cam; createSession() }
+                    override fun onOpened(cam: CameraDevice) {
+                        // Out of date (closed or superseded while opening), or its surface already
+                        // gone: step aside quietly. The fresh open from the new surface takes over.
+                        if (gen != openGeneration || !surface.isValid) {
+                            log("a camera finished opening after the app moved on; closing it")
+                            try { cam.close() } catch (_: Exception) {}
+                            if (gen == openGeneration) opening = false
+                            return
+                        }
+                        log("opened camera $idToOpen for lens ${lens.physicalId}${if (directOpen) " (direct)" else ""}"); device = cam; createSession()
+                    }
                     override fun onDisconnected(cam: CameraDevice) { log("camera disconnected (background or another app took it)"); try { session?.close() } catch (_: Exception) {}; session = null; cam.close(); device = null }
                     override fun onError(cam: CameraDevice, error: Int) {
                         cam.close(); device = null
@@ -223,9 +242,18 @@ class CameraController(
         val prev = previewSurface ?: return
         val reader = rawReader ?: return
         val outputs = ArrayList<OutputConfiguration>()
-        outputs += OutputConfiguration(prev)
-        outputs += OutputConfiguration(reader.surface)
-        jpegReader?.let { outputs += OutputConfiguration(it.surface) }
+        try {
+            outputs += OutputConfiguration(prev)
+            outputs += OutputConfiguration(reader.surface)
+            jpegReader?.let { outputs += OutputConfiguration(it.surface) }
+        } catch (e: IllegalArgumentException) {
+            // A surface went away between the checks and here (Android: "Surface was abandoned").
+            // Close cleanly rather than crash; the next open, from a fresh surface, recovers.
+            log("a camera surface was gone before the session could start (${e.message}); closing")
+            try { dev.close() } catch (_: Exception) {}
+            device = null; opening = false
+            return
+        }
         if (!directOpen) outputs.forEach { it.setPhysicalCameraId(lens.physicalId) }
         val sessionType = if (activeOpmode != 0) activeOpmode else SessionConfiguration.SESSION_REGULAR
         val config = SessionConfiguration(sessionType, outputs, executor, object : CameraCaptureSession.StateCallback() {
@@ -789,6 +817,8 @@ class CameraController(
     }
 
     private fun closeInternal() {
+        openGeneration++            // any open still in flight is now out of date
+        opening = false
         try { session?.close() } catch (_: Exception) {}
         session = null
         try { device?.close() } catch (_: Exception) {}

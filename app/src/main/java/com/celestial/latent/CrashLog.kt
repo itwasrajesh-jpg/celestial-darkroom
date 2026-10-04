@@ -20,7 +20,7 @@ object CrashLog {
                 val sw = StringWriter()
                 e.printStackTrace(PrintWriter(sw))
                 val stamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())
-                file(app).writeText("Latent v${BuildConfig.VERSION_NAME} crashed at $stamp on thread ${t.name}\n\n$sw")
+                file(app).writeText("Celestial Darkroom v${BuildConfig.VERSION_NAME} crashed at $stamp on thread ${t.name}\n\n$sw")
             } catch (_: Throwable) {}
             previous?.uncaughtException(t, e)
         }
