@@ -68,6 +68,8 @@ fun LookScreen(settings: AppSettings, onBack: () -> Unit) {
     var testShot by remember { mutableStateOf(com.celestial.latent.develop.LookSession.testShot) }
     var atmospheres by remember { mutableStateOf(com.celestial.latent.develop.LookSession.atmospheres) }
     var useAtmosphere by remember { mutableStateOf(com.celestial.latent.develop.LookSession.useAtmosphere) }
+    /** The last atmosphere lookup's own words: what it found, or why it found nothing. */
+    var atmosphereReport by remember { mutableStateOf("") }
     /** The air the film is matched with: the first reference that has any, when the switch is on. */
     fun activeAtmosphere(): com.celestial.latent.develop.Atmosphere? = if (useAtmosphere) atmospheres.values.firstOrNull() else null
     var status by remember { mutableStateOf("") }
@@ -121,9 +123,11 @@ fun LookScreen(settings: AppSettings, onBack: () -> Unit) {
             val addedTextures = ArrayList<com.celestial.latent.develop.Texture>()
             val maps = HashMap<Uri, Bitmap>()
             val addedAtmo = HashMap<Uri, com.celestial.latent.develop.Atmosphere>()
+            val lookups = ArrayList<String>()
             uris.forEach { uri ->
                 // Made in this app with fog or light? Then that air is known exactly.
                 com.celestial.latent.develop.Atmosphere.ofReference(context, uri)?.let { addedAtmo[uri] = it }
+                lookups += com.celestial.latent.develop.Atmosphere.lastReport
                 runCatching { context.contentResolver.takePersistableUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION) }
                 thumbnailOf(uri)?.let { bmp ->
                     added += uri to Fingerprint.of(bmp)
@@ -139,6 +143,8 @@ fun LookScreen(settings: AppSettings, onBack: () -> Unit) {
             textures = textures + addedTextures
             thumbs = thumbs + maps
             atmospheres = atmospheres + addedAtmo
+            // what the atmosphere lookup found for these references, shown under them
+            atmosphereReport = lookups.distinct().joinToString(" · ")
             status = "${references.size} references"
             busy = false
         }.start()
@@ -339,6 +345,10 @@ fun LookScreen(settings: AppSettings, onBack: () -> Unit) {
                 (if (spread > 0.9f) " — quite a scattered set" else ""),
             color = LatentColors.TextDim, fontSize = 11.sp, modifier = Modifier.padding(bottom = 18.dp),
         )
+        if (atmospheres.isEmpty() && atmosphereReport.isNotEmpty()) {
+            Text("atmosphere: $atmosphereReport", color = LatentColors.TextDim, fontSize = 11.sp, lineHeight = 15.sp,
+                modifier = Modifier.padding(bottom = 18.dp))
+        }
         // References made here with fog or light: that air is known, and can be held fixed so
         // only the film is searched. Switch it off to match everything as the film, as before.
         atmospheres.values.firstOrNull()?.let { a ->

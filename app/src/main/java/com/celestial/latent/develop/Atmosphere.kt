@@ -92,8 +92,20 @@ data class Atmosphere(
                 original != null -> ofPhoto(context, original.first, original.second)
                 else -> null
             }
+            // Every lookup says what it did, in the log and on screen: a silent "none" cannot be
+            // told apart from a lookup that broke.
+            lastReport = when {
+                found != null && !found.isEmpty -> "found: ${found.describe()}" + (if (fromNote != null) " (from the note in the file)" else " (from ${original?.second})")
+                original == null -> "no original found for \"$refStem\""
+                else -> "original ${original.second} has no fog or rays saved"
+            }
+            Log.i("Latent", "atmosphere: reference \"$refStem\" (${reference}) · note ${if (fromNote != null) "found" else "none"} · " +
+                "original ${original?.let { "${it.second} (${it.first})" } ?: "none"} · ${found?.let { "fog cover %.3f amount %.2f, rays placed=%s amount %.2f".format(Locale.US, it.fogCover, it.fog.amount, it.rays.placed, it.rays.amount) } ?: "-"} · $lastReport")
             return found?.takeIf { !it.isEmpty }
         }
+
+        /** What the last [ofReference] found or why it found nothing, in plain words. */
+        @Volatile var lastReport: String = ""
 
         /**
          * The original a developed file came from: the roll's photo whose name the reference's
@@ -115,12 +127,14 @@ data class Atmosphere(
                     if (fits) found += Triple(ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, c.getLong(0)), stem, name.substringAfterLast('.', ""))
                 }
             }
+            Log.i("Latent", "atmosphere: originals matching \"${knownStem ?: refStem}\": " +
+                found.joinToString { "${it.second}.${it.third}" }.ifEmpty { "none among the app's photos" })
             found.maxWithOrNull(compareBy<Triple<Uri, String, String>>(
                 { !ofPhoto(context, it.first, it.second).isEmpty },
                 { it.third.equals("dng", ignoreCase = true) },
                 { it.second.length },
             ))?.let { it.first to it.second }
-        }.getOrNull()
+        }.getOrElse { t -> Log.e("Latent", "atmosphere: could not search the app's photos", t); null }
 
         // ---- the note inside a JPEG: a comment segment, readable by any tool, ignored by viewers ----
 
