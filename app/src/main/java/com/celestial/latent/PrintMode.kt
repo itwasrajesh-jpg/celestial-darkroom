@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -887,15 +888,42 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawRaysLight(l: Ra
     }
 }
 
-/** The rays' light, brightness and reach. */
+/** A labelled slider that settles on release (re-developing once, not at every step of a drag). */
+@Composable
+private fun SettleSlider(left: String, right: String, value: Float, range: ClosedFloatingPointRange<Float>, onSettle: (Float) -> Unit) {
+    var live by remember(value) { mutableStateOf(value) }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(left, color = LatentColors.TextDim, fontSize = 10.sp)
+        androidx.compose.material3.Slider(
+            value = live, onValueChange = { live = it }, onValueChangeFinished = { onSettle(live) }, valueRange = range,
+            colors = androidx.compose.material3.SliderDefaults.colors(thumbColor = LatentColors.Amber,
+                activeTrackColor = LatentColors.Amber, inactiveTrackColor = LatentColors.Surface),
+            modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
+        )
+        Text(right, color = LatentColors.TextDim, fontSize = 10.sp)
+    }
+}
+
+/**
+ * The rays' light: its kind, its mode (a light that adds its own beam, or the photo's own light
+ * streaming through gaps), how bright — and, under "more", reach, colour, dust and fog.
+ */
 @Composable
 private fun RaysRow(look: RaysLook, placing: Boolean, onLook: (RaysLook) -> Unit, onPlace: () -> Unit) {
+    var more by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 6.dp)) {
         // the kind of light, as in 3D software; switching keeps where it is
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
             listOf("point", "sun", "spot", "area").forEach { t ->
                 Chip(t, on = look.type == t) { onLook(look.copy(type = t, u2 = Float.NaN, v2 = Float.NaN).withDefaults()) }
             }
+        }
+        Row(Modifier.fillMaxWidth().padding(top = 6.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                Chip("add light", on = look.mode == "add") { onLook(look.copy(mode = "add")) }
+                Chip("through gaps", on = look.mode == "gaps") { onLook(look.copy(mode = "gaps")) }
+            }
+            Chip(if (more) "less" else "more", on = more) { more = !more }
         }
         Row(Modifier.fillMaxWidth().padding(top = 6.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             Text(
@@ -908,29 +936,40 @@ private fun RaysRow(look: RaysLook, placing: Boolean, onLook: (RaysLook) -> Unit
                 color = if (placing) LatentColors.Amber else LatentColors.TextDim, fontSize = 11.sp, modifier = Modifier.weight(1f))
             if (look.placed) Chip(if (placing) "cancel" else "re-place", on = placing) { onPlace() }
         }
-        var amountLive by remember(look.amount) { mutableStateOf(look.amount) }
-        var lengthLive by remember(look.length) { mutableStateOf(look.length) }
+        // how bright, beside a swatch of the light's colour
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("amount", color = LatentColors.TextDim, fontSize = 10.sp)
-            androidx.compose.material3.Slider(
-                value = amountLive, onValueChange = { amountLive = it },
-                onValueChangeFinished = { onLook(look.copy(amount = (amountLive * 100f).roundToInt() / 100f)) }, valueRange = 0f..1f,
-                colors = androidx.compose.material3.SliderDefaults.colors(thumbColor = LatentColors.Amber,
-                    activeTrackColor = LatentColors.Amber, inactiveTrackColor = LatentColors.Surface),
-                modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
-            )
-            Text("${(amountLive * 100f).roundToInt()}%", color = LatentColors.Text, fontSize = 10.sp)
+            Box(Modifier.size(14.dp).clip(RoundedCornerShape(999.dp)).background(Color(Fog.swatchOf(look.chroma()))))
+            Box(Modifier.weight(1f).padding(start = 6.dp)) {
+                SettleSlider("amount", "${(look.amount * 100f).roundToInt()}%", look.amount, 0f..1f) { onLook(look.copy(amount = (it * 100f).roundToInt() / 100f)) }
+            }
         }
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("short", color = LatentColors.TextDim, fontSize = 10.sp)
-            androidx.compose.material3.Slider(
-                value = lengthLive, onValueChange = { lengthLive = it },
-                onValueChangeFinished = { onLook(look.copy(length = (lengthLive * 100f).roundToInt() / 100f)) }, valueRange = 0.1f..1f,
-                colors = androidx.compose.material3.SliderDefaults.colors(thumbColor = LatentColors.Amber,
-                    activeTrackColor = LatentColors.Amber, inactiveTrackColor = LatentColors.Surface),
-                modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
-            )
-            Text("long", color = LatentColors.TextDim, fontSize = 10.sp)
+        if (more) {
+            SettleSlider("short", "long", look.length, 0.1f..1f) { onLook(look.copy(length = (it * 100f).roundToInt() / 100f)) }
+            // the light's colour: a colour temperature, and optionally a hue of its own
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.weight(1f)) { SettleSlider("cool", "warm", look.warmth, -1f..1f) { onLook(look.copy(warmth = it)) } }
+                Spacer(Modifier.width(6.dp))
+                Chip("colour", on = look.coloured) { onLook(look.copy(coloured = !look.coloured)) }
+            }
+            if (look.coloured) {
+                var hueLive by remember(look.hue) { mutableStateOf(look.hue) }
+                Box(Modifier.fillMaxWidth().height(36.dp), contentAlignment = Alignment.Center) {
+                    Canvas(Modifier.fillMaxWidth().height(12.dp).padding(horizontal = 10.dp).clip(RoundedCornerShape(999.dp))) {
+                        drawRect(androidx.compose.ui.graphics.Brush.horizontalGradient((0..12).map { k -> Color.hsv(k * 30f % 360f, 0.85f, 0.95f) }))
+                    }
+                    androidx.compose.material3.Slider(
+                        value = hueLive, onValueChange = { hueLive = it }, onValueChangeFinished = { onLook(look.copy(hue = hueLive)) },
+                        valueRange = 0f..360f,
+                        colors = androidx.compose.material3.SliderDefaults.colors(thumbColor = LatentColors.Amber,
+                            activeTrackColor = Color.Transparent, inactiveTrackColor = Color.Transparent),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+                SettleSlider("pale", "vivid", look.tint, 0f..1f) { onLook(look.copy(tint = it)) }
+            }
+            SettleSlider("smooth", "dusty", look.dust, 0f..1f) { onLook(look.copy(dust = it)) }
+            // real beams only show in hazy air: lean them on the painted fog as much as you like
+            SettleSlider("always", "only in fog", look.fogOnly, 0f..1f) { onLook(look.copy(fogOnly = it)) }
         }
     }
 }

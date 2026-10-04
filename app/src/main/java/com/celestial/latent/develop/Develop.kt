@@ -230,7 +230,7 @@ object Develop {
         working.frameFrom(pristine, framing)
         // the air first — it is in front of the lens — then the lens filter
         fogMask?.let { Fog.apply(working, it, fogLook, log) }
-        Rays.apply(working, raysLook, raysMask, log)          // light in the same air
+        Rays.apply(working, raysLook, raysMask, fogMask, fogLook.amount, log)          // light in the same air
         lensFilterSource(working, recipe, log)
         // A pair carries the noise of both frames: clean it for the noisier of the two.
         denoiseSource(working, recipe, isoUsed, log)
@@ -792,7 +792,7 @@ object Develop {
         }
         return src.use { s ->
             fogMask?.let { Fog.apply(s, it, fogLook, log) }
-            Rays.apply(s, raysLook, raysMask, log)
+            Rays.apply(s, raysLook, raysMask, fogMask, fogLook.amount, log)
             lensFilterSource(s, recipe, log)
             denoiseSource(s, recipe, if (pair) maxOf(isoOf(context, source), isoOf(context, pairFirst!!)) else isoOf(context, source), log)
             fastDiffusionSource(s, recipe, preview = false, softenMask = softenMask, log = log)

@@ -148,7 +148,7 @@ object Fog {
      * luminance 1. Fading in screen terms keeps the hue the eye chose — fading in linear light
      * drifted violets toward blue by about 15° (now under 8° anywhere on the wheel).
      */
-    fun hueChroma(hue: Float, tint: Float): FloatArray {
+    fun hueChroma(hue: Float, tint: Float, maxSat: Float = SATURATION_MAX): FloatArray {
         val h = ((hue % 360f) + 360f) % 360f / 60f
         val x = 1f - kotlin.math.abs(h % 2f - 1f)
         val disp = when (h.toInt()) { 0 -> floatArrayOf(1f, x, 0f); 1 -> floatArrayOf(x, 1f, 0f); 2 -> floatArrayOf(0f, 1f, x)
@@ -160,7 +160,7 @@ object Fog {
             return FloatArray(3) { lin[it] / y }
         }
         fun sat(v: FloatArray): Float { val mx = v.max(); return if (mx <= 0f) 0f else (mx - v.min()) / mx }
-        val target = tint.coerceIn(0f, 1f) * SATURATION_MAX
+        val target = tint.coerceIn(0f, 1f) * maxSat
         var lo = 0f; var hi = 1f
         repeat(30) { val mid = (lo + hi) / 2f; if (sat(at(mid)) > target) hi = mid else lo = mid }
         return at(lo)
@@ -186,8 +186,15 @@ object Fog {
         return (0xFF shl 24) or (e[0] shl 16) or (e[1] shl 8) or e[2]
     }
 
+    /** Any colour at luminance 1 as a screen colour, for a swatch. */
+    fun swatchOf(c: FloatArray): Int {
+        val scr = mul(PROPHOTO_TO_SCREEN, FloatArray(3) { c[it] * 0.75f })
+        val e = IntArray(3) { (Math.pow(scr[it].coerceIn(0f, 1f).toDouble(), 1 / 2.2) * 255).toInt().coerceIn(0, 255) }
+        return (0xFF shl 24) or (e[0] shl 16) or (e[1] shl 8) or e[2]
+    }
+
     /** A colour shifted cool or warm by the slider, kept at luminance 1. */
-    private fun withWarmth(c: FloatArray, warmth: Float): FloatArray {
+    internal fun withWarmth(c: FloatArray, warmth: Float): FloatArray {
         val shift = tintFor(NEUTRAL_MIRED + WARMTH_MIREDS * warmth.coerceIn(-1f, 1f))
         val v = FloatArray(3) { c[it] * shift[it] }
         val y = maxOf(lum(v), 1e-6f)
@@ -206,15 +213,15 @@ object Fog {
 
     private fun lum(c: FloatArray) = LUM[0] * c[0] + LUM[1] * c[1] + LUM[2] * c[2]
 
-    /** A colour at luminance 1, made no more saturated than the ceiling by moving it toward grey. */
-    private fun capped(c: FloatArray): FloatArray {
+    /** A colour at luminance 1, made no more saturated than [max] by moving it toward grey. */
+    internal fun capped(c: FloatArray, max: Float = SATURATION_MAX): FloatArray {
         fun sat(k: Float): Float {
             val v = FloatArray(3) { 1f + (c[it] - 1f) * k }
             val mx = v.max(); return if (mx <= 0f) 0f else (mx - v.min()) / mx
         }
-        if (sat(1f) <= SATURATION_MAX) return c
+        if (sat(1f) <= max) return c
         var lo = 0f; var hi = 1f
-        repeat(24) { val mid = (lo + hi) / 2f; if (sat(mid) > SATURATION_MAX) hi = mid else lo = mid }
+        repeat(24) { val mid = (lo + hi) / 2f; if (sat(mid) > max) hi = mid else lo = mid }
         return FloatArray(3) { 1f + (c[it] - 1f) * lo }
     }
 

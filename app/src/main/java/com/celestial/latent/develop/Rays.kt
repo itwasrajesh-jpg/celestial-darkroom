@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import java.nio.ByteOrder
 import java.util.Locale
+import kotlin.math.PI
 import kotlin.math.exp
 import kotlin.math.sqrt
 
@@ -24,6 +25,17 @@ data class RaysLook(
     val u2: Float = Float.NaN, val v2: Float = Float.NaN,
     val cone: Float = 0.35f,
     val amount: Float = 0.3f, val length: Float = 0.5f,
+    /** "add": the light emits its own beam. "gaps": the photo's own light streams through gaps. */
+    val mode: String = "add",
+    /** The light's colour: cool (−1) … warm (+1), and optionally a hue of its own. */
+    val warmth: Float = 0f,
+    val coloured: Boolean = false,
+    val hue: Float = 40f,
+    val tint: Float = 0.6f,
+    /** Dusty streaks in the beam, 0 smooth … 1 strongly streaked. */
+    val dust: Float = 0.5f,
+    /** 0: beams everywhere … 1: beams only where fog is painted (real beams need hazy air). */
+    val fogOnly: Float = 0f,
 ) {
     val placed: Boolean get() = u in 0f..1f && v in 0f..1f
 
@@ -38,19 +50,38 @@ data class RaysLook(
         }
     }
 
-    /** Saved as "v2|type|u|v|u2|v2|cone|amount|length"; the older "u,v,amount,length" reads as a point light. */
-    fun key(): String = "v2|$type|" + listOf(u, v, u2, v2, cone, amount, length).joinToString("|") { "%.4f".format(Locale.US, it) }
+    /**
+     * The light's colour, at luminance 1. Lights may be vivid — stage lights, neon, sodium lamps —
+     * so the ceiling is far higher than fog's.
+     */
+    fun chroma(): FloatArray = Fog.capped(
+        Fog.withWarmth(if (coloured) Fog.hueChroma(hue, tint, LIGHT_SATURATION_MAX) else floatArrayOf(1f, 1f, 1f), warmth),
+        LIGHT_SATURATION_MAX)
+
+    /** Saved as "v3|…" with every field; older saves were all made in "through gaps". */
+    fun key(): String = listOf("v3", type, mode).joinToString("|") + "|" +
+        listOf(u, v, u2, v2, cone, amount, length, warmth, if (coloured) 1f else 0f, hue, tint, dust, fogOnly)
+            .joinToString("|") { "%.4f".format(Locale.US, it) }
 
     companion object {
+        const val LIGHT_SATURATION_MAX = 0.9f
+
         fun parse(s: String?): RaysLook {
             if (s.isNullOrEmpty()) return RaysLook()
             return runCatching {
-                if (s.startsWith("v2|")) {
-                    val p = s.split("|")
-                    RaysLook(p[1], p[2].toFloat(), p[3].toFloat(), p[4].toFloat(), p[5].toFloat(), p[6].toFloat(), p[7].toFloat(), p[8].toFloat())
-                } else {
-                    val p = s.split(",").map { it.toFloat() }
-                    RaysLook("point", p[0], p[1], amount = p[2], length = p[3])
+                when {
+                    s.startsWith("v3|") -> {
+                        val p = s.split("|"); val f = p.drop(3).map { it.toFloat() }
+                        RaysLook(p[1], f[0], f[1], f[2], f[3], f[4], f[5], f[6], p[2], f[7], f[8] > 0.5f, f[9], f[10], f[11], f[12])
+                    }
+                    s.startsWith("v2|") -> {
+                        val p = s.split("|")
+                        RaysLook(p[1], p[2].toFloat(), p[3].toFloat(), p[4].toFloat(), p[5].toFloat(), p[6].toFloat(), p[7].toFloat(), p[8].toFloat(), mode = "gaps")
+                    }
+                    else -> {
+                        val p = s.split(",").map { it.toFloat() }
+                        RaysLook("point", p[0], p[1], amount = p[2], length = p[3], mode = "gaps")
+                    }
                 }
             }.getOrDefault(RaysLook())
         }
@@ -80,10 +111,11 @@ object Rays {
     private const val AREA_POINTS = 5
     private const val AREA_STEPS = 40
 
-    fun apply(src: Develop.Source, look: RaysLook, mask: ExposureMap?, log: (String) -> Unit = {}) {
+    fun apply(src: Develop.Source, look: RaysLook, mask: ExposureMap?, fogMask: ExposureMap? = null, fogAmount: Float = 1f,
+              log: (String) -> Unit = {}) {
         if (!look.placed || look.amount <= 0f) return
         if (mask != null && mask.stops.all { it <= 0f }) return
-        log("god rays")
+        log(if (look.mode == "gaps") "god rays, through gaps" else "god rays, added light")
         val w = src.width; val h = src.height
         val f = src.image.data.order(ByteOrder.nativeOrder()).asFloatBuffer()
         // 1. a small copy of the picture, box-averaged
@@ -110,76 +142,11 @@ object Rays {
             val k = ((lum[g] - thr) / thr).coerceIn(0f, 1f)
             if (k > 0f) { bright[g * 3] = small[g * 3] * k; bright[g * 3 + 1] = small[g * 3 + 1] * k; bright[g * 3 + 2] = small[g * 3 + 2] * k }
         }
-        // 3. trace: from each place back toward where its light comes from, gathering bright light
-        //    that fades with distance — the kind of light decides the path
-        val long = maxOf(gw, gh).toFloat()
-        val len = maxOf(look.length, 1e-3f)
-        val rays = FloatArray(gw * gh * 3)
-        fun sample(x: Float, y: Float, c: Int): Float {
-            val sx = (x - 0.5f).coerceIn(0f, (gw - 1).toFloat()); val sy = (y - 0.5f).coerceIn(0f, (gh - 1).toFloat())
-            val x0 = sx.toInt(); val y0 = sy.toInt(); val x1 = minOf(x0 + 1, gw - 1); val y1 = minOf(y0 + 1, gh - 1)
-            val fx = sx - x0; val fy = sy - y0
-            val t = bright[(y0 * gw + x0) * 3 + c] * (1 - fx) + bright[(y0 * gw + x1) * 3 + c] * fx
-            val b = bright[(y1 * gw + x0) * 3 + c] * (1 - fx) + bright[(y1 * gw + x1) * 3 + c] * fx
-            return t * (1 - fy) + b * fy
-        }
-        /** Light reaching a place from a point source at (lx, ly), weighted by [share]. */
-        fun fromPoint(px: Float, py: Float, lx: Float, ly: Float, steps: Int, share: Float, o: Int) {
-            val dist = sqrt((lx - px) * (lx - px) + (ly - py) * (ly - py)) / long
-            var r = 0f; var g = 0f; var b = 0f
-            for (i in 0 until steps) {
-                val t = i.toFloat() / steps
-                val wgt = exp(-dist * t / len)
-                val sx = px + (lx - px) * t; val sy = py + (ly - py) * t
-                r += sample(sx, sy, 0) * wgt; g += sample(sx, sy, 1) * wgt; b += sample(sx, sy, 2) * wgt
-            }
-            val k = look.amount * share / steps
-            rays[o] += r * k; rays[o + 1] += g * k; rays[o + 2] += b * k
-        }
-        val lx = look.u * gw; val ly = look.v * gh
-        val l2x = (if (look.u2.isNaN()) look.u else look.u2) * gw; val l2y = (if (look.v2.isNaN()) look.v else look.v2) * gh
-        for (gy in 0 until gh) for (gx in 0 until gw) {
-            val px = gx + 0.5f; val py = gy + 0.5f
-            val o = (gy * gw + gx) * 3
-            when (look.type) {
-                "sun" -> {
-                    // parallel light: march back against the direction it travels, the same way for every place
-                    val dx = l2x - lx; val dy = l2y - ly; val n = sqrt(dx * dx + dy * dy).coerceAtLeast(1e-6f)
-                    val ux = dx / n; val uy = dy / n
-                    val reach = minOf(3f * len, 1.5f) * long
-                    var r = 0f; var g = 0f; var b = 0f
-                    for (i in 0 until STEPS) {
-                        val s = i.toFloat() / STEPS * reach
-                        val wgt = exp(-(s / long) / len)
-                        r += sample(px - ux * s, py - uy * s, 0) * wgt; g += sample(px - ux * s, py - uy * s, 1) * wgt; b += sample(px - ux * s, py - uy * s, 2) * wgt
-                    }
-                    val k = look.amount / STEPS
-                    rays[o] = r * k; rays[o + 1] = g * k; rays[o + 2] = b * k
-                }
-                "area" -> {
-                    // a light with size: the rays from several points along its line, averaged — softer beams
-                    for (k in 0 until AREA_POINTS) {
-                        val t = k.toFloat() / (AREA_POINTS - 1)
-                        fromPoint(px, py, lx + (l2x - lx) * t, ly + (l2y - ly) * t, AREA_STEPS, 1f / AREA_POINTS, o)
-                    }
-                }
-                "spot" -> {
-                    // a point light that only shines within its cone, its edge softened
-                    val ax = l2x - lx; val ay = l2y - ly
-                    val vx = px - lx; val vy = py - ly
-                    val an = sqrt(ax * ax + ay * ay); val vn = sqrt(vx * vx + vy * vy)
-                    val gate = if (an < 1e-6f || vn < 1e-6f) 1f else {
-                        val cos = ((ax * vx + ay * vy) / (an * vn)).coerceIn(-1f, 1f)
-                        val ang = kotlin.math.acos(cos)
-                        val inner = look.cone * 0.8f; val outer = look.cone * 1.2f
-                        val t = ((ang - inner) / (outer - inner)).coerceIn(0f, 1f)
-                        1f - t * t * (3f - 2f * t)
-                    }
-                    if (gate > 0f) fromPoint(px, py, lx, ly, STEPS, gate, o)
-                }
-                else -> fromPoint(px, py, lx, ly, STEPS, 1f, o)
-            }
-        }
+        // 3. the rays on the small grid, by mode
+        val rays = if (look.mode == "gaps") traceGaps(look, bright, gw, gh) else emit(look, gw, gh, sorted[((sorted.size - 1) * 0.95f).toInt()])
+        // the light's colour (through gaps, the photo's own light, tinted)
+        val tint = look.chroma()
+        for (g in 0 until gw * gh) { rays[g * 3] *= tint[0]; rays[g * 3 + 1] *= tint[1]; rays[g * 3 + 2] *= tint[2] }
         // 4. enlarge smoothly onto the picture and add, where the rays may fall
         for (y in 0 until h) {
             val v = (y + 0.5f) / h
@@ -187,7 +154,12 @@ object Rays {
             val y0 = gyf.toInt(); val y1 = minOf(y0 + 1, gh - 1); val fy = gyf - y0
             for (x in 0 until w) {
                 val u = (x + 0.5f) / w
-                val cover = mask?.sample(u, v)?.coerceIn(0f, 1f) ?: 1f
+                var cover = mask?.sample(u, v)?.coerceIn(0f, 1f) ?: 1f
+                // real beams show in hazy air: "only in fog" leans the beam on the painted fog's veil
+                if (look.fogOnly > 0f) {
+                    val veil = fogMask?.let { 1f - exp(-it.sample(u, v) * fogAmount) } ?: 0f
+                    cover *= (1f - look.fogOnly) + look.fogOnly * veil
+                }
                 if (cover <= 0f) continue
                 val gxf = (u * gw - 0.5f).coerceIn(0f, (gw - 1).toFloat())
                 val x0 = gxf.toInt(); val x1 = minOf(x0 + 1, gw - 1); val fx = gxf - x0
@@ -200,6 +172,144 @@ object Rays {
             }
         }
     }
+}
+
+/** The tracing for "through gaps": the photo's own bright light, gathered toward the light. */
+private fun traceGaps(look: RaysLook, bright: FloatArray, gw: Int, gh: Int): FloatArray {
+    val STEPS = 64; val AREA_POINTS = 5; val AREA_STEPS = 40
+    val long = maxOf(gw, gh).toFloat()
+    val len = maxOf(look.length, 1e-3f)
+    val rays = FloatArray(gw * gh * 3)
+        fun sample(x: Float, y: Float, c: Int): Float {
+        val sx = (x - 0.5f).coerceIn(0f, (gw - 1).toFloat()); val sy = (y - 0.5f).coerceIn(0f, (gh - 1).toFloat())
+        val x0 = sx.toInt(); val y0 = sy.toInt(); val x1 = minOf(x0 + 1, gw - 1); val y1 = minOf(y0 + 1, gh - 1)
+        val fx = sx - x0; val fy = sy - y0
+        val t = bright[(y0 * gw + x0) * 3 + c] * (1 - fx) + bright[(y0 * gw + x1) * 3 + c] * fx
+        val b = bright[(y1 * gw + x0) * 3 + c] * (1 - fx) + bright[(y1 * gw + x1) * 3 + c] * fx
+        return t * (1 - fy) + b * fy
+    }
+    /** Light reaching a place from a point source at (lx, ly), weighted by [share]. */
+    fun fromPoint(px: Float, py: Float, lx: Float, ly: Float, steps: Int, share: Float, o: Int) {
+        val dist = sqrt((lx - px) * (lx - px) + (ly - py) * (ly - py)) / long
+        var r = 0f; var g = 0f; var b = 0f
+        for (i in 0 until steps) {
+            val t = i.toFloat() / steps
+            val wgt = exp(-dist * t / len)
+            val sx = px + (lx - px) * t; val sy = py + (ly - py) * t
+            r += sample(sx, sy, 0) * wgt; g += sample(sx, sy, 1) * wgt; b += sample(sx, sy, 2) * wgt
+        }
+        val k = look.amount * share / steps
+        rays[o] += r * k; rays[o + 1] += g * k; rays[o + 2] += b * k
+    }
+    val lx = look.u * gw; val ly = look.v * gh
+    val l2x = (if (look.u2.isNaN()) look.u else look.u2) * gw; val l2y = (if (look.v2.isNaN()) look.v else look.v2) * gh
+    for (gy in 0 until gh) for (gx in 0 until gw) {
+        val px = gx + 0.5f; val py = gy + 0.5f
+        val o = (gy * gw + gx) * 3
+        when (look.type) {
+            "sun" -> {
+                // parallel light: march back against the direction it travels, the same way for every place
+                val dx = l2x - lx; val dy = l2y - ly; val n = sqrt(dx * dx + dy * dy).coerceAtLeast(1e-6f)
+                val ux = dx / n; val uy = dy / n
+                val reach = minOf(3f * len, 1.5f) * long
+                var r = 0f; var g = 0f; var b = 0f
+                for (i in 0 until STEPS) {
+                    val s = i.toFloat() / STEPS * reach
+                    val wgt = exp(-(s / long) / len)
+                    r += sample(px - ux * s, py - uy * s, 0) * wgt; g += sample(px - ux * s, py - uy * s, 1) * wgt; b += sample(px - ux * s, py - uy * s, 2) * wgt
+                }
+                val k = look.amount / STEPS
+                rays[o] = r * k; rays[o + 1] = g * k; rays[o + 2] = b * k
+            }
+            "area" -> {
+                // a light with size: the rays from several points along its line, averaged — softer beams
+                for (k in 0 until AREA_POINTS) {
+                    val t = k.toFloat() / (AREA_POINTS - 1)
+                    fromPoint(px, py, lx + (l2x - lx) * t, ly + (l2y - ly) * t, AREA_STEPS, 1f / AREA_POINTS, o)
+                }
+            }
+            "spot" -> {
+                // a point light that only shines within its cone, its edge softened
+                val ax = l2x - lx; val ay = l2y - ly
+                val vx = px - lx; val vy = py - ly
+                val an = sqrt(ax * ax + ay * ay); val vn = sqrt(vx * vx + vy * vy)
+                val gate = if (an < 1e-6f || vn < 1e-6f) 1f else {
+                    val cos = ((ax * vx + ay * vy) / (an * vn)).coerceIn(-1f, 1f)
+                    val ang = kotlin.math.acos(cos)
+                    val inner = look.cone * 0.8f; val outer = look.cone * 1.2f
+                    val t = ((ang - inner) / (outer - inner)).coerceIn(0f, 1f)
+                    1f - t * t * (3f - 2f * t)
+                }
+                if (gate > 0f) fromPoint(px, py, lx, ly, STEPS, gate, o)
+            }
+            else -> fromPoint(px, py, lx, ly, STEPS, 1f, o)
+        }
+    }
+    return rays
+}
+
+/** Smooth, repeatable streak noise, 0..1, around a circle or across a sun's shafts. */
+private val STREAK_FREQS = floatArrayOf(7f, 11f, 17f, 23f, 31f, 41f, 53f)
+private val STREAK_PHASES = floatArrayOf(3.9276f, 5.6374f, 4.8738f, 1.4150f, 1.8860f, 5.4887f, 0.0331f)
+private fun streak(x: Float): Float {
+    var v = 0f; var norm = 0f
+    for (i in STREAK_FREQS.indices) { val a = 1f / sqrt(STREAK_FREQS[i]); v += a * kotlin.math.sin(STREAK_FREQS[i] * x + STREAK_PHASES[i]); norm += a }
+    return (v + norm) / (2f * norm)
+}
+
+/**
+ * "add": the light you placed emits its own beam into the air, shaped by its kind, fading with
+ * distance, streaked by dust — at [level] (the scene's own bright light) times the amount, so a
+ * beam is always in proportion to the photo it is in.
+ */
+private fun emit(look: RaysLook, gw: Int, gh: Int, level: Float): FloatArray {
+    val long = maxOf(gw, gh).toFloat()
+    val len = maxOf(look.length, 1e-3f) * long
+    val out = FloatArray(gw * gh * 3)
+    val lx = look.u * gw; val ly = look.v * gh
+    val l2x = (if (look.u2.isNaN()) look.u else look.u2) * gw; val l2y = (if (look.v2.isNaN()) look.v else look.v2) * gh
+    val dust = look.dust.coerceIn(0f, 1f)
+    // dust at full makes shafts clearly visible (about 30% brightness variation across a beam)
+    fun dusty(x: Float) = maxOf(0f, 1f + dust * (2f * streak(x) - 1f) * 1.4f)
+    fun point(px: Float, py: Float, sx: Float, sy: Float): Float {
+        val dx = px - sx; val dy = py - sy
+        return exp(-sqrt(dx * dx + dy * dy) / len) * dusty(kotlin.math.atan2(dy, dx))
+    }
+    val k = look.amount * level
+    for (gy in 0 until gh) for (gx in 0 until gw) {
+        val px = gx + 0.5f; val py = gy + 0.5f
+        val e = when (look.type) {
+            "sun" -> {
+                // parallel shafts entering at the arrow's tail, travelling toward its tip
+                val dx = l2x - lx; val dy = l2y - ly; val n = sqrt(dx * dx + dy * dy).coerceAtLeast(1e-6f)
+                val ux = dx / n; val uy = dy / n
+                val t = (px - lx) * ux + (py - ly) * uy          // how far along the light's travel
+                val q = -(px - lx) * uy + (py - ly) * ux         // across it: which shaft
+                val edge = 0.02f * long
+                val start = ((t + edge) / (2f * edge)).coerceIn(0f, 1f).let { it * it * (3f - 2f * it) }
+                start * exp(-maxOf(t, 0f) / len) * dusty(q / long * 2f * PI.toFloat())
+            }
+            "spot" -> {
+                val ax = l2x - lx; val ay = l2y - ly; val vx = px - lx; val vy = py - ly
+                val an = sqrt(ax * ax + ay * ay); val vn = sqrt(vx * vx + vy * vy)
+                val gate = if (an < 1e-6f || vn < 1e-6f) 1f else {
+                    val ang = kotlin.math.acos(((ax * vx + ay * vy) / (an * vn)).coerceIn(-1f, 1f))
+                    val t = ((ang - look.cone * 0.8f) / (look.cone * 0.4f)).coerceIn(0f, 1f)
+                    1f - t * t * (3f - 2f * t)
+                }
+                if (gate > 0f) point(px, py, lx, ly) * gate else 0f
+            }
+            "area" -> {
+                var sum = 0f
+                for (i in 0 until 5) { val t = i / 4f; sum += point(px, py, lx + (l2x - lx) * t, ly + (l2y - ly) * t) }
+                sum / 5f
+            }
+            else -> point(px, py, lx, ly)
+        }
+        val o = (gy * gw + gx) * 3
+        out[o] = e * k; out[o + 1] = e * k; out[o + 2] = e * k
+    }
+    return out
 }
 
 /** Each photo's rays, kept beside it like its masks. */
