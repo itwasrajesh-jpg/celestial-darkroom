@@ -65,6 +65,7 @@ import com.celestial.latent.develop.Recipe
 import kotlin.math.PI
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.verticalScroll
 import com.celestial.latent.develop.RaysLook
 import com.celestial.latent.develop.Fog
 import com.celestial.latent.develop.FogLook
@@ -324,6 +325,9 @@ data class Masks(
     val raysOn: Boolean = false,
 )
 
+/** The height of a painting step's tabbed controls: the same for every tab, so the photo never moves. */
+private val CONTROLS_HEIGHT = 196.dp
+
 /** Test strips are large enough to hold up to a long press showing the whole print. */
 private const val STRIP_EDGE = 560
 /** Ring-around tiles are small on screen; a third of the pixels makes each about three times faster. */
@@ -456,7 +460,7 @@ fun PrintPanel(
                             if (light != null) onFogLook(fogLook.copy(mode = "picked", picked = light.toList()))
                         }
                     },
-                    extra = { FogColourRow(fogLook, picking = fogPicking, onLook = onFogLook, onPick = { fogPicking = !fogPicking }) },
+                    tabs = listOf("COLOUR" to @Composable { FogColourRow(fogLook, picking = fogPicking, onLook = onFogLook, onPick = { fogPicking = !fogPicking }) }),
                     // a new colour or amount re-develops the print — it used to wait for the next stroke
                     refreshKey = fogLook)
                 else -> PaintStep(RAYS_SPEC, recipe, raysMap, onRaysMap,
@@ -471,7 +475,10 @@ fun PrintPanel(
                     handlesFor = { a -> raysHandles(raysLive, a) },
                     onHandleDrag = { i, u, v, final, a -> raysLive = raysDragged(raysLive, i, u, v, a); if (final) onRaysLook(raysLive) },
                     overlayDraw = { a, toScreen -> drawRaysLight(raysLive, a, toScreen) },
-                    extra = { RaysRow(raysLook, placing = raysPlacing || !raysLook.placed, onLook = onRaysLook, onPlace = { raysPlacing = !raysPlacing }) },
+                    tabs = listOf(
+                        "LIGHT" to @Composable { RaysLightTab(raysLook, placing = raysPlacing || !raysLook.placed, onLook = onRaysLook, onPlace = { raysPlacing = !raysPlacing }) },
+                        "BEAM" to @Composable { RaysBeamTab(raysLook, onLook = onRaysLook) },
+                    ),
                     refreshKey = raysLook)
             }
         }
@@ -904,13 +911,9 @@ private fun SettleSlider(left: String, right: String, value: Float, range: Close
     }
 }
 
-/**
- * The rays' light: its kind, its mode (a light that adds its own beam, or the photo's own light
- * streaming through gaps), how bright — and, under "more", reach, colour, dust and fog.
- */
+/** The rays' LIGHT tab: its kind, its mode, where it is, and how bright. */
 @Composable
-private fun RaysRow(look: RaysLook, placing: Boolean, onLook: (RaysLook) -> Unit, onPlace: () -> Unit) {
-    var more by remember { mutableStateOf(false) }
+private fun RaysLightTab(look: RaysLook, placing: Boolean, onLook: (RaysLook) -> Unit, onPlace: () -> Unit) {
     Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 6.dp)) {
         // the kind of light, as in 3D software; switching keeps where it is
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -923,7 +926,6 @@ private fun RaysRow(look: RaysLook, placing: Boolean, onLook: (RaysLook) -> Unit
                 Chip("add light", on = look.mode == "add") { onLook(look.copy(mode = "add")) }
                 Chip("through gaps", on = look.mode == "gaps") { onLook(look.copy(mode = "gaps")) }
             }
-            Chip(if (more) "less" else "more", on = more) { more = !more }
         }
         Row(Modifier.fillMaxWidth().padding(top = 6.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             Text(
@@ -943,34 +945,39 @@ private fun RaysRow(look: RaysLook, placing: Boolean, onLook: (RaysLook) -> Unit
                 SettleSlider("amount", "${(look.amount * 100f).roundToInt()}%", look.amount, 0f..1f) { onLook(look.copy(amount = (it * 100f).roundToInt() / 100f)) }
             }
         }
-        if (more) {
-            SettleSlider("short", "long", look.length, 0.1f..1f) { onLook(look.copy(length = (it * 100f).roundToInt() / 100f)) }
-            // the light's colour: a colour temperature, and optionally a hue of its own
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.weight(1f)) { SettleSlider("cool", "warm", look.warmth, -1f..1f) { onLook(look.copy(warmth = it)) } }
-                Spacer(Modifier.width(6.dp))
-                Chip("colour", on = look.coloured) { onLook(look.copy(coloured = !look.coloured)) }
-            }
-            if (look.coloured) {
-                var hueLive by remember(look.hue) { mutableStateOf(look.hue) }
-                Box(Modifier.fillMaxWidth().height(36.dp), contentAlignment = Alignment.Center) {
-                    Canvas(Modifier.fillMaxWidth().height(12.dp).padding(horizontal = 10.dp).clip(RoundedCornerShape(999.dp))) {
-                        drawRect(androidx.compose.ui.graphics.Brush.horizontalGradient((0..12).map { k -> Color.hsv(k * 30f % 360f, 0.85f, 0.95f) }))
-                    }
-                    androidx.compose.material3.Slider(
-                        value = hueLive, onValueChange = { hueLive = it }, onValueChangeFinished = { onLook(look.copy(hue = hueLive)) },
-                        valueRange = 0f..360f,
-                        colors = androidx.compose.material3.SliderDefaults.colors(thumbColor = LatentColors.Amber,
-                            activeTrackColor = Color.Transparent, inactiveTrackColor = Color.Transparent),
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                }
-                SettleSlider("pale", "vivid", look.tint, 0f..1f) { onLook(look.copy(tint = it)) }
-            }
-            SettleSlider("smooth", "dusty", look.dust, 0f..1f) { onLook(look.copy(dust = it)) }
-            // real beams only show in hazy air: lean them on the painted fog as much as you like
-            SettleSlider("always", "only in fog", look.fogOnly, 0f..1f) { onLook(look.copy(fogOnly = it)) }
+    }
+}
+
+/** The rays' BEAM tab: how far it reaches, its colour, its dust, and how much it needs fog. */
+@Composable
+private fun RaysBeamTab(look: RaysLook, onLook: (RaysLook) -> Unit) {
+    Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 6.dp)) {
+        SettleSlider("short", "long", look.length, 0.1f..1f) { onLook(look.copy(length = (it * 100f).roundToInt() / 100f)) }
+        // the light's colour: a colour temperature, and optionally a hue of its own
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.weight(1f)) { SettleSlider("cool", "warm", look.warmth, -1f..1f) { onLook(look.copy(warmth = it)) } }
+            Spacer(Modifier.width(6.dp))
+            Chip("colour", on = look.coloured) { onLook(look.copy(coloured = !look.coloured)) }
         }
+        if (look.coloured) {
+            var hueLive by remember(look.hue) { mutableStateOf(look.hue) }
+            Box(Modifier.fillMaxWidth().height(36.dp), contentAlignment = Alignment.Center) {
+                Canvas(Modifier.fillMaxWidth().height(12.dp).padding(horizontal = 10.dp).clip(RoundedCornerShape(999.dp))) {
+                    drawRect(androidx.compose.ui.graphics.Brush.horizontalGradient((0..12).map { k -> Color.hsv(k * 30f % 360f, 0.85f, 0.95f) }))
+                }
+                androidx.compose.material3.Slider(
+                    value = hueLive, onValueChange = { hueLive = it }, onValueChangeFinished = { onLook(look.copy(hue = hueLive)) },
+                    valueRange = 0f..360f,
+                    colors = androidx.compose.material3.SliderDefaults.colors(thumbColor = LatentColors.Amber,
+                        activeTrackColor = Color.Transparent, inactiveTrackColor = Color.Transparent),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+            SettleSlider("pale", "vivid", look.tint, 0f..1f) { onLook(look.copy(tint = it)) }
+        }
+        SettleSlider("smooth", "dusty", look.dust, 0f..1f) { onLook(look.copy(dust = it)) }
+        // real beams only show in hazy air: lean them on the painted fog as much as you like
+        SettleSlider("always", "only in fog", look.fogOnly, 0f..1f) { onLook(look.copy(fogOnly = it)) }
     }
 }
 
@@ -1096,7 +1103,8 @@ private fun PaintStep(
     renderRegion: ((Recipe, Int, ExposureMap?, Region) -> Bitmap?)? = null,
     pickMode: Boolean = false,
     onPick: ((Float, Float) -> Unit)? = null,
-    extra: (@Composable () -> Unit)? = null,
+    /** Tabs of controls before the brush (which is always the last tab); null = brush only, no tabs. */
+    tabs: List<Pair<String, @Composable () -> Unit>>? = null,
     /** Anything besides painting that changes the print (the fog's colour and amount): a change re-develops. */
     refreshKey: Any? = null,
     /**
@@ -1260,6 +1268,69 @@ private fun PaintStep(
         Bitmap.createBitmap(px, m.width, m.height, Bitmap.Config.ARGB_8888)
     }
 
+    // The step's own tab, when it has tabs; painting only happens on BRUSH, so a touch in another
+    // tab (placing or aiming a light) never paints by accident.
+    var tab by remember { mutableStateOf(0) }
+    val paintNow by rememberUpdatedState(tabs == null || tab == tabs.size)
+    /** The brush controls: what you paint with, how strongly, and the way back. */
+    val brushRows: @Composable () -> Unit = {
+        // Three rows, each measured to fit a phone (about 357 dp inside the margins): one row
+        // would be ~410 dp and squeeze its last chips — the bug that once crushed the Develop button.
+        // 1. what you paint with, and how big
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 6.dp),
+            horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                listOf(false to spec.minusLabel, true to spec.plusLabel).forEach { (b, label) -> Chip(label, on = plus == b) { plus = b } }
+                if (spec.gradientAmount != null) Chip("gradient", on = gradientTool) { gradientTool = !gradientTool }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                for (i in 0..2) {
+                    val on = brush == i
+                    val d = (10 + i * 6).dp
+                    Box(Modifier.size(28.dp).pointerInput(i) { detectTapGestures(onTap = { Haptics.tick(context); brush = i }) },
+                        contentAlignment = Alignment.Center) {
+                        Box(Modifier.size(d).clip(RoundedCornerShape(999.dp)).background(if (on) LatentColors.Amber else LatentColors.Surface))
+                    }
+                }
+            }
+        }
+        // 2. how strongly, and whether to see the mask
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 6.dp),
+            horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                listOf("gentle", "medium", "strong").forEachIndexed { i, label -> Chip(label, on = strength == i) { strength = i } }
+            }
+            Chip("mask", on = showMask) { showMask = !showMask }
+        }
+        // 3. where the mask stands, and the way back
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                if (developing) "developing…" else spec.status(working, recipe),
+                color = LatentColors.Text, fontSize = 12.sp,
+                // takes what the buttons leave, and wraps if it must — the buttons are never squeezed
+                modifier = Modifier.weight(1f).padding(end = 8.dp),
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                @Suppress("UNUSED_VARIABLE") val h = historyTick   // read, so the buttons follow the history
+                Chip("undo", on = false, enabled = undo.isNotEmpty()) {
+                    redo.addLast(working?.copy()); val prev = undo.removeLast(); historyTick++
+                    working = prev; onMap(prev); version++
+                }
+                Chip("redo", on = false, enabled = redo.isNotEmpty()) {
+                    undo.addLast(working?.copy()); val next = redo.removeLast(); historyTick++
+                    working = next; onMap(next); version++
+                }
+                Chip("clear", on = false, enabled = working?.isBlank == false) { commit(null) }
+            }
+        }
+    }
     Column(modifier) {
         Text(
             if (gradientTool) spec.gradientHint else spec.hint,
@@ -1309,7 +1380,7 @@ private fun PaintStep(
                                 return@awaitEachGesture
                             }
                         }
-                        var painting = u0 in 0f..1f && v0 in 0f..1f
+                        var painting = paintNow && u0 in 0f..1f && v0 in 0f..1f
                         var zooming = false
                         var last = Pair(u0, v0)
                         val dragging = gradientTool && spec.gradientAmount != null
@@ -1397,61 +1468,23 @@ private fun PaintStep(
                     .pointerInput(Unit) { detectTapGestures(onTap = { Haptics.tick(context); zoom.reset(); detail = null }) }
                     .padding(horizontal = 10.dp, vertical = 4.dp))
         }
-        extra?.invoke()
-        // Three rows, each measured to fit a phone (about 357 dp inside the margins): one row
-        // would be ~410 dp and squeeze its last chips — the bug that once crushed the Develop button.
-        // 1. what you paint with, and how big
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 6.dp),
-            horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                listOf(false to spec.minusLabel, true to spec.plusLabel).forEach { (b, label) -> Chip(label, on = plus == b) { plus = b } }
-                if (spec.gradientAmount != null) Chip("gradient", on = gradientTool) { gradientTool = !gradientTool }
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                for (i in 0..2) {
-                    val on = brush == i
-                    val d = (10 + i * 6).dp
-                    Box(Modifier.size(28.dp).pointerInput(i) { detectTapGestures(onTap = { Haptics.tick(context); brush = i }) },
-                        contentAlignment = Alignment.Center) {
-                        Box(Modifier.size(d).clip(RoundedCornerShape(999.dp)).background(if (on) LatentColors.Amber else LatentColors.Surface))
+        if (tabs == null) brushRows() else {
+            // Tabs: one group of controls at a time, in a space of fixed height, so the photo
+            // keeps its size whichever tab is open (a long tab scrolls within the space).
+            Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 4.dp), horizontalArrangement = Arrangement.spacedBy(18.dp)) {
+                (tabs.map { it.first } + "BRUSH").forEachIndexed { i, name ->
+                    val on = i == tab
+                    val bar by animateFloatAsState(if (on) 1f else 0f, tween(220), label = "tab")
+                    Column(Modifier.pointerInput(i) { detectTapGestures(onTap = { if (i != tab) Haptics.tick(context); tab = i }) }) {
+                        Text(name, color = if (on) LatentColors.Amber else LatentColors.TextDim, fontSize = 11.sp, letterSpacing = 1.5.sp)
+                        Box(Modifier.padding(top = 3.dp).height(2.dp).width((28 * bar).dp).clip(RoundedCornerShape(1.dp)).background(LatentColors.Amber))
                     }
                 }
             }
-        }
-        // 2. how strongly, and whether to see the mask
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 6.dp),
-            horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                listOf("gentle", "medium", "strong").forEachIndexed { i, label -> Chip(label, on = strength == i) { strength = i } }
-            }
-            Chip("mask", on = showMask) { showMask = !showMask }
-        }
-        // 3. where the mask stands, and the way back
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                if (developing) "developing…" else spec.status(working, recipe),
-                color = LatentColors.Text, fontSize = 12.sp,
-                // takes what the buttons leave, and wraps if it must — the buttons are never squeezed
-                modifier = Modifier.weight(1f).padding(end = 8.dp),
-            )
-            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                @Suppress("UNUSED_VARIABLE") val h = historyTick   // read, so the buttons follow the history
-                Chip("undo", on = false, enabled = undo.isNotEmpty()) {
-                    redo.addLast(working?.copy()); val prev = undo.removeLast(); historyTick++
-                    working = prev; onMap(prev); version++
+            Box(Modifier.fillMaxWidth().height(CONTROLS_HEIGHT)) {
+                Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+                    if (tab < tabs.size) tabs[tab].second() else brushRows()
                 }
-                Chip("redo", on = false, enabled = redo.isNotEmpty()) {
-                    undo.addLast(working?.copy()); val next = redo.removeLast(); historyTick++
-                    working = next; onMap(next); version++
-                }
-                Chip("clear", on = false, enabled = working?.isBlank == false) { commit(null) }
             }
         }
     }
