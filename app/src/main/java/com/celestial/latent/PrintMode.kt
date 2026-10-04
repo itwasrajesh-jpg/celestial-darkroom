@@ -396,6 +396,8 @@ fun PrintPanel(
     var fogPicking by remember { mutableStateOf(false) }
     // the rays step's light: placing it, the next tap on the print sets where the light comes from
     var raysPlacing by remember { mutableStateOf(false) }
+    // the light as it is being dragged; follows the saved one whenever that changes
+    var raysLive by remember(raysLook) { mutableStateOf(raysLook.withDefaults()) }
     // all four masks as they stand; each painting step swaps in its own, as it is being painted
     val all = Masks(exposureMap, softenMap, fogMap, raysMap, raysOn = true)
     val pickScope = rememberCoroutineScope()
@@ -463,8 +465,11 @@ fun PrintPanel(
                     modifier = Modifier.fillMaxSize(),
                     renderRegion = renderRegionWithMasks?.let { f -> { r, e, m, reg -> f(r, e, all.copy(rays = m), reg) } },
                     pickMode = raysPlacing || !raysLook.placed,
-                    onPick = { u, v -> raysPlacing = false; onRaysLook(raysLook.copy(u = u, v = v)) },
-                    marker = if (raysLook.placed) raysLook.u to raysLook.v else null,
+                    onPick = { u, v -> raysPlacing = false; onRaysLook(raysLook.copy(u = u, v = v, u2 = Float.NaN, v2 = Float.NaN).withDefaults()) },
+                    // while a handle is dragged only the outline moves; the print re-develops on release
+                    handlesFor = { a -> raysHandles(raysLive, a) },
+                    onHandleDrag = { i, u, v, final, a -> raysLive = raysDragged(raysLive, i, u, v, a); if (final) onRaysLook(raysLive) },
+                    overlayDraw = { a, toScreen -> drawRaysLight(raysLive, a, toScreen) },
                     extra = { RaysRow(raysLook, placing = raysPlacing || !raysLook.placed, onLook = onRaysLook, onPlace = { raysPlacing = !raysPlacing }) },
                     refreshKey = raysLook)
             }
@@ -785,14 +790,123 @@ private val RAYS_SPEC = PaintSpec(
     },
 )
 
+/** One handle position, kept on the picture. */
+private fun keep(u: Float, v: Float) = u.coerceIn(0f, 1f) to v.coerceIn(0f, 1f)
+
+/**
+ * The spot's two cone-edge handles: its aim turned by ±cone about the light. Worked in true
+ * proportions (across scaled by the picture's shape), so the cone's angle is the real angle.
+ */
+private fun coneEdges(d: RaysLook, aspect: Float): Pair<Pair<Float, Float>, Pair<Float, Float>> {
+    val ax = (d.u2 - d.u) * aspect; val ay = d.v2 - d.v
+    fun turn(t: Float): Pair<Float, Float> {
+        val c = kotlin.math.cos(t); val sn = kotlin.math.sin(t)
+        return keep(d.u + (ax * c - ay * sn) / aspect, d.v + (ax * sn + ay * c))
+    }
+    return turn(d.cone) to turn(-d.cone)
+}
+
+/** The light's handles, in picture coordinates. */
+private fun raysHandles(l: RaysLook, aspect: Float): List<Pair<Float, Float>> {
+    if (!l.placed) return emptyList()
+    val d = l.withDefaults()
+    return when (d.type) {
+        "sun" -> listOf(d.u to d.v, d.u2 to d.v2)
+        "spot" -> { val (e1, e2) = coneEdges(d, aspect); listOf(d.u to d.v, d.u2 to d.v2, e1, e2) }
+        "area" -> listOf(d.u to d.v, d.u2 to d.v2, ((d.u + d.u2) / 2f) to ((d.v + d.v2) / 2f))
+        else -> listOf(d.u to d.v)
+    }
+}
+
+/** The light after handle [i] is dragged to (u, v). Shapes that move whole keep their size. */
+private fun raysDragged(l: RaysLook, i: Int, u: Float, v: Float, aspect: Float): RaysLook {
+    val d = l.withDefaults()
+    fun moved(du: Float, dv: Float): RaysLook {
+        // move both points by the same amount, but no further than keeps both on the picture
+        val mdu = du.coerceIn(-minOf(d.u, d.u2), 1f - maxOf(d.u, d.u2))
+        val mdv = dv.coerceIn(-minOf(d.v, d.v2), 1f - maxOf(d.v, d.v2))
+        return d.copy(u = d.u + mdu, v = d.v + mdv, u2 = d.u2 + mdu, v2 = d.v2 + mdv)
+    }
+    return when (d.type) {
+        "sun" -> if (i == 0) moved(u - d.u, v - d.v) else d.copy(u2 = u, v2 = v)
+        "spot" -> when (i) {
+            0 -> moved(u - d.u, v - d.v)
+            1 -> d.copy(u2 = u, v2 = v)
+            else -> {
+                // a cone edge: the cone is the angle between the finger and the aim, in true proportions
+                val ax = (d.u2 - d.u) * aspect; val ay = d.v2 - d.v
+                val fx = (u - d.u) * aspect; val fy = v - d.v
+                val n = kotlin.math.sqrt((ax * ax + ay * ay) * (fx * fx + fy * fy))
+                if (n < 1e-9f) d else d.copy(cone = kotlin.math.acos(((ax * fx + ay * fy) / n).coerceIn(-1f, 1f))
+                    .coerceIn(Math.toRadians(5.0).toFloat(), Math.toRadians(80.0).toFloat()))
+            }
+        }
+        "area" -> when (i) {
+            0 -> d.copy(u = u, v = v)
+            1 -> d.copy(u2 = u, v2 = v)
+            else -> moved(u - (d.u + d.u2) / 2f, v - (d.v + d.v2) / 2f)
+        }
+        else -> d.copy(u = u, v = v)
+    }
+}
+
+/** The light's shape on the print: a small sun, an arrow, a cone, or a line. */
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawRaysLight(l: RaysLook, aspect: Float, at: (Float, Float) -> Offset) {
+    if (!l.placed) return
+    val d = l.withDefaults()
+    val a = LatentColors.Amber; val w = 2.dp.toPx()
+    val p = at(d.u, d.v)
+    when (d.type) {
+        "sun" -> {
+            val q = at(d.u2, d.v2)
+            drawLine(a, p, q, w)
+            val ang = kotlin.math.atan2(q.y - p.y, q.x - p.x); val hl = 14.dp.toPx()
+            for (side in listOf(-1f, 1f)) {
+                val t = ang + PI.toFloat() + side * 0.45f
+                drawLine(a, q, Offset(q.x + hl * kotlin.math.cos(t), q.y + hl * kotlin.math.sin(t)), w)
+            }
+        }
+        "spot" -> {
+            val (e1, e2) = coneEdges(d, aspect)
+            val q = at(d.u2, d.v2)
+            drawLine(a.copy(alpha = 0.5f), p, q, w)
+            for (e in listOf(e1, e2)) {
+                val pe = at(e.first, e.second)
+                // the cone's edge, drawn on past its handle so the spread reads at a glance
+                drawLine(a, p, Offset(p.x + (pe.x - p.x) * 1.6f, p.y + (pe.y - p.y) * 1.6f), w)
+            }
+        }
+        "area" -> drawLine(a.copy(alpha = 0.7f), p, at(d.u2, d.v2), 5.dp.toPx())
+        else -> {
+            for (k in 0 until 8) {
+                val t = k * PI.toFloat() / 4f
+                drawLine(a, Offset(p.x + 13.dp.toPx() * kotlin.math.cos(t), p.y + 13.dp.toPx() * kotlin.math.sin(t)),
+                    Offset(p.x + 18.dp.toPx() * kotlin.math.cos(t), p.y + 18.dp.toPx() * kotlin.math.sin(t)), w)
+            }
+        }
+    }
+}
+
 /** The rays' light, brightness and reach. */
 @Composable
 private fun RaysRow(look: RaysLook, placing: Boolean, onLook: (RaysLook) -> Unit, onPlace: () -> Unit) {
     Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 6.dp)) {
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-            Text(if (placing) "tap the photo where the light comes from" else "light placed",
+        // the kind of light, as in 3D software; switching keeps where it is
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            listOf("point", "sun", "spot", "area").forEach { t ->
+                Chip(t, on = look.type == t) { onLook(look.copy(type = t, u2 = Float.NaN, v2 = Float.NaN).withDefaults()) }
+            }
+        }
+        Row(Modifier.fillMaxWidth().padding(top = 6.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                if (placing) "tap the photo where the light comes from" else when (look.type) {
+                    "sun" -> "drag the arrow's tip to aim it, its tail to move it"
+                    "spot" -> "drag the light, its aim, or the cone's edges"
+                    "area" -> "drag the ends to resize, the middle to move"
+                    else -> "drag the light to move it"
+                },
                 color = if (placing) LatentColors.Amber else LatentColors.TextDim, fontSize = 11.sp, modifier = Modifier.weight(1f))
-            if (look.placed) Chip(if (placing) "cancel" else "move light", on = placing) { onPlace() }
+            if (look.placed) Chip(if (placing) "cancel" else "re-place", on = placing) { onPlace() }
         }
         var amountLive by remember(look.amount) { mutableStateOf(look.amount) }
         var lengthLive by remember(look.length) { mutableStateOf(look.length) }
@@ -946,8 +1060,15 @@ private fun PaintStep(
     extra: (@Composable () -> Unit)? = null,
     /** Anything besides painting that changes the print (the fog's colour and amount): a change re-develops. */
     refreshKey: Any? = null,
-    /** A point to mark on the print (the rays' light), in picture coordinates. */
-    marker: Pair<Float, Float>? = null,
+    /**
+     * Handles on the print that can be dragged (the rays' light), in picture coordinates, given
+     * the picture's shape (width ÷ height). A touch on a handle drags it instead of painting.
+     */
+    handlesFor: ((Float) -> List<Pair<Float, Float>>)? = null,
+    /** A handle dragged to (u, v): [final] on release. The picture's shape comes last. */
+    onHandleDrag: ((Int, Float, Float, Boolean, Float) -> Unit)? = null,
+    /** Draws the light's shape over the print: given the picture's shape and a picture → screen mapping. */
+    overlayDraw: (androidx.compose.ui.graphics.drawscope.DrawScope.(Float, (Float, Float) -> Offset) -> Unit)? = null,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -955,6 +1076,8 @@ private fun PaintStep(
     val renderNow by rememberUpdatedState(renderWith)
     val picking by rememberUpdatedState(pickMode)
     val pickNow by rememberUpdatedState(onPick)
+    val handlesNow by rememberUpdatedState(handlesFor)
+    val dragNow by rememberUpdatedState(onHandleDrag)
     // Zoom: two fingers; the brush keeps its size on screen; the zoomed part develops sharp.
     val zoom = remember { ZoomState() }
     var detail by remember { mutableStateOf<Pair<Region, Bitmap>?>(null) }
@@ -1122,6 +1245,31 @@ private fun PaintStep(
                             down.consume()
                             return@awaitEachGesture
                         }
+                        // a touch on a handle drags the handle — painting never starts there
+                        val hs = handlesNow?.invoke(aspect).orEmpty()
+                        val drag = dragNow
+                        if (hs.isNotEmpty() && drag != null) {
+                            val grab = 28.dp.toPx()
+                            val hit = hs.indices.minByOrNull { i ->
+                                val sp = zoom.toScreen(hs[i].first, hs[i].second, fit, vw, vh)
+                                (sp - down.position).getDistance()
+                            }?.takeIf { i -> (zoom.toScreen(hs[i].first, hs[i].second, fit, vw, vh) - down.position).getDistance() <= grab }
+                            if (hit != null) {
+                                Haptics.tick(context)
+                                down.consume()
+                                var last = at(down.position)
+                                while (true) {
+                                    val event = awaitPointerEvent()
+                                    val pressed = event.changes.filter { it.pressed }
+                                    if (pressed.isEmpty() || pressed.size >= 2) break
+                                    last = at(pressed.first().position)
+                                    drag(hit, last.first.coerceIn(0f, 1f), last.second.coerceIn(0f, 1f), false, aspect)
+                                    event.changes.forEach { it.consume() }
+                                }
+                                drag(hit, last.first.coerceIn(0f, 1f), last.second.coerceIn(0f, 1f), true, aspect)
+                                return@awaitEachGesture
+                            }
+                        }
                         var painting = u0 in 0f..1f && v0 in 0f..1f
                         var zooming = false
                         var last = Pair(u0, v0)
@@ -1185,15 +1333,12 @@ private fun PaintStep(
                         drawImage(tile.second.asImageBitmap(), dstOffset = IntOffset(a.x.toInt(), a.y.toInt()),
                             dstSize = IntSize((c.x - a.x).toInt(), (c.y - a.y).toInt()))
                     }
-                    // the light the rays come from: a small sun
-                    marker?.let { (mu, mv) ->
-                        val c = zoom.toScreen(mu, mv, fit, size.width, size.height)
-                        drawCircle(LatentColors.Amber, 7.dp.toPx(), c)
-                        for (k in 0 until 8) {
-                            val a = k * PI.toFloat() / 4f
-                            drawLine(LatentColors.Amber, Offset(c.x + 11.dp.toPx() * kotlin.math.cos(a), c.y + 11.dp.toPx() * kotlin.math.sin(a)),
-                                Offset(c.x + 16.dp.toPx() * kotlin.math.cos(a), c.y + 16.dp.toPx() * kotlin.math.sin(a)), 2.dp.toPx())
-                        }
+                    // the light's shape, and its handles to drag
+                    overlayDraw?.invoke(this, aspect) { mu, mv -> zoom.toScreen(mu, mv, fit, size.width, size.height) }
+                    handlesFor?.invoke(aspect)?.forEach { (hu, hv) ->
+                        val c = zoom.toScreen(hu, hv, fit, size.width, size.height)
+                        drawCircle(Color(0xCC161615), 10.dp.toPx(), c)
+                        drawCircle(LatentColors.Amber, 10.dp.toPx(), c, style = Stroke(2.dp.toPx()))
                     }
                     line?.let { (a, b) ->
                         val pa = zoom.toScreen(a.first, a.second, fit, size.width, size.height)
