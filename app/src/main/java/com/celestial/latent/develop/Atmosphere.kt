@@ -29,6 +29,8 @@ data class Atmosphere(
     val originalStem: String?,
     /** The original in the roll, when it was found there: its masks and framing are read from it. */
     val original: Uri? = null,
+    /** The note's full text, when this came from one: it also records the develop's texture. */
+    val noteText: String? = null,
 ) {
     val hasFog: Boolean get() = fogCover > 0.001f && fog.amount > 0f
     val hasRays: Boolean get() = rays.placed && rays.amount > 0f
@@ -41,13 +43,17 @@ data class Atmosphere(
         if (hasRays) "rays (${rays.type}, ${if (rays.mode == "gaps") "through gaps" else "added light"})" else null,
     ).joinToString(" · ").ifEmpty { "none" }
 
-    /** The note written inside a developed JPEG, one field per line. */
-    fun note(): String = listOf(
+    /**
+     * The note written inside a developed JPEG, one field per line: the air, and — as [texture],
+     * a line from [Texture.noteOf] — the grain, halation, diffusion filter and glare it used.
+     */
+    fun note(texture: String? = null): String = listOfNotNull(
         "$HEADER v1",
         "stem=${originalStem ?: ""}",
         "fog=${fog.key()}",
         "fogcover=" + "%.4f".format(Locale.US, fogCover),
         "rays=${rays.key()}",
+        texture,
     ).joinToString("\n")
 
     companion object {
@@ -108,33 +114,63 @@ data class Atmosphere(
         @Volatile var lastReport: String = ""
 
         /**
-         * The original a developed file came from: the roll's photo whose name the reference's
-         * begins with, then "_". A developed file's name can itself be the start of another's
-         * (`X_400` and `X_400_2`), so a photo with fog or rays saved wins, then a RAW, then the
-         * longest name.
+         * The original a developed file came from: the photo whose name the reference's begins
+         * with, then "_" (or exactly the one the note names). Looked for three ways:
+         *
+         *  1. every photo with fog, rays, framing or a painted mask saved — under whatever address
+         *     it was saved. An imported photo keeps the file picker's address, so this is the
+         *     only way to find what was painted on it;
+         *  2. the whole photo library by name — not just the app's folder: an imported original
+         *     lives wherever the other camera put it;
+         *  3. for each library match, the addresses a file picker gives the same photo, since
+         *     that is what an import was saved under.
+         *
+         * A developed file's name can itself be the start of another's (`X_400`, `X_400_2`), so a
+         * photo with fog or rays saved wins, then a RAW, then the longest name.
          */
         fun findOriginal(context: Context, knownStem: String?, refStem: String): Pair<Uri, String>? = runCatching {
-            val found = ArrayList<Triple<Uri, String, String>>()   // uri, stem, extension
-            context.contentResolver.query(
+            val found = LinkedHashMap<String, Triple<Uri, String, String>>()   // address -> uri, stem, extension
+            fun consider(uri: Uri, name: String) {
+                val stem = name.substringBeforeLast('.')
+                val fits = if (knownStem != null) stem == knownStem else refStem.startsWith("${stem}_") && stem != refStem
+                if (fits) found[uri.toString()] = Triple(uri, stem, name.substringAfterLast('.', ""))
+            }
+            // 1. what has settings saved, by its own address
+            (FogLooks.photos(context) + RaysLooks.photos(context) + Framings.photos(context) + ExposureMaps.photos(context))
+                .forEach { key -> val uri = Uri.parse(key); displayName(context, uri)?.let { consider(uri, it) } }
+            // 2 + 3. the library by name, in every address form a picker gives
+            val stems = if (knownStem != null) listOf(knownStem)
+                else refStem.indices.filter { refStem[it] == '_' }.map { refStem.substring(0, it) }.takeLast(8)
+            if (stems.isNotEmpty()) context.contentResolver.query(
                 MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-                arrayOf(MediaStore.Images.Media._ID, MediaStore.Images.Media.DISPLAY_NAME),
-                "${MediaStore.Images.Media.RELATIVE_PATH} LIKE ?", arrayOf("DCIM/Latent%"), null,
+                arrayOf(MediaStore.Images.Media._ID, MediaStore.Images.Media.DISPLAY_NAME, MediaStore.Images.Media.RELATIVE_PATH),
+                stems.joinToString(" OR ") { "${MediaStore.Images.Media.DISPLAY_NAME} LIKE ?" }, stems.map { "$it.%" }.toTypedArray(), null,
             )?.use { c ->
                 while (c.moveToNext()) {
-                    val name = c.getString(1) ?: continue
-                    val stem = name.substringBeforeLast('.')
-                    val fits = if (knownStem != null) stem == knownStem else refStem.startsWith("${stem}_") && stem != refStem
-                    if (fits) found += Triple(ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, c.getLong(0)), stem, name.substringAfterLast('.', ""))
+                    val id = c.getLong(0); val name = c.getString(1) ?: continue; val rel = c.getString(2)
+                    consider(ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id), name)
+                    consider(android.provider.DocumentsContract.buildDocumentUri("com.android.providers.media.documents", "image:$id"), name)
+                    if (rel != null) consider(android.provider.DocumentsContract.buildDocumentUri("com.android.externalstorage.documents", "primary:$rel$name"), name)
                 }
             }
             Log.i("Latent", "atmosphere: originals matching \"${knownStem ?: refStem}\": " +
-                found.joinToString { "${it.second}.${it.third}" }.ifEmpty { "none among the app's photos" })
-            found.maxWithOrNull(compareBy<Triple<Uri, String, String>>(
+                found.values.joinToString { "${it.second}.${it.third} @ ${it.first}" }.ifEmpty { "none" })
+            found.values.maxWithOrNull(compareBy<Triple<Uri, String, String>>(
                 { !ofPhoto(context, it.first, it.second).isEmpty },
                 { it.third.equals("dng", ignoreCase = true) },
                 { it.second.length },
             ))?.let { it.first to it.second }
-        }.getOrElse { t -> Log.e("Latent", "atmosphere: could not search the app's photos", t); null }
+        }.getOrElse { t -> Log.e("Latent", "atmosphere: could not search for the original", t); null }
+
+        /** A file's name as its provider reports it; null when it cannot be read (permission gone, file deleted). */
+        private fun displayName(context: Context, uri: Uri): String? = runCatching {
+            context.contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)
+                ?.use { if (it.moveToFirst()) it.getString(0) else null }
+        }.getOrNull()
+
+        /** The exact texture a reference was developed with, from the note inside it. */
+        fun textureOf(context: Context, reference: Uri): Texture? =
+            readNote(context, reference)?.noteText?.let { Texture.fromNote(it) }
 
         // ---- the note inside a JPEG: a comment segment, readable by any tool, ignored by viewers ----
 
@@ -174,7 +210,7 @@ data class Atmosphere(
                 val len = ((head[at + 2].toInt() and 0xFF) shl 8) or (head[at + 3].toInt() and 0xFF)
                 if (marker == 0xFE && at + 2 + len <= head.size) {
                     val text = String(head, at + 4, len - 2, Charsets.UTF_8)
-                    if (text.startsWith(HEADER)) return parseNote(text)
+                    if (text.startsWith(HEADER)) return parseNote(text)?.copy(noteText = text)
                 }
                 at += 2 + len
             }

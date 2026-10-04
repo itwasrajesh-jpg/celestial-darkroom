@@ -310,6 +310,9 @@ object Fog {
 object FogLooks {
     private const val FILE = "latent_fog"
     private fun prefs(context: Context) = context.getSharedPreferences(FILE, Context.MODE_PRIVATE)
+    /** Every photo with something saved here, by the address it was saved under. */
+    fun photos(context: Context): Set<String> = prefs(context).all.keys
+
     fun load(context: Context, photo: Uri): FogLook = FogLook.parse(prefs(context).getString(photo.toString(), null))
     fun save(context: Context, photo: Uri, look: FogLook) {
         prefs(context).edit().apply { if (look == FogLook()) remove(photo.toString()) else putString(photo.toString(), look.key()) }.apply()

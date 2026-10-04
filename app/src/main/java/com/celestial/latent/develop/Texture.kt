@@ -39,11 +39,17 @@ data class Texture(
      * Last, after the numbers, so nothing built by position can shift.
      */
     val grainMeasured: Boolean = true,
+    /**
+     * The filter family when it is *known* rather than measured — read from the note inside a
+     * picture this app developed. Measuring cannot tell the widest filters apart: the reach
+     * reading tops out, and Cinebloom and the fog filter both reach the top.
+     */
+    val family: String? = null,
 ) {
 
-    /** The suggested filter family, from how far the bloom reaches. */
+    /** The filter family: the known one, else suggested from how far the bloom reaches. */
     val bloomFamily: String
-        get() = when {
+        get() = family ?: when {
             bloomReach < 0.8f -> "glimmerglass"
             bloomReach < 1.3f -> "black_pro_mist"
             bloomReach < 1.9f -> "pro_mist"
@@ -70,6 +76,34 @@ data class Texture(
     )
 
     companion object {
+        /**
+         * The texture settings a develop used, as one line for the note inside the JPEG:
+         * grain, halation, the diffusion filter and glare — exactly, rather than measured.
+         */
+        fun noteOf(r: Recipe): String = "texture=v1|" + listOf(
+            r.grain, r.grainSizeUm2, r.grainBlur, r.halation, r.halationAmount, r.halationScale,
+            r.diffusion, r.diffusionFamily, r.diffusionStrength, r.glare, r.glarePercent,
+        ).joinToString("|") { v -> if (v is Float) "%.4f".format(java.util.Locale.US, v) else v.toString() }
+
+        /** The texture a note records, in the reading's own terms. Null if the note has none. */
+        fun fromNote(text: String): Texture? = runCatching {
+            val line = text.lines().firstOrNull { it.startsWith("texture=v1|") } ?: return null
+            val p = line.removePrefix("texture=v1|").split("|")
+            val grain = p[0].toBoolean(); val grainSize = p[1].toFloat()
+            Texture(
+                grainAmount = if (grain) 0.5f else 0f,
+                // the inverse of applyTo's size, so the grain comes back the size it was
+                grainFineness = (1f - (grainSize - 0.08f) / 0.9f).coerceIn(0f, 1f),
+                halationAmount = if (p[3].toBoolean()) p[4].toFloat() else 0f,
+                halationReach = p[5].toFloat(),
+                bloomAmount = if (p[6].toBoolean()) p[8].toFloat() else 0f,
+                bloomReach = 1f,
+                glarePercent = if (p[9].toBoolean()) p[10].toFloat() else 0f,
+                grainMeasured = true,
+                family = p[7],
+            )
+        }.getOrNull()
+
         /** Averages what several references say, which is how a set becomes one answer. */
         fun average(list: List<Texture>): Texture {
             require(list.isNotEmpty())
@@ -87,6 +121,8 @@ data class Texture(
                 list.sumOf { it.bloomReach.toDouble() }.toFloat() / n,
                 list.sumOf { it.glarePercent.toDouble() }.toFloat() / n,
                 grainMeasured = withGrain.isNotEmpty(),
+                // a known filter survives averaging only when every reference agrees on it
+                family = list.map { it.family }.distinct().singleOrNull(),
             )
         }
 

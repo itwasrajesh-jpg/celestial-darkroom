@@ -69,7 +69,7 @@ fun LookScreen(settings: AppSettings, onBack: () -> Unit) {
     var atmospheres by remember { mutableStateOf(com.celestial.latent.develop.LookSession.atmospheres) }
     var useAtmosphere by remember { mutableStateOf(com.celestial.latent.develop.LookSession.useAtmosphere) }
     /** The last atmosphere lookup's own words: what it found, or why it found nothing. */
-    var atmosphereReport by remember { mutableStateOf("") }
+    var atmosphereReport by remember { mutableStateOf(com.celestial.latent.develop.LookSession.atmosphereReport) }
     /** The air the film is matched with: the first reference that has any, when the switch is on. */
     fun activeAtmosphere(): com.celestial.latent.develop.Atmosphere? = if (useAtmosphere) atmospheres.values.firstOrNull() else null
     var status by remember { mutableStateOf("") }
@@ -134,7 +134,10 @@ fun LookScreen(settings: AppSettings, onBack: () -> Unit) {
                     // Grain, halation, bloom and glare are read off the picture rather than
                     // searched for: they leave signatures a measurement can find directly.
                     val crop = grainCropOf(uri)
-                    addedTextures += com.celestial.latent.develop.Texture.of(bmp, crop)
+                    // Developed here? Then its texture is known exactly from the note inside it —
+                    // including a filter (like fog) that measuring cannot tell apart.
+                    addedTextures += com.celestial.latent.develop.Atmosphere.textureOf(context, uri)
+                        ?: com.celestial.latent.develop.Texture.of(bmp, crop)
                     crop?.recycle()
                     maps[uri] = bmp
                 }
@@ -280,7 +283,7 @@ fun LookScreen(settings: AppSettings, onBack: () -> Unit) {
                         Haptics.tick(context)
                         com.celestial.latent.develop.LookSession.clear()
                         references = emptyList(); textures = emptyList(); thumbs = emptyMap()
-                        atmospheres = emptyMap(); useAtmosphere = true
+                        atmospheres = emptyMap(); useAtmosphere = true; atmosphereReport = ""
                         testShot = null; result = null; resultBitmap = null; progress = null; saved = ""
                         tweak = com.celestial.latent.develop.Tweak()
                     }).padding(horizontal = 8.dp, vertical = 4.dp),
@@ -369,10 +372,10 @@ fun LookScreen(settings: AppSettings, onBack: () -> Unit) {
 
         // Everything the screen holds is mirrored into the session, so a back gesture does not
     // throw away a set of references and a fit that took minutes.
-    LaunchedEffect(references, textures, thumbs, testShot, testIsRaw, result, resultBitmap, progress, saved, tweak, atmospheres, useAtmosphere) {
+    LaunchedEffect(references, textures, thumbs, testShot, testIsRaw, result, resultBitmap, progress, saved, tweak, atmospheres, useAtmosphere, atmosphereReport) {
         com.celestial.latent.develop.LookSession.let { s ->
             s.references = references; s.textures = textures; s.thumbs = thumbs
-            s.atmospheres = atmospheres; s.useAtmosphere = useAtmosphere
+            s.atmospheres = atmospheres; s.useAtmosphere = useAtmosphere; s.atmosphereReport = atmosphereReport
             s.testShot = testShot; s.testIsRaw = testIsRaw
             s.result = result; s.resultBitmap = resultBitmap; s.progress = progress; s.saved = saved
             s.tweak = tweak
@@ -521,8 +524,10 @@ fun LookScreen(settings: AppSettings, onBack: () -> Unit) {
             Tweaker("Diffusion", tweak.diffusion, 0f, 1f, "%.2f",
                 onChange = { tweak = tweak.copy(diffusion = it) }, onRelease = { rerender() })
             if (tweak.diffusion > 0.001f) {
-                Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    listOf("glimmerglass", "black pro mist", "pro mist", "cinebloom").forEach { name ->
+                // Five filters are a tight fit on a phone: a little less spacing, and the row scrolls
+                // sideways rather than squash the last chip at a large text size.
+                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    listOf("glimmerglass", "black pro mist", "pro mist", "cinebloom", "fog").forEach { name ->
                         val id = name.replace(' ', '_')
                         val on = tweak.diffusionFamily == id
                         Text(
@@ -530,7 +535,7 @@ fun LookScreen(settings: AppSettings, onBack: () -> Unit) {
                             modifier = Modifier.clip(RoundedCornerShape(999.dp))
                                 .background(if (on) LatentColors.Amber else LatentColors.Surface)
                                 .combinedClickable(onClick = { tweak = tweak.copy(diffusionFamily = id); rerender() })
-                                .padding(horizontal = 9.dp, vertical = 5.dp),
+                                .padding(horizontal = 8.dp, vertical = 5.dp),
                         )
                     }
                 }

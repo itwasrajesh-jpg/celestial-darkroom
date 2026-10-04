@@ -316,6 +316,9 @@ private fun emit(look: RaysLook, gw: Int, gh: Int, level: Float): FloatArray {
 object RaysLooks {
     private const val FILE = "latent_rays"
     private fun prefs(context: Context) = context.getSharedPreferences(FILE, Context.MODE_PRIVATE)
+    /** Every photo with something saved here, by the address it was saved under. */
+    fun photos(context: Context): Set<String> = prefs(context).all.keys
+
     fun load(context: Context, photo: Uri): RaysLook = RaysLook.parse(prefs(context).getString(photo.toString(), null))
     fun save(context: Context, photo: Uri, look: RaysLook) {
         prefs(context).edit().apply { if (!look.placed) remove(photo.toString()) else putString(photo.toString(), look.key()) }.apply()

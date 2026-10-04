@@ -808,8 +808,10 @@ object Develop {
                 rays = raysLook,
                 originalStem = baseNameOf(context, source),
             )
+            // Written on every full develop: even without fog or light, the texture it used —
+            // grain, halation, the diffusion filter, glare — is worth knowing exactly later.
             saveDeveloped(context, bytes, source, recipe.film, tag = if (pair) "DX" else null,
-                note = atmo.takeIf { !it.isEmpty }?.note())
+                note = atmo.note(Texture.noteOf(recipe)))
         }
     }
 

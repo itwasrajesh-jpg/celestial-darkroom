@@ -34,6 +34,8 @@ object LookSession {
     var atmospheres: Map<Uri, Atmosphere> = emptyMap()
     /** The screen's atmosphere switch: on, the film is matched with that air held fixed. */
     var useAtmosphere: Boolean = true
+    /** What the atmosphere lookup found, or why not — kept so it survives leaving the screen. */
+    var atmosphereReport: String = ""
     var testIsRaw: Boolean = true
     var result: Reconstruct.Attempt? = null
     var resultBitmap: Bitmap? = null
@@ -52,6 +54,7 @@ object LookSession {
         testShot = null
         atmospheres = emptyMap()
         useAtmosphere = true
+        atmosphereReport = ""
         testIsRaw = true
         result = null
         resultBitmap = null

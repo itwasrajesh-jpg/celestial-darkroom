@@ -124,7 +124,16 @@ object ExposureMaps {
      * changes nothing) — but a blank soften mask means "sharp everywhere", which is a choice, so
      * [keepBlank] keeps it.
      */
+    /**
+     * Photos with a painted mask, by address. The mask files are named by a hash of the address,
+     * so they cannot be listed back to their photos; this index can. It starts with this version —
+     * masks painted before it are found through the photo's other saved settings instead.
+     */
+    private fun index(context: Context) = context.getSharedPreferences("latent_masked_photos", Context.MODE_PRIVATE)
+    fun photos(context: Context): Set<String> = index(context).all.keys
+
     fun save(context: Context, photo: Uri, map: ExposureMap?, kind: String = DODGE_BURN, keepBlank: Boolean = false) {
+        if (map != null && !map.isBlank) index(context).edit().putString(photo.toString(), kind).apply()
         runCatching {
             val f = file(context, photo, kind)
             if (map == null || (map.isBlank && !keepBlank)) { f.delete(); return }

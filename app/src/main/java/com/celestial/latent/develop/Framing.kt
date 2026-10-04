@@ -132,6 +132,9 @@ object Framings {
     private const val FILE = "latent_frame"
     private fun prefs(context: Context) = context.getSharedPreferences(FILE, Context.MODE_PRIVATE)
 
+    /** Every photo with something saved here, by the address it was saved under. */
+    fun photos(context: Context): Set<String> = prefs(context).all.keys
+
     fun load(context: Context, photo: Uri): Framing {
         val v = prefs(context).getString(photo.toString(), null) ?: return Framing()
         return runCatching {
