@@ -1,5 +1,7 @@
 # LATENT — Master Handoff
 
+*Now named **Celestial Darkroom** (Oct 2026); repo renamed to `itwasrajesh-jpg/celestial-darkroom`. Internal names (package, DCIM/Latent, file prefixes) are unchanged.*
+
 *Film camera for Android by Celestial. State as of 12 Sep 2026 (app step 8a; engine patch written, not yet uploaded).*
 *Purpose: everything a fresh session needs. Paste this at the start of a new conversation.*
 
@@ -9,7 +11,7 @@
 
 A film camera, not an editor. Shoot RAW, the photo develops through spektrafilm's physically
 based simulation (spectral exposure → dye density → print → scan). Free and open source
-(GPLv3). Package `com.celestial.latent`, repo `github.com/itwasrajesh-jpg/latent` (public).
+(GPLv3). Package `com.celestial.latent`, repo `github.com/itwasrajesh-jpg/celestial-darkroom` (public; formerly `latent`).
 
 Required attribution under GPLv3 §7(b), both lines, clickable, in the About screen:
 - **Spektrafilm for Android** by Akshay Sharma — https://github.com/thetechgeekko/Spektrafilm-android

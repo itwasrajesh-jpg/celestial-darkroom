@@ -26,7 +26,7 @@ import java.net.URL
  */
 object Updater {
 
-    private const val API = "https://api.github.com/repos/itwasrajesh-jpg/latent/releases/latest"
+    private const val API = "https://api.github.com/repos/itwasrajesh-jpg/celestial-darkroom/releases/latest"
 
     data class Release(val version: String, val notes: String, val apkUrl: String, val sizeBytes: Long)
 

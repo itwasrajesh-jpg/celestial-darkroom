@@ -22,7 +22,7 @@
  *   Film modeling powered by spektrafilm (Andrea Volpato)
  *     https://github.com/andreavolpato/spektrafilm
  *   Latent by Celestial
- *     https://github.com/itwasrajesh-jpg/latent
+ *     https://github.com/itwasrajesh-jpg/celestial-darkroom
  */
 package com.celestial.latent
 

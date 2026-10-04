@@ -57,7 +57,7 @@ fun AboutScreen(onBack: () -> Unit) {
         // This app's own notice, on the same terms it asks of others. (The two above are the
         // upstream notices and stay word for word.)
         Text("Celestial Darkroom —", color = LatentColors.TextBright, fontSize = 14.sp, lineHeight = 19.sp)
-        Link("https://github.com/itwasrajesh-jpg/latent") { open(it) }
+        Link("https://github.com/itwasrajesh-jpg/celestial-darkroom") { open(it) }
         Spacer(Modifier.height(10.dp))
         Spacer(Modifier.height(18.dp))
         Text("TALK TO US", color = LatentColors.TextDim, fontSize = 10.sp, letterSpacing = 2.sp)
@@ -91,7 +91,7 @@ fun AboutScreen(onBack: () -> Unit) {
         Text("CELESTIAL DARKROOM", color = LatentColors.TextDim, fontSize = 11.sp, letterSpacing = 2.sp)
         Spacer(Modifier.height(8.dp))
         Text("Camera, develop flow and darkroom by Celestial.", color = LatentColors.Text, fontSize = 12.sp)
-        Link("https://github.com/itwasrajesh-jpg/latent") { open(it) }
+        Link("https://github.com/itwasrajesh-jpg/celestial-darkroom") { open(it) }
         Spacer(Modifier.height(8.dp))
         Text("Written with Anthropic's Claude, in conversation with the author.", color = LatentColors.TextDim, fontSize = 12.sp)
 

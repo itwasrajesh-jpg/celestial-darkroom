@@ -1,8 +1,10 @@
-# Latent — notices
+# Celestial Darkroom — notices
+
+*Formerly Latent.*
 
 Copyright © 2026 Celestial (itwasrajesh-jpg).
 
-Latent is free software, released under the GNU General Public License version 3
+Celestial Darkroom is free software, released under the GNU General Public License version 3
 or (at your option) any later version. See LICENSE for the full terms.
 
 ## Required attribution
@@ -15,7 +17,7 @@ can reasonably find:
 >
 > Film modeling powered by **spektrafilm** (Andrea Volpato) — https://github.com/andreavolpato/spektrafilm
 >
-> **Latent** by Celestial — https://github.com/itwasrajesh-jpg/latent
+> **Celestial Darkroom** — https://github.com/itwasrajesh-jpg/celestial-darkroom
 
 All three appear in the app's About screen with clickable links.
 
@@ -28,7 +30,7 @@ negative → enlarger → print → scan chain. CC BY-SA 4.0 for the profile and
 **Spektrafilm for Android** (Akshay Sharma) is the C++/NDK port of that engine to
 Android, checked bit-for-bit against the original. GPLv3.
 
-**Latent** (Celestial) is this application: the camera (viewfinder, all lenses, DNG
+**Celestial Darkroom** (Celestial; formerly Latent) is this application: the camera (viewfinder, all lenses, DNG
 capture, burst alignment and stacking, exposure and focus controls), the develop
 flow and the darkroom, the live film preview in the viewfinder, the colour-noise
 cleanup, the Display P3 and Rec.709 output conversions, the film-to-paper pairing,
@@ -39,7 +41,8 @@ and the FFT implementation of the diffusion filter. GPLv3.
 The engine and RAW decoder are fetched at build time from a pinned commit of a
 mirror of the Android port; they are not vendored into this repository. The pinned
 commit is recorded in `.github/workflows/build.yml` and shown in the About screen.
-Any local change to the engine is documented in that mirror's NOTICE.
+Local changes to the engine are kept as patch files in this repository's
+`engine-patches/` folder and applied at build time, so every change is public here.
 
 ## Other components
 
@@ -49,5 +52,5 @@ Any local change to the engine is documented in that mirror's NOTICE.
   them (for example a blended emulsion) is also CC BY-SA 4.0 and must not be named
   as a product of Kodak, Fujifilm, Leica or any other manufacturer.
 
-"Latent" and "Celestial" are names, not licensed code: GPLv3 covers the software,
+"Celestial Darkroom" and "Celestial" are names, not licensed code: GPLv3 covers the software,
 not the naming of it.
