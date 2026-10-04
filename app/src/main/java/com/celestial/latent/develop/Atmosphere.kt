@@ -69,9 +69,9 @@ data class Atmosphere(
         fun ofPhoto(context: Context, photo: Uri, stem: String?): Atmosphere {
             val fogMask = ExposureMaps.load(context, photo, ExposureMaps.FOG)
             return Atmosphere(
-                fog = Fog.load(context, photo),
+                fog = FogLooks.load(context, photo),
                 fogCover = fogMask?.let { m -> m.stops.average().toFloat().coerceAtLeast(0f) } ?: 0f,
-                rays = Rays.load(context, photo),
+                rays = RaysLooks.load(context, photo),
                 originalStem = stem,
                 original = photo,
             )
