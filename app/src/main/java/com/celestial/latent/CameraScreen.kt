@@ -349,7 +349,7 @@ fun CameraScreen(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 10.dp),
             horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text("LATENT", color = LatentColors.Text, fontSize = 12.sp, letterSpacing = 5.sp, fontWeight = FontWeight.Light)
+            Text("CELESTIAL DARKROOM", color = LatentColors.Text, fontSize = 12.sp, letterSpacing = 4.sp, fontWeight = FontWeight.Light)
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(if (drawerOpen) "︿" else "﹀", color = if (drawerOpen) LatentColors.Amber else LatentColors.Text, fontSize = 18.sp,
                     modifier = Modifier.combinedClickable(onClick = { Haptics.tick(context); drawerOpen = !drawerOpen }).padding(horizontal = 10.dp, vertical = 4.dp))

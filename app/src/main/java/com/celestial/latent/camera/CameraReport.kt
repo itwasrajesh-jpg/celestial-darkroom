@@ -21,11 +21,11 @@ object CameraReport {
     fun build(context: Context): String {
         val cm = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
         val sb = StringBuilder()
-        sb.appendLine("LATENT CAMERA REPORT")
+        sb.appendLine("CELESTIAL DARKROOM CAMERA REPORT")
         sb.appendLine("Device: ${Build.MANUFACTURER} ${Build.MODEL} (${Build.DEVICE})")
         sb.appendLine("Android ${Build.VERSION.RELEASE} (SDK ${Build.VERSION.SDK_INT}), build ${Build.DISPLAY}")
         sb.appendLine()
-        sb.appendLine("LENSES LATENT FOUND")
+        sb.appendLine("LENSES CELESTIAL DARKROOM FOUND")
         sb.appendLine(Lenses.report)
         sb.appendLine()
 

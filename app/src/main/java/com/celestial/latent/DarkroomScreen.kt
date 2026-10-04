@@ -820,8 +820,8 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                                 Chips(listOf("SRGB", "DISPLAY_P3", "REC709_24", "ADOBE_RGB", "PROPHOTO", "REC2020", "ACES2065_1", "LINEAR_SRGB"), recipe.outputColorSpace) { set { copy(outputColorSpace = it) } }
                                 Note(when (recipe.outputColorSpace) {
                                     "SRGB" -> "Sharing, the web, messaging. The safe default."
-                                    "DISPLAY_P3" -> "What this phone's screen actually shows, so the file looks its best on the device. Converted by Latent from the engine's sRGB."
-                                    "REC709_24" -> "The video standard: sRGB's colours with a 2.4 gamma for a dark room. Pairs with the cine stocks. Converted by Latent."
+                                    "DISPLAY_P3" -> "What this phone's screen actually shows, so the file looks its best on the device. Converted by Celestial Darkroom from the engine's sRGB."
+                                    "REC709_24" -> "The video standard: sRGB's colours with a 2.4 gamma for a dark room. Pairs with the cine stocks. Converted by Celestial Darkroom."
                                     "ADOBE_RGB" -> "Print work — more greens and cyans than sRGB, still safe in an 8-bit file."
                                     "PROPHOTO" -> "Keeps everything for editing elsewhere. Can band in an 8-bit JPEG."
                                     "REC2020" -> "Very wide, for HDR video pipelines."

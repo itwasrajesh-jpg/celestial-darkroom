@@ -75,7 +75,7 @@ private fun Root() {
     var screen by remember { mutableStateOf("camera") }
     crash?.let { text ->
         Column(Modifier.fillMaxSize().background(LatentColors.Background).statusBarsPadding().navigationBarsPadding().padding(16.dp)) {
-            Text("Latent crashed last time", color = LatentColors.TextBright, fontSize = 18.sp)
+            Text("Celestial Darkroom crashed last time", color = LatentColors.TextBright, fontSize = 18.sp)
             Spacer(Modifier.height(8.dp))
             Row {
                 Button(onClick = {
@@ -104,9 +104,9 @@ private fun Root() {
 
     if (!granted) {
         Column(Modifier.fillMaxSize().background(LatentColors.Background).statusBarsPadding().padding(24.dp)) {
-            Text("LATENT", color = LatentColors.TextBright, fontSize = 20.sp, letterSpacing = 6.sp)
+            Text("CELESTIAL DARKROOM", color = LatentColors.TextBright, fontSize = 16.sp, letterSpacing = 4.sp)
             Spacer(Modifier.height(16.dp))
-            Text("Latent needs the camera to work. Photos are saved to DCIM/Latent as DNG.", color = LatentColors.Text, fontSize = 14.sp)
+            Text("Celestial Darkroom needs the camera to work. Photos are saved to DCIM/Latent as DNG.", color = LatentColors.Text, fontSize = 14.sp)
             Spacer(Modifier.height(16.dp))
             Button(onClick = { askPermission.launch(Manifest.permission.CAMERA) },
                 colors = ButtonDefaults.buttonColors(containerColor = LatentColors.Amber, contentColor = LatentColors.AmberInk)) { Text("Allow camera") }

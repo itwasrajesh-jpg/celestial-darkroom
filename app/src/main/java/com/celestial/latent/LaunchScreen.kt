@@ -80,15 +80,23 @@ fun LaunchOverlay(onDone: () -> Unit) {
         Box(Modifier.fillMaxSize().background(LatentColors.Amber).alpha(safelight.value))
 
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            // Two lines: the full name at the old size would be far wider than a phone.
             Text(
-                "LATENT",
+                "CELESTIAL",
+                color = LatentColors.TextDim,
+                fontSize = 11.sp,
+                letterSpacing = 8.sp,
+                modifier = Modifier.padding(bottom = 10.dp).alpha(byline.value),
+            )
+            Text(
+                "DARKROOM",
                 color = developing(density.value),
                 fontSize = 30.sp,
                 letterSpacing = 13.sp,
                 modifier = Modifier.graphicsLayer { scaleX = scale.value; scaleY = scale.value },
             )
             Text(
-                "BY CELESTIAL",
+                "A FILM CAMERA",
                 color = LatentColors.TextDim,
                 fontSize = 10.sp,
                 letterSpacing = 4.sp,

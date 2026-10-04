@@ -44,7 +44,7 @@ object AppLog {
         val lines = p.inputStream.bufferedReader().readLines()
         p.waitFor()
         val tail = if (lines.size > maxLines) lines.takeLast(maxLines) else lines
-        "Latent v${BuildConfig.VERSION_NAME} · ${tail.size} lines (pid $pid)\n" + tail.joinToString("\n")
+        "Celestial Darkroom v${BuildConfig.VERSION_NAME} · ${tail.size} lines (pid $pid)\n" + tail.joinToString("\n")
     } catch (t: Throwable) { "logcat capture failed: $t" }
 
     fun clear() { try { Runtime.getRuntime().exec(arrayOf("logcat", "-c")).waitFor() } catch (_: Throwable) {} }
@@ -67,7 +67,7 @@ fun LogScreen(onBack: () -> Unit) {
         Spacer(Modifier.height(10.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Btn("Refresh") { text = AppLog.capture(onlyLatent = onlyLatent) }
-            Btn(if (onlyLatent) "Showing: Latent only" else "Showing: everything") { onlyLatent = !onlyLatent }
+            Btn(if (onlyLatent) "Showing: this app only" else "Showing: everything") { onlyLatent = !onlyLatent }
             Btn("Share") {
                 val send = Intent(Intent.ACTION_SEND).apply { type = "text/plain"; putExtra(Intent.EXTRA_TEXT, text) }
                 context.startActivity(Intent.createChooser(send, "Share log"))

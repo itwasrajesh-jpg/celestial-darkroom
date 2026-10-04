@@ -103,7 +103,7 @@ object DngWriter {
         longs(278, h)
         longs(279, imageBytes)
         shorts(284, 1)
-        ascii(305, "Latent")
+        ascii(305, "Celestial Darkroom")
         ascii(270, meta.description)
         shorts(33421, 2, 2)
         bytes(33422, meta.cfaPattern)

@@ -38,8 +38,11 @@ fun AboutScreen(onBack: () -> Unit) {
     ) {
         Text("‹ settings", color = LatentColors.Text, fontSize = 14.sp, modifier = Modifier.combinedClickable(onClick = onBack).padding(vertical = 6.dp))
         Spacer(Modifier.height(10.dp))
-        Text("LATENT", color = LatentColors.TextBright, fontSize = 22.sp, letterSpacing = 6.sp)
+        // Two lines, as on the opening screen: the full name in one would not fit at this size.
+        Text("CELESTIAL", color = LatentColors.TextDim, fontSize = 11.sp, letterSpacing = 5.sp)
+        Text("DARKROOM", color = LatentColors.TextBright, fontSize = 22.sp, letterSpacing = 6.sp)
         Text("A film camera for Android · v" + BuildConfig.VERSION_NAME, color = LatentColors.TextDim, fontSize = 12.sp)
+        Text("formerly Latent", color = LatentColors.TextDim, fontSize = 11.sp)
 
         Spacer(Modifier.height(22.dp))
         Text("ATTRIBUTION", color = LatentColors.TextDim, fontSize = 11.sp, letterSpacing = 2.sp)
@@ -51,8 +54,9 @@ fun AboutScreen(onBack: () -> Unit) {
         Text("Film modeling powered by spektrafilm (Andrea Volpato) —", color = LatentColors.TextBright, fontSize = 14.sp, lineHeight = 19.sp)
         Link("https://github.com/andreavolpato/spektrafilm") { open(it) }
         Spacer(Modifier.height(12.dp))
-        // Latent's own notice, on the same terms it asks of others.
-        Text("Latent by Celestial —", color = LatentColors.TextBright, fontSize = 14.sp, lineHeight = 19.sp)
+        // This app's own notice, on the same terms it asks of others. (The two above are the
+        // upstream notices and stay word for word.)
+        Text("Celestial Darkroom —", color = LatentColors.TextBright, fontSize = 14.sp, lineHeight = 19.sp)
         Link("https://github.com/itwasrajesh-jpg/latent") { open(it) }
         Spacer(Modifier.height(10.dp))
         Spacer(Modifier.height(18.dp))
@@ -65,14 +69,14 @@ fun AboutScreen(onBack: () -> Unit) {
         Link("https://discord.gg/HfCeunz8Cs") { open(it) }
         Spacer(Modifier.height(18.dp))
         Text(
-            "All three notices must be kept in any distribution of Latent or of a work derived from it.",
+            "All three notices must be kept in any distribution of Celestial Darkroom or of a work derived from it.",
             color = LatentColors.TextDim, fontSize = 12.sp, lineHeight = 17.sp,
         )
 
         Spacer(Modifier.height(22.dp))
         Text("LICENCES", color = LatentColors.TextDim, fontSize = 11.sp, letterSpacing = 2.sp)
         Spacer(Modifier.height(8.dp))
-        Text("Latent is free software under the GNU General Public License v3.0. The film engine and its Android port are GPLv3; the film profiles and LUTs are CC BY-SA 4.0. RAW decoding uses LibRaw (LGPL-2.1 / CDDL-1.0).",
+        Text("Celestial Darkroom is free software under the GNU General Public License v3.0. The film engine and its Android port are GPLv3; the film profiles and LUTs are CC BY-SA 4.0. RAW decoding uses LibRaw (LGPL-2.1 / CDDL-1.0).",
             color = LatentColors.Text, fontSize = 12.sp, lineHeight = 17.sp)
         Spacer(Modifier.height(8.dp))
         Link("Read the GPLv3 text") { open("https://www.gnu.org/licenses/gpl-3.0.html") }
@@ -80,11 +84,11 @@ fun AboutScreen(onBack: () -> Unit) {
         Spacer(Modifier.height(22.dp))
         Text("ENGINE BUILD", color = LatentColors.TextDim, fontSize = 11.sp, letterSpacing = 2.sp)
         Spacer(Modifier.height(8.dp))
-        Text("The engine is fetched at build time from a mirror of the Android port, pinned to commit ${ENGINE_COMMIT.take(10)}. Latent's source, including any local changes to the engine, is public.",
+        Text("The engine is fetched at build time from a mirror of the Android port, pinned to commit ${ENGINE_COMMIT.take(10)}. Celestial Darkroom's source, including any local changes to the engine, is public.",
             color = LatentColors.Text, fontSize = 12.sp, lineHeight = 17.sp)
 
         Spacer(Modifier.height(22.dp))
-        Text("LATENT", color = LatentColors.TextDim, fontSize = 11.sp, letterSpacing = 2.sp)
+        Text("CELESTIAL DARKROOM", color = LatentColors.TextDim, fontSize = 11.sp, letterSpacing = 2.sp)
         Spacer(Modifier.height(8.dp))
         Text("Camera, develop flow and darkroom by Celestial.", color = LatentColors.Text, fontSize = 12.sp)
         Link("https://github.com/itwasrajesh-jpg/latent") { open(it) }

@@ -552,7 +552,7 @@ class CameraController(
                 val avgName = fileName("STACK${job.received}")
                 val meta = DngWriter.metaFrom(physChars, job.firstResult?.let { metaFor(it) }, job.w, job.h,
                     black = 64 * 16, white = 1023 * 16, orientation = 6,
-                    description = "Latent aligned burst of ${job.received} frames, sensor span $sensorMs ms, ${job.tilesAccepted}/${job.tilesTotal} tiles")
+                    description = "Celestial Darkroom aligned burst of ${job.received} frames, sensor span $sensorMs ms, ${job.tilesAccepted}/${job.tilesTotal} tiles")
                 val pixels = job.result()
                 val t = System.nanoTime()
                 saveTo(avgName) { DngWriter.write(it, meta, pixels) }
@@ -570,7 +570,7 @@ class CameraController(
     private fun writeDngCreator(img: Image, result: TotalCaptureResult, name: String): Long {
         val creator = DngCreator(physChars, metaFor(result))
         creator.setOrientation(ExifInterface.ORIENTATION_ROTATE_90)
-        creator.setDescription("Latent single RAW - ${lens.name} ${lens.label}")
+        creator.setDescription("Celestial Darkroom single RAW - ${lens.name} ${lens.label}")
         val t = System.nanoTime()
         saveTo(name) { creator.writeImage(it, img) }
         creator.close()

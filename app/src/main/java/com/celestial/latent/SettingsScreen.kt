@@ -106,7 +106,7 @@ fun SettingsScreen(settings: AppSettings, onChange: (AppSettings) -> Unit, onOpe
 
         Text("About & credits ›", color = LatentColors.Amber, fontSize = 14.sp, modifier = Modifier.combinedClickable(onClick = onOpenAbout).padding(vertical = 10.dp))
         Spacer(Modifier.height(24.dp))
-        Text("Latent v" + BuildConfig.VERSION_NAME + " · film modeling powered by spektrafilm", color = LatentColors.TextDim, fontSize = 11.sp)
+        Text("Celestial Darkroom v" + BuildConfig.VERSION_NAME + " · film modeling powered by spektrafilm", color = LatentColors.TextDim, fontSize = 11.sp)
     }
 }
 
@@ -164,7 +164,7 @@ private fun UpdateRow() {
                             (if (s.release.sizeBytes > 0) " · ${s.release.sizeBytes / 1024 / 1024} MB" else "")
                         is Updater.State.Downloading -> "downloading… ${s.percent}%"
                         is Updater.State.Installing -> s.note
-                        is Updater.State.NeedsPermission -> "allow Latent to install apps, then tap install"
+                        is Updater.State.NeedsPermission -> "allow Celestial Darkroom to install apps, then tap install"
                         is Updater.State.Failed -> s.reason
                     },
                     color = if (state is Updater.State.Failed) LatentColors.Text else LatentColors.TextDim,

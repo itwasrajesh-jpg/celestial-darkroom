@@ -128,7 +128,7 @@ object Lenses {
                 sb.appendLine("recognised as the Xiaomi 15 Ultra: using its proven lens list unchanged")
             } else {
                 val usable = distinct.filter { it.raw }
-                if (usable.isEmpty()) sb.appendLine("no rear lens offers RAW: Latent's camera needs RAW, so the camera will not work yet")
+                if (usable.isEmpty()) sb.appendLine("no rear lens offers RAW: Celestial Darkroom's camera needs RAW, so the camera will not work yet")
                 val pool = usable.ifEmpty { distinct }
                 val main = pool.minByOrNull { abs(it.eqMm - 24f) }
                 ALL = if (main == null) XIAOMI_15_ULTRA else pool.map { x ->

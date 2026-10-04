@@ -31,5 +31,5 @@ package com.celestial.latent
  * obvious place. The same header applies to every source file in this repository.
  */
 internal object Copyright {
-    const val LINE = "Latent © 2026 Celestial — GPLv3"
+    const val LINE = "Celestial Darkroom © 2026 Celestial — GPLv3"
 }

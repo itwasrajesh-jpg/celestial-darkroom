@@ -1,4 +1,6 @@
-# Latent
+# Celestial Darkroom
+
+*Formerly Latent.*
 
 A film camera for Android. Pick a film, shoot RAW, and the photo develops through a
 physically based film simulation — spectral exposure, dye density, a print under an

@@ -42,7 +42,7 @@ class VendorProbe(private val context: Context) {
 
     /** Passive: the full key matrix, MotionCam notation. */
     fun enumerate(): String {
-        val sb = StringBuilder("LATENT VENDOR KEY MAP\n")
+        val sb = StringBuilder("CELESTIAL DARKROOM VENDOR KEY MAP\n")
         val candidates = LinkedHashSet<String>()
         for (path in PATHS) {
             for (lens in Lenses.ALL) {
@@ -94,7 +94,7 @@ class VendorProbe(private val context: Context) {
      */
     @SuppressLint("MissingPermission")
     fun deepProbe(path: String, lens: Lens, keys: List<Pair<String, String>>, progress: (String) -> Unit): String {
-        val sb = StringBuilder("LATENT DEEP PROBE · path=$path lens=${lens.physicalId} (${lens.name})\n")
+        val sb = StringBuilder("CELESTIAL DARKROOM DEEP PROBE · path=$path lens=${lens.physicalId} (${lens.name})\n")
         progress("baseline…")
         val base = runOneRetry(path, lens, null, 1f)
         sb.appendLine("baseline @1x: $base")
@@ -212,7 +212,7 @@ class VendorProbe(private val context: Context) {
         val quality = listOf(P + "EnableHDRDCGMode", P + "inSensorSHDRMode", P + "numHDRexposure", P + "EnableMFHDR", P + "EnableQHDR", P + "EnableXHDR", P + "SnapshotHDRMode", P + "HDRModePreference")
         val timedOut = listOf(P + "EnableIdealRAW", P + "EnableSHDR", P + "HDRMode", P + "EnableAutoHDR")
         val routing = listOf(P + "RawCbSourceType" to listOf(0, 1, 2), P + "McxRawCallbackInfo" to listOf(1))
-        val sb = StringBuilder("LATENT QUALITY PROBE · path=$path lens=${lens.physicalId} (${lens.name})\n")
+        val sb = StringBuilder("CELESTIAL DARKROOM QUALITY PROBE · path=$path lens=${lens.physicalId} (${lens.name})\n")
         progress("metering…")
         val auto = runOneRetry(path, lens, null, 1f)
         if (!auto.ok || auto.exposureNs == 0L) return sb.appendLine("could not meter: $auto").toString()
@@ -278,7 +278,7 @@ class VendorProbe(private val context: Context) {
             "Multi-frame NR" to (P + "enableMFNR"),
             "Ideal RAW" to (P + "EnableIdealRAW"),
         )
-        val sb = StringBuilder("LATENT A/B TEST · path=$path lens=${lens.physicalId} (${lens.name})\nKeep the phone still and the scene unchanged.\n")
+        val sb = StringBuilder("CELESTIAL DARKROOM A/B TEST · path=$path lens=${lens.physicalId} (${lens.name})\nKeep the phone still and the scene unchanged.\n")
         progress("metering…")
         val auto = runOneRetry(path, lens, null, 1f)
         if (!auto.ok || auto.exposureNs == 0L) return sb.appendLine("could not meter: $auto").toString()
@@ -310,7 +310,7 @@ class VendorProbe(private val context: Context) {
     @SuppressLint("MissingPermission")
     fun sensorModeSweep(path: String, lens: Lens, from: Int, to: Int, progress: (String) -> Unit): String {
         val key = "org.codeaurora.qcamera3.sensor_meta_data.current_mode"
-        val sb = StringBuilder("LATENT SENSOR MODE SWEEP · path=$path lens=${lens.physicalId} (${lens.name}) · $key\n")
+        val sb = StringBuilder("CELESTIAL DARKROOM SENSOR MODE SWEEP · path=$path lens=${lens.physicalId} (${lens.name}) · $key\n")
         progress("metering…")
         val auto = runOneRetry(path, lens, null, 1f)
         if (!auto.ok || auto.exposureNs == 0L) return sb.appendLine("could not meter: $auto").toString()
