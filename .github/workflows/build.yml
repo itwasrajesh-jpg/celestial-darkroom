@@ -1,4 +1,4 @@
-name: Build Latent APK
+name: Build Celestial Darkroom APK
 on:
   workflow_dispatch:
 permissions:
@@ -62,5 +62,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           APK=$(ls app/build/outputs/apk/release/*.apk | head -1)
-          cp "$APK" "latent-v${{ github.run_number }}.apk"
-          gh release create "v${{ github.run_number }}" "latent-v${{ github.run_number }}.apk" --title "Latent 0.1.${{ github.run_number }}" --notes "Built from ${{ github.sha }} on $(date -u +%Y-%m-%d)."
+          cp "$APK" "celestial-darkroom-v${{ github.run_number }}.apk"
+          gh release create "v${{ github.run_number }}" "celestial-darkroom-v${{ github.run_number }}.apk" --title "Celestial Darkroom 0.1.${{ github.run_number }}" --notes "Built from ${{ github.sha }} on $(date -u +%Y-%m-%d)."
