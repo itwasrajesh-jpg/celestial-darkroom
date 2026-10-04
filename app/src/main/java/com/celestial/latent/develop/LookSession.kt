@@ -30,6 +30,10 @@ object LookSession {
     var textures: List<Texture> = emptyList()
     var thumbs: Map<Uri, Bitmap> = emptyMap()
     var testShot: Uri? = null
+    /** Each reference's fog and light, when it was made in this app. */
+    var atmospheres: Map<Uri, Atmosphere> = emptyMap()
+    /** The screen's atmosphere switch: on, the film is matched with that air held fixed. */
+    var useAtmosphere: Boolean = true
     var testIsRaw: Boolean = true
     var result: Reconstruct.Attempt? = null
     var resultBitmap: Bitmap? = null
@@ -46,6 +50,8 @@ object LookSession {
         textures = emptyList()
         thumbs = emptyMap()
         testShot = null
+        atmospheres = emptyMap()
+        useAtmosphere = true
         testIsRaw = true
         result = null
         resultBitmap = null

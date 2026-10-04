@@ -66,6 +66,10 @@ fun LookScreen(settings: AppSettings, onBack: () -> Unit) {
     var textures by remember { mutableStateOf(com.celestial.latent.develop.LookSession.textures) }
     var thumbs by remember { mutableStateOf(com.celestial.latent.develop.LookSession.thumbs) }
     var testShot by remember { mutableStateOf(com.celestial.latent.develop.LookSession.testShot) }
+    var atmospheres by remember { mutableStateOf(com.celestial.latent.develop.LookSession.atmospheres) }
+    var useAtmosphere by remember { mutableStateOf(com.celestial.latent.develop.LookSession.useAtmosphere) }
+    /** The air the film is matched with: the first reference that has any, when the switch is on. */
+    fun activeAtmosphere(): com.celestial.latent.develop.Atmosphere? = if (useAtmosphere) atmospheres.values.firstOrNull() else null
     var status by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
 
@@ -116,7 +120,10 @@ fun LookScreen(settings: AppSettings, onBack: () -> Unit) {
             val added = ArrayList<Pair<Uri, Fingerprint>>()
             val addedTextures = ArrayList<com.celestial.latent.develop.Texture>()
             val maps = HashMap<Uri, Bitmap>()
+            val addedAtmo = HashMap<Uri, com.celestial.latent.develop.Atmosphere>()
             uris.forEach { uri ->
+                // Made in this app with fog or light? Then that air is known exactly.
+                com.celestial.latent.develop.Atmosphere.ofReference(context, uri)?.let { addedAtmo[uri] = it }
                 runCatching { context.contentResolver.takePersistableUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION) }
                 thumbnailOf(uri)?.let { bmp ->
                     added += uri to Fingerprint.of(bmp)
@@ -131,6 +138,7 @@ fun LookScreen(settings: AppSettings, onBack: () -> Unit) {
             references = references + added
             textures = textures + addedTextures
             thumbs = thumbs + maps
+            atmospheres = atmospheres + addedAtmo
             status = "${references.size} references"
             busy = false
         }.start()
@@ -190,6 +198,7 @@ fun LookScreen(settings: AppSettings, onBack: () -> Unit) {
                 runCatching {
                     com.celestial.latent.develop.Reconstruct.render(
                         context, best, src, testIsRaw, BASE_STOCK, current, texture,
+                        atmosphere = activeAtmosphere(),
                     )?.let { bytes ->
                         BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.let { resultBitmap = it }
                     }
@@ -220,6 +229,7 @@ fun LookScreen(settings: AppSettings, onBack: () -> Unit) {
                 // A second build continues from the first rather than starting over; "start
                 // over" clears the result, and with it this starting point.
                 startFrom = previous,
+                atmosphere = activeAtmosphere(),
             ) { p ->
                 progress = p
                 p.best?.jpeg?.let { bytes ->
@@ -264,6 +274,7 @@ fun LookScreen(settings: AppSettings, onBack: () -> Unit) {
                         Haptics.tick(context)
                         com.celestial.latent.develop.LookSession.clear()
                         references = emptyList(); textures = emptyList(); thumbs = emptyMap()
+                        atmospheres = emptyMap(); useAtmosphere = true
                         testShot = null; result = null; resultBitmap = null; progress = null; saved = ""
                         tweak = com.celestial.latent.develop.Tweak()
                     }).padding(horizontal = 8.dp, vertical = 4.dp),
@@ -328,12 +339,30 @@ fun LookScreen(settings: AppSettings, onBack: () -> Unit) {
                 (if (spread > 0.9f) " — quite a scattered set" else ""),
             color = LatentColors.TextDim, fontSize = 11.sp, modifier = Modifier.padding(bottom = 18.dp),
         )
+        // References made here with fog or light: that air is known, and can be held fixed so
+        // only the film is searched. Switch it off to match everything as the film, as before.
+        atmospheres.values.firstOrNull()?.let { a ->
+            Row(Modifier.fillMaxWidth().padding(bottom = 6.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("ATMOSPHERE", color = LatentColors.TextDim, fontSize = 10.sp, letterSpacing = 2.sp)
+                    Text(a.describe() + (if (atmospheres.size > 1) " · from the first of ${atmospheres.size}" else ""),
+                        color = LatentColors.Text, fontSize = 12.sp)
+                }
+                Pill(if (useAtmosphere) "on" else "off", accent = useAtmosphere) { useAtmosphere = !useAtmosphere }
+            }
+            Text(
+                if (useAtmosphere) "Made here with fog or light. Your test shot gets the same air, so only the film is searched."
+                else "Off: everything in the references is matched as the film, as before.",
+                color = LatentColors.TextDim, fontSize = 11.sp, lineHeight = 15.sp, modifier = Modifier.padding(bottom = 18.dp),
+            )
+        }
 
         // Everything the screen holds is mirrored into the session, so a back gesture does not
     // throw away a set of references and a fit that took minutes.
-    LaunchedEffect(references, textures, thumbs, testShot, testIsRaw, result, resultBitmap, progress, saved, tweak) {
+    LaunchedEffect(references, textures, thumbs, testShot, testIsRaw, result, resultBitmap, progress, saved, tweak, atmospheres, useAtmosphere) {
         com.celestial.latent.develop.LookSession.let { s ->
             s.references = references; s.textures = textures; s.thumbs = thumbs
+            s.atmospheres = atmospheres; s.useAtmosphere = useAtmosphere
             s.testShot = testShot; s.testIsRaw = testIsRaw
             s.result = result; s.resultBitmap = resultBitmap; s.progress = progress; s.saved = saved
             s.tweak = tweak

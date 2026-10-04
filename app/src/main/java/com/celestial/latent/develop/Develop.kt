@@ -800,7 +800,16 @@ object Develop {
             log("developing ${s.width}×${s.height}…")
             val (bytes, dims) = render(context, s, recipe, preview = false, upscale = upscale, exposureMap = exposureMap, softenMask = softenMask, log = log)
             log("saving ${dims.first}×${dims.second}, ${bytes.size / 1024} KB")
-            saveDeveloped(context, bytes, source, recipe.film, tag = if (pair) "DX" else null)
+            // The fog and light travel inside the file, so the Film Builder can read them exactly
+            // later — even if the file is renamed or the original's fog is changed afterwards.
+            val atmo = Atmosphere(
+                fog = fogLook,
+                fogCover = fogMask?.stops?.average()?.toFloat()?.coerceAtLeast(0f) ?: 0f,
+                rays = raysLook,
+                originalStem = baseNameOf(context, source),
+            )
+            saveDeveloped(context, bytes, source, recipe.film, tag = if (pair) "DX" else null,
+                note = atmo.takeIf { !it.isEmpty }?.note())
         }
     }
 
@@ -888,8 +897,8 @@ object Develop {
      * Named after its photo, so the roll pairs them: <photo>_<film>.jpg. A double exposure is named
      * after its SECOND frame with a DX tag — <second>_DX_<film>.jpg — so that frame shows the double.
      */
-    fun saveDeveloped(context: Context, bytes: ByteArray, source: Uri, film: String, tag: String? = null): Uri =
-        save(context, bytes, baseNameOf(context, source) + (if (tag != null) "_$tag" else "") + "_" + film.substringAfterLast('_') + ".jpg")
+    fun saveDeveloped(context: Context, bytes: ByteArray, source: Uri, film: String, tag: String? = null, note: String? = null): Uri =
+        save(context, note?.let { Atmosphere.withNote(bytes, it) } ?: bytes, baseNameOf(context, source) + (if (tag != null) "_$tag" else "") + "_" + film.substringAfterLast('_') + ".jpg")
 
     /**
      * An 85B filter on the lens, as gains on the linear ProPhoto light: the ratio of 3200K to

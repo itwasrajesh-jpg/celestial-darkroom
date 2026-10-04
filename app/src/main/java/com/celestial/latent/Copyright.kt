@@ -21,7 +21,7 @@
  *     https://github.com/thetechgeekko/Spektrafilm-android
  *   Film modeling powered by spektrafilm (Andrea Volpato)
  *     https://github.com/andreavolpato/spektrafilm
- *   Latent by Celestial
+ *   Celestial Darkroom (formerly Latent)
  *     https://github.com/itwasrajesh-jpg/celestial-darkroom
  */
 package com.celestial.latent

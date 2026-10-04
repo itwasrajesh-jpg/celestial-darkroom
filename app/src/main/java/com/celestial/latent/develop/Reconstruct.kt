@@ -49,6 +49,12 @@ object Reconstruct {
          * it. Null starts from scratch.
          */
         startFrom: Emulsion.Shape? = null,
+        /**
+         * The references' fog and light, when they were made in this app. Every candidate is
+         * developed with it, so the search changes only the film — the fog's colour and veil no
+         * longer leak into the emulsion. Null: the film is matched alone, as before.
+         */
+        atmosphere: Atmosphere? = null,
         onProgress: (Progress) -> Unit,
     ): Attempt? {
         cancelled = false
@@ -58,10 +64,12 @@ object Reconstruct {
         // Read once: this walks the profile's JSON, and the search runs hundreds of attempts.
         val paper = printFor(base)
 
-        // The photo is decoded once and reused: only the film changes between attempts.
-        val source = runCatching {
+        // The photo is decoded once and reused: only the film changes between attempts. Its air —
+        // fog and light, which are in front of the lens — is added once here for the same reason.
+        val decoded = runCatching {
             if (isRaw) Develop.openRaw(context, testShot, 320) else Develop.openImage(context, testShot, 320)
         }.getOrNull() ?: return null
+        val source = Atmosphere.applyTo(context, decoded, testShot, atmosphere) { Log.i("Latent", "fit: $it") }
 
         val holdsLaneEarly = DevelopQueue.engineLane.tryAcquire()
         // One alignment before the search, not a levelling during it.
@@ -402,6 +410,8 @@ object Reconstruct {
         baseStock: String,
         tweak: Tweak,
         texture: Texture?,
+        /** The same atmosphere the search used, so the preview shows what was judged. */
+        atmosphere: Atmosphere? = null,
     ): ByteArray? {
         val dir = EngineAssets.directory ?: return null
         val base = Emulsion.baseProfile(context, baseStock) ?: return null
@@ -409,7 +419,8 @@ object Reconstruct {
         Emulsion.write(base, attempt.shape, stockId, "Working") ?: return null
         if (!DevelopQueue.engineLane.tryAcquire()) return null
         return try {
-            val source = if (isRaw) Develop.openRaw(context, testShot, 640) else Develop.openImage(context, testShot, 640)
+            val decoded = if (isRaw) Develop.openRaw(context, testShot, 640) else Develop.openImage(context, testShot, 640)
+            val source = Atmosphere.applyTo(context, decoded, testShot, atmosphere)
             source.use { src ->
                 val recipe = recipeFor(stockId, attempt, printFor(base), tweak, texture, previewSize = 560)
                 Develop.denoiseSource(src, recipe, Develop.isoOf(context, testShot))
