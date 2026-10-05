@@ -184,6 +184,11 @@ data class Recipe(
     // across vendors, so export and the parity path stay on the CPU.
     val gpuPreview: Boolean = false,
     val previewMaxSize: Int = 640,   // the size the engine's own editor uses interactively
+    /**
+     * Brightness noise cleaned before the film: −1 automatic from the ISO, else 0 … 1. The
+     * sensor's digital speckle, which film never sees; the film's own grain is the texture.
+     */
+    val lumaDenoise: Float = -1f,
 ) {
     private fun triple(v: List<Float>, fallback: Float) =
         Triple(v.getOrElse(0) { fallback }, v.getOrElse(1) { fallback }, v.getOrElse(2) { fallback })
@@ -293,6 +298,7 @@ data class Recipe(
         put("scatterTailWeight", org.json.JSONArray(scatterTailWeight.map { it.toDouble() }))
         put("halationBoostRange", halationBoostRange.toDouble())
         put("chromaDenoise", chromaDenoise.toDouble())
+        put("lumaDenoise", lumaDenoise.toDouble())
         put("filterUvAmount", filterUvAmount.toDouble()); put("filterUvNm", filterUvNm.toDouble()); put("filterUvWidth", filterUvWidth.toDouble())
         put("filterIrAmount", filterIrAmount.toDouble()); put("filterIrNm", filterIrNm.toDouble()); put("filterIrWidth", filterIrWidth.toDouble())
         put("meteringMethod", meteringMethod)
@@ -350,6 +356,7 @@ data class Recipe(
                 scatterTailWeight = floats(o, "scatterTailWeight", d.scatterTailWeight),
                 halationBoostRange = f("halationBoostRange", d.halationBoostRange),
                 chromaDenoise = f("chromaDenoise", d.chromaDenoise),
+                lumaDenoise = f("lumaDenoise", d.lumaDenoise),
                 filterUvAmount = f("filterUvAmount", d.filterUvAmount), filterUvNm = f("filterUvNm", d.filterUvNm),
                 filterUvWidth = f("filterUvWidth", d.filterUvWidth),
                 filterIrAmount = f("filterIrAmount", d.filterIrAmount), filterIrNm = f("filterIrNm", d.filterIrNm),

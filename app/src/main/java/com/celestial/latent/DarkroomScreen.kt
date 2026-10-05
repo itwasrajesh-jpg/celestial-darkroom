@@ -713,6 +713,16 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                                 }
                                 if (!auto) S("Amount", recipe.chromaDenoise, 0f, 1f, "%.2f") { set { copy(chromaDenoise = it) } }
                                 Note("Sensor blotches in dark shots are not film grain, and the dye couplers make them worse. This cleans the colour only — brightness, detail and grain are untouched.")
+                                Head("BRIGHTNESS NOISE", null) {}
+                                val lumaAuto = recipe.lumaDenoise < 0f
+                                Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    Text(if (lumaAuto) "AUTO · FROM ISO" else "MANUAL", color = if (lumaAuto) LatentColors.AmberInk else LatentColors.Text, fontSize = 10.sp,
+                                        modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(if (lumaAuto) LatentColors.Amber else LatentColors.Surface)
+                                            .combinedClickable(onClick = { Haptics.tick(context); set { copy(lumaDenoise = if (lumaAuto) 0.4f else -1f) } })
+                                            .padding(horizontal = 10.dp, vertical = 5.dp))
+                                }
+                                if (!lumaAuto) S("Amount", recipe.lumaDenoise, 0f, 1f, "%.2f") { set { copy(lumaDenoise = it) } }
+                                Note("The sensor's grey speckle in dim shots is digital noise, not film grain. This smooths it while keeping edges, before the film — so the film's own grain is the texture. Lights and fog no longer make it worse.")
                                 Head("DIR COUPLERS", recipe.dir) { set { copy(dir = it) } }
                                 S("Amount", recipe.dirAmount, 0f, 2f, "%.2f", recipe.dir) { set { copy(dirAmount = it) } }
                                 S("Same-layer inhibition", recipe.dirSameLayer, 0f, 2f, "%.2f", recipe.dir) { set { copy(dirSameLayer = it) } }

@@ -252,13 +252,14 @@ object Develop {
         working.frameFrom(pristine, framing)
         // the depth comes from the framed picture as it was, before fog or light touch it
         val sunIn = sunInput(context, source, framing, working, listOf(raysLook) + extraLights, log)
+        // the sensor's noise is cleaned first, so fog and light never work with it
+        denoiseSource(working, recipe, isoUsed, log)
+        sensorNoiseSource(working, recipe, isoUsed, log)
         // the air first — it is in front of the lens — then the lens filter
         fogMask?.let { Fog.apply(working, it, fogLook, log) }
         for (light in listOf(raysLook) + extraLights) Rays.apply(working, light, raysMask, fogMask, fogLook.amount, log)   // light in the same air
         sunOnSurfaces(working, listOf(raysLook) + extraLights, raysMask, sunIn, log)    // and the same lights on what they meet
         lensFilterSource(working, recipe, log)
-        // A pair carries the noise of both frames: clean it for the noisier of the two.
-        denoiseSource(working, recipe, isoUsed, log)
         fastDiffusionSource(working, recipe, preview = true, softenMask = softenMask, log = log)
         fastPrintDiffusionSource(working, recipe, preview = true, log = log)
         working.preparedFor = prep
@@ -368,6 +369,18 @@ object Develop {
      * Cleans colour noise in place before a render. Applied once per decoded source: the film
      * should never see sensor blotches, because its dye couplers make them worse.
      */
+    /**
+     * The sensor's brightness noise, cleaned before the film with an edge-keeping filter: film
+     * never saw it, and the film's own grain becomes the texture. Automatic from the ISO
+     * (none up to ISO 200), or the recipe's amount.
+     */
+    fun sensorNoiseSource(source: Source, recipe: Recipe, iso: Int, log: (String) -> Unit = {}) {
+        val amount = if (recipe.lumaDenoise >= 0f) recipe.lumaDenoise else GuidedClean.strengthForIso(iso)
+        if (amount <= 0.001f) return
+        log("cleaning sensor noise")
+        GuidedClean.applyInPlace(source.image.data.order(java.nio.ByteOrder.nativeOrder()).asFloatBuffer(), source.width, source.height, amount)
+    }
+
     fun denoiseSource(source: Source, recipe: Recipe, iso: Int, log: (String) -> Unit = {}) {
         if (source.denoised) return
         val strength = if (recipe.chromaDenoise >= 0f) recipe.chromaDenoise else ChromaDenoise.strengthForIso(iso)
@@ -818,11 +831,14 @@ object Develop {
         }
         return src.use { s ->
             val sunIn = sunInput(context, source, framing, s, listOf(raysLook) + extraLights, log)
+            // A pair carries the noise of both frames: clean it for the noisier of the two.
+            val iso = if (pair) maxOf(isoOf(context, source), isoOf(context, pairFirst!!)) else isoOf(context, source)
+            denoiseSource(s, recipe, iso, log)
+            sensorNoiseSource(s, recipe, iso, log)
             fogMask?.let { Fog.apply(s, it, fogLook, log) }
             for (light in listOf(raysLook) + extraLights) Rays.apply(s, light, raysMask, fogMask, fogLook.amount, log)
             sunOnSurfaces(s, listOf(raysLook) + extraLights, raysMask, sunIn, log)
             lensFilterSource(s, recipe, log)
-            denoiseSource(s, recipe, if (pair) maxOf(isoOf(context, source), isoOf(context, pairFirst!!)) else isoOf(context, source), log)
             fastDiffusionSource(s, recipe, preview = false, softenMask = softenMask, log = log)
             fastPrintDiffusionSource(s, recipe, preview = false, log = log)
             log("developing ${s.width}×${s.height}…")

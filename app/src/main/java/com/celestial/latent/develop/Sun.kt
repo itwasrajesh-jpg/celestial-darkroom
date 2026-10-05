@@ -464,6 +464,9 @@ object Sun {
         val f = src.image.data.order(ByteOrder.nativeOrder()).asFloatBuffer()
         val chroma = active.map { it.first.chroma() }
         val gw = input.gw; val gh = input.gh
+        // The light lands on a cleaned copy of the photo: real added light brings clean signal, so
+        // the photo's own noise must never be multiplied (it made lit areas 1.5–1.8× grainier).
+        val clean = GuidedClean.factors(f, w, h, 1f)
         for (y in 0 until h) {
             val v = (y + 0.5f) / h
             for (x in 0 until w) {
@@ -472,20 +475,21 @@ object Sun {
                 if (cover <= 0f) continue
                 val o = (y * w + x) * 3
                 val r = f.get(o); val g = f.get(o + 1); val b = f.get(o + 2)
+                val k = clean[y * w + x]; val cr = r * k; val cg = g * k; val cb = b * k     // what the surface reflects, without the noise
                 var ar = 0f; var ag = 0f; var ab = 0f
-                for ((k, pair) in active.withIndex()) {
+                for ((li, pair) in active.withIndex()) {
                     val (look, map) = pair
                     val d = map.sample(u, v) * cover
                     if (d <= 0f) continue
-                    var fr = r; var fg = g; var fb = b
+                    var fr = cr; var fg = cg; var fb = cb
                     if (look.reveal > 0f) {
-                        // an ordinary surface where too little was recorded, keeping the photo's own texture
-                        val l = LUM[0] * r + LUM[1] * g + LUM[2] * b
+                        // an ordinary surface where too little was recorded, keeping the photo's own texture — from the cleaned copy
+                        val l = LUM[0] * cr + LUM[1] * cg + LUM[2] * cb
                         val tex = ((l + 1e-4f) / (bilinear(input.lumBig, gw, gh, u, v) + 1e-4f)).coerceIn(0.3f, 3f)
                         val fl = look.reveal * 0.03f * tex
-                        fr = max(r, fl * bilinear3(input.tint, gw, gh, u, v, 0)); fg = max(g, fl * bilinear3(input.tint, gw, gh, u, v, 1)); fb = max(b, fl * bilinear3(input.tint, gw, gh, u, v, 2))
+                        fr = max(cr, fl * bilinear3(input.tint, gw, gh, u, v, 0)); fg = max(cg, fl * bilinear3(input.tint, gw, gh, u, v, 1)); fb = max(cb, fl * bilinear3(input.tint, gw, gh, u, v, 2))
                     }
-                    val c = chroma[k]; val s = look.surface * d
+                    val c = chroma[li]; val s = look.surface * d
                     ar += s * c[0] * fr; ag += s * c[1] * fg; ab += s * c[2] * fb
                 }
                 if (ar != 0f || ag != 0f || ab != 0f) { f.put(o, r + ar); f.put(o + 1, g + ag); f.put(o + 2, b + ab) }
