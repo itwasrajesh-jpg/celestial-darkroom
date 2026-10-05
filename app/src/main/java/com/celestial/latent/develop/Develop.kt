@@ -193,7 +193,7 @@ object Develop {
      */
     /** The photo's depth, when any light lights surfaces; never stops a develop. */
     private fun sunInput(context: Context, source: Uri, framing: Framing, src: Source, lights: List<RaysLook>, log: (String) -> Unit): Sun.Input? =
-        if (lights.none { Sun.wanted(it) }) null else runCatching { Sun.prepare(context, source, framing, src, log) }
+        if (lights.none { Sun.wanted(it) || Beams.wanted(it) }) null else runCatching { Sun.prepare(context, source, framing, src, log) }
             .getOrElse { t -> Log.e("Latent", "light: could not prepare the depth", t); null }
 
     /**
@@ -210,6 +210,16 @@ object Develop {
             val bounce = if (bounceAmount > 0f && maps.any { it.first.surface > 0f }) Sun.bounce(input, maps, scale, log) else null
             Sun.apply(src, maps, mask, input, log, bounce, bounceAmount)
         }.onFailure { t -> Log.e("Latent", "light: could not light the surfaces", t) }
+    }
+
+    /** The lights' glow in the air, in 3D, in front of everything; a failure is logged and the photo develops without it. */
+    private fun beamsInAir(src: Source, lights: List<RaysLook>, mask: ExposureMap?, fogMask: ExposureMap?, input: Sun.Input?, log: (String) -> Unit) {
+        if (input == null || lights.none { Beams.wanted(it) }) return
+        runCatching {
+            val scale = lights.first().scale
+            val airs = lights.mapNotNull { l -> Beams.air(input, l, scale, fogMask, log)?.let { l to it } }
+            Beams.apply(src, airs, mask, input, log)
+        }.onFailure { t -> Log.e("Latent", "light: could not light the air", t) }
     }
 
     fun openCached(context: Context, source: Uri, isRaw: Boolean, maxEdge: Int, recipe: Recipe, iso: Int,
@@ -249,7 +259,7 @@ object Develop {
             if (raysLook.placed) "${raysLook.key()}:${raysMask?.let { "${it.width}x${it.height}:${it.stops.contentHashCode()}" } ?: "all"}" else "-",
             ExtraLights.key(extraLights),
             // light on surfaces needs the depth model: once it is installed, prepare again
-            if ((listOf(raysLook) + extraLights).any { Sun.wanted(it) }) "sun:${Depth.isReady(context)}" else "-",
+            if ((listOf(raysLook) + extraLights).any { Sun.wanted(it) || Beams.wanted(it) }) "sun:${Depth.isReady(context)}" else "-",
         ).joinToString("|")
         if (working.preparedFor == prep) return working
         working.frameFrom(pristine, framing)
@@ -260,8 +270,10 @@ object Develop {
         sensorNoiseSource(working, recipe, isoUsed, log)
         // the air first — it is in front of the lens — then the lens filter
         fogMask?.let { Fog.apply(working, it, fogLook, log) }
-        for (light in listOf(raysLook) + extraLights) Rays.apply(working, light, raysMask, fogMask, fogLook.amount, log)   // light in the same air
-        sunOnSurfaces(working, listOf(raysLook) + extraLights, raysMask, sunIn, log)    // and the same lights on what they meet
+        // the flat 2D glow only for "through gaps", or when there is no depth to work in 3D
+        for (light in listOf(raysLook) + extraLights) if (sunIn == null || !Beams.wanted(light)) Rays.apply(working, light, raysMask, fogMask, fogLook.amount, log)
+        sunOnSurfaces(working, listOf(raysLook) + extraLights, raysMask, sunIn, log)    // the lights on what they meet
+        beamsInAir(working, listOf(raysLook) + extraLights, raysMask, fogMask, sunIn, log) // and in the air, in front of it all
         lensFilterSource(working, recipe, log)
         fastDiffusionSource(working, recipe, preview = true, softenMask = softenMask, log = log)
         fastPrintDiffusionSource(working, recipe, preview = true, log = log)
@@ -839,8 +851,9 @@ object Develop {
             denoiseSource(s, recipe, iso, log)
             sensorNoiseSource(s, recipe, iso, log)
             fogMask?.let { Fog.apply(s, it, fogLook, log) }
-            for (light in listOf(raysLook) + extraLights) Rays.apply(s, light, raysMask, fogMask, fogLook.amount, log)
+            for (light in listOf(raysLook) + extraLights) if (sunIn == null || !Beams.wanted(light)) Rays.apply(s, light, raysMask, fogMask, fogLook.amount, log)
             sunOnSurfaces(s, listOf(raysLook) + extraLights, raysMask, sunIn, log)
+            beamsInAir(s, listOf(raysLook) + extraLights, raysMask, fogMask, sunIn, log)
             lensFilterSource(s, recipe, log)
             fastDiffusionSource(s, recipe, preview = false, softenMask = softenMask, log = log)
             fastPrintDiffusionSource(s, recipe, preview = false, log = log)

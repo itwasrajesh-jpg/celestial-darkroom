@@ -265,7 +265,7 @@ object Sun {
     }
 
     /** A point in the scene at a place on the picture, at the depth seen there, nudged nearer or farther. */
-    private fun pointAt(sc: Scene, u: Float, v: Float, nudge: Float): FloatArray {
+    internal fun pointAt(sc: Scene, u: Float, v: Float, nudge: Float): FloatArray {
         val z0 = bilinear(sc.Zs, sc.gw, sc.gh, u, v)
         val z = (z0 - 0.012f * sc.far + nudge * 0.25f * sc.far).coerceAtLeast(sc.near * 0.3f)    // just in front of what it sits on
         val x = u * sc.gw; val y = v * sc.gh
@@ -509,7 +509,7 @@ object Sun {
     }
 
     /** Averages with neighbours at a similar depth only: noise goes, edges between depths stay. */
-    private fun depthSmooth(a: FloatArray, Z: FloatArray, gw: Int, gh: Int, radius: Int, depthSigma: Float): FloatArray {
+    internal fun depthSmooth(a: FloatArray, Z: FloatArray, gw: Int, gh: Int, radius: Int, depthSigma: Float): FloatArray {
         val out = FloatArray(gw * gh); val s2 = 2f * (radius / 2f) * (radius / 2f)
         for (y in 0 until gh) for (x in 0 until gw) {
             val i = y * gw + x; val z = Z[i]; var sum = 0f; var wsum = 0f
@@ -541,7 +541,7 @@ object Sun {
         return out
     }
 
-    private fun gauss(a: FloatArray, gw: Int, gh: Int, sigma: Float): FloatArray {
+    internal fun gauss(a: FloatArray, gw: Int, gh: Int, sigma: Float): FloatArray {
         if (sigma <= 0f) return a.copyOf()
         val r = max(1, (3 * sigma).toInt()); val k = FloatArray(2 * r + 1) { val d = (it - r).toFloat(); exp(-d * d / (2 * sigma * sigma)) }
         val ks = k.sum(); for (i in k.indices) k[i] /= ks
