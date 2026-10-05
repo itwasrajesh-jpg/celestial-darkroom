@@ -36,6 +36,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -471,6 +472,7 @@ fun PrintPanel(
                         }
                     },
                     tabs = listOf("COLOUR" to @Composable { FogColourRow(fogLook, picking = fogPicking, onLook = onFogLook, onPick = { fogPicking = !fogPicking }) }),
+                    lookState = fogLook, onRestoreLook = { onFogLook(it as FogLook) }, pickOnTab = 0,
                     // a new colour or amount re-develops the print — it used to wait for the next stroke
                     refreshKey = fogLook)
                 else -> PaintStep(RAYS_SPEC, recipe, raysMap, onRaysMap,
@@ -480,11 +482,38 @@ fun PrintPanel(
                     modifier = Modifier.fillMaxSize(),
                     renderRegion = renderRegionWithMasks?.let { f -> { r, e, m, reg -> f(r, e, all.copy(rays = m), reg) } },
                     pickMode = raysPlacing || !sel.placed,
-                    onPick = { u, v -> raysPlacing = false; setSel(sel.copy(u = u, v = v, u2 = Float.NaN, v2 = Float.NaN).withDefaults()) },
+                    onPick = { u, v ->
+                        raysPlacing = false
+                        // placed for the first time: start as a lamp — on surfaces, no old-style glow in the air
+                        val first = !sel.placed
+                        val placed = sel.copy(u = u, v = v, u2 = Float.NaN, v2 = Float.NaN).let {
+                            if (first) it.copy(amount = 0f, surface = maxOf(it.surface, 1f), reach = 0.3f, reveal = maxOf(it.reveal, 0.3f)) else it
+                        }
+                        setSel(placed.withDefaults())
+                    },
+                    pickOnTab = 0,
+                    // one history for the brush and every light; compare shows the print with all lights off
+                    lookState = lights,
+                    onRestoreLook = { st ->
+                        @Suppress("UNCHECKED_CAST") val ls = st as List<RaysLook>
+                        onRaysLook(ls.first()); onExtraLights(ls.drop(1))
+                        selected = selected.coerceIn(0, ls.size - 1)
+                    },
+                    renderBefore = { r, e -> renderWithMasks(r, e, all.copy(raysOn = false)) },
                     // while a handle is dragged only the outline moves; the print re-develops on release
                     handlesFor = { a -> raysHandles(raysLive, a) },
                     onHandleDrag = { i, u, v, final, a -> raysLive = raysDragged(raysLive, i, u, v, a); if (final) setSel(raysLive) },
-                    overlayDraw = { a, toScreen -> drawRaysLight(raysLive, a, toScreen) },
+                    overlayDraw = { a, toScreen ->
+                        // the other lights: a small ring each, so you can see where they all are
+                        lights.forEachIndexed { i, l ->
+                            if (i != selected && l.placed) {
+                                val c = toScreen(l.u, l.v)
+                                drawCircle(LatentColors.Amber.copy(alpha = 0.55f), 7.dp.toPx(), c, style = Stroke(1.5.dp.toPx()))
+                                drawCircle(LatentColors.Amber.copy(alpha = 0.55f), 2.dp.toPx(), c)
+                            }
+                        }
+                        drawRaysLight(raysLive, a, toScreen)
+                    },
                     tabs = listOf(
                         "LIGHT" to @Composable {
                             RaysLightTab(sel, placing = raysPlacing || !sel.placed, onLook = { setSel(it) }, onPlace = { raysPlacing = !raysPlacing },
@@ -496,7 +525,10 @@ fun PrintPanel(
                                     selected = extraLights.size + 1; raysPlacing = true
                                 },
                                 onRemove = {
-                                    if (selected >= 1) { onExtraLights(extraLights.filterIndexed { i, _ -> i != selected - 1 }); selected = 0; raysPlacing = false }
+                                    if (selected >= 1) onExtraLights(extraLights.filterIndexed { i, _ -> i != selected - 1 })
+                                    else if (extraLights.isNotEmpty()) { onRaysLook(extraLights.first()); onExtraLights(extraLights.drop(1)) }
+                                    else onRaysLook(RaysLook())                       // light 1 alone: cleared, ready to place again
+                                    selected = 0; raysPlacing = false
                                 })
                         },
                         "SURFACE" to @Composable {
@@ -952,7 +984,7 @@ private fun RaysLightTab(
                 for (i in 0 until count) Chip("${i + 1}", on = i == selected) { onSelect(i) }
                 if (count < 1 + com.celestial.latent.develop.ExtraLights.MAX) Chip("+", on = false) { onAdd() }
             }
-            if (selected >= 1) Chip("remove", on = false) { onRemove() }
+            if (selected >= 1 || look.placed) Chip("remove", on = false) { onRemove() }
         }
         // the kind of light, as in 3D software; switching keeps where it is
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -1184,6 +1216,16 @@ private fun PaintStep(
     onHandleDrag: ((Int, Float, Float, Boolean, Float) -> Unit)? = null,
     /** Draws the light's shape over the print: given the picture's shape and a picture → screen mapping. */
     overlayDraw: (androidx.compose.ui.graphics.drawscope.DrawScope.(Float, (Float, Float) -> Offset) -> Unit)? = null,
+    /**
+     * The step's own settings besides the mask (the lights, the fog's colour). Kept in the same
+     * history as the brush, so one undo covers everything in the step, on every tab.
+     */
+    lookState: Any? = null,
+    onRestoreLook: ((Any?) -> Unit)? = null,
+    /** Tapping the photo places or picks only on this tab (LIGHT, the fog's COLOUR); elsewhere it paints or does nothing. */
+    pickOnTab: Int? = null,
+    /** The print without this step's effect, for the compare button. Null: without this step's mask. */
+    renderBefore: ((Recipe, Int) -> Bitmap?)? = null,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -1212,9 +1254,18 @@ private fun PaintStep(
     var stroke by remember { mutableStateOf<FloatArray?>(null) }
     var strokeTick by remember { mutableStateOf(0) }
     val overlay = remember { Animatable(0f) }
-    val undo = remember { ArrayDeque<ExposureMap?>() }
-    val redo = remember { ArrayDeque<ExposureMap?>() }
+    // one history for the mask and the step's own settings: (mask, settings) before each change
+    val undo = remember { ArrayDeque<Pair<ExposureMap?, Any?>>() }
+    val redo = remember { ArrayDeque<Pair<ExposureMap?, Any?>>() }
     var historyTick by remember { mutableStateOf(0) }
+    var lastLook by remember { mutableStateOf(lookState) }
+    // a change to the step's settings from its controls is remembered like a brush stroke
+    LaunchedEffect(lookState) {
+        if (lookState != lastLook) {
+            undo.addLast(working?.copy() to lastLook); if (undo.size > 30) undo.removeFirst()
+            redo.clear(); historyTick++; lastLook = lookState
+        }
+    }
 
     // Develop the print with the mask, a moment after the last stroke (so quick strokes coalesce).
     LaunchedEffect(version, refreshKey) {
@@ -1252,9 +1303,35 @@ private fun PaintStep(
 
     /** Commit a change to the mask: remember the old one for undo, show and save the new. */
     fun commit(next: ExposureMap?) {
-        undo.addLast(working?.copy()); if (undo.size > 30) undo.removeFirst()
+        undo.addLast(working?.copy() to lastLook); if (undo.size > 30) undo.removeFirst()
         redo.clear(); historyTick++
         working = next; onMap(next); version++
+    }
+
+    /** Back one change — a stroke or a setting — restoring the mask and the step's settings together. */
+    fun undoStep() {
+        if (undo.isEmpty()) return
+        redo.addLast(working?.copy() to lastLook); val (m, l) = undo.removeLast(); historyTick++
+        working = m; onMap(m); version++
+        if (l != lastLook) { lastLook = l; onRestoreLook?.invoke(l) }
+    }
+    fun redoStep() {
+        if (redo.isEmpty()) return
+        undo.addLast(working?.copy() to lastLook); val (m, l) = redo.removeLast(); historyTick++
+        working = m; onMap(m); version++
+        if (l != lastLook) { lastLook = l; onRestoreLook?.invoke(l) }
+    }
+
+    // compare: the print without this step's effect, prepared once the print is ready (and again if the recipe changes)
+    var comparing by remember { mutableStateOf(false) }
+    var before by remember { mutableStateOf<Bitmap?>(null) }
+    var beforeFor by remember { mutableStateOf<Recipe?>(null) }
+    val beforeNow by rememberUpdatedState(renderBefore ?: { r: Recipe, e: Int -> renderWith(r, e, null) })
+    LaunchedEffect(developing, recipe) {
+        if (developing || (before != null && beforeFor == recipe)) return@LaunchedEffect
+        val r = current
+        val b = withContext(Dispatchers.Default) { beforeNow(r, DB_EDGE) }
+        if (isActive && b != null) { before = b; beforeFor = r }
     }
 
     /** Stamp the brush into the current stroke at a picture position (0..1 across and down). */
@@ -1339,6 +1416,8 @@ private fun PaintStep(
     // The step's own tab, when it has tabs; painting only happens on BRUSH, so a touch in another
     // tab (placing or aiming a light) never paints by accident.
     var tab by remember { mutableStateOf(0) }
+    val tabNow by rememberUpdatedState(tab)
+    val pickTab by rememberUpdatedState(pickOnTab)
     val paintNow by rememberUpdatedState(tabs == null || tab == tabs.size)
     /** The brush controls: what you paint with, how strongly, and the way back. */
     val brushRows: @Composable () -> Unit = {
@@ -1387,14 +1466,8 @@ private fun PaintStep(
             )
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 @Suppress("UNUSED_VARIABLE") val h = historyTick   // read, so the buttons follow the history
-                Chip("undo", on = false, enabled = undo.isNotEmpty()) {
-                    redo.addLast(working?.copy()); val prev = undo.removeLast(); historyTick++
-                    working = prev; onMap(prev); version++
-                }
-                Chip("redo", on = false, enabled = redo.isNotEmpty()) {
-                    undo.addLast(working?.copy()); val next = redo.removeLast(); historyTick++
-                    working = next; onMap(next); version++
-                }
+                Chip("undo", on = false, enabled = undo.isNotEmpty()) { undoStep() }
+                Chip("redo", on = false, enabled = redo.isNotEmpty()) { redoStep() }
                 Chip("clear", on = false, enabled = working?.isBlank == false) { commit(null) }
             }
         }
@@ -1418,7 +1491,8 @@ private fun PaintStep(
                         val (u0, v0) = at(down.position)
                         // eyedropper: this tap picks a colour from the picture instead of painting
                         val pick = pickNow
-                        if (picking && pick != null) {
+                        // only on its own tab (a brush stroke on BRUSH must never place a light)
+                        if (picking && pick != null && (tabs == null || pickTab == null || tabNow == pickTab)) {
                             if (u0 in 0f..1f && v0 in 0f..1f) { Haptics.tick(context); pick(u0, v0) }
                             down.consume()
                             return@awaitEachGesture
@@ -1501,7 +1575,8 @@ private fun PaintStep(
                 clipRect {
                     drawRect(Color.Black.copy(alpha = 0.45f), Offset(r.left - border + 4.dp.toPx(), r.top - border + 8.dp.toPx()), Size(r.width + 2 * border, r.height + 2 * border))
                     drawRect(PAPER, Offset(r.left - border, r.top - border), Size(r.width + 2 * border, r.height + 2 * border))
-                    print?.let { drawImage(it.asImageBitmap(), dstOffset = IntOffset(r.left.toInt(), r.top.toInt()), dstSize = IntSize(r.width.toInt(), r.height.toInt())) }
+                    val shown = if (comparing && before != null) before else print
+                    shown?.let { drawImage(it.asImageBitmap(), dstOffset = IntOffset(r.left.toInt(), r.top.toInt()), dstSize = IntSize(r.width.toInt(), r.height.toInt())) }
                     if (print == null) drawRect(PAPER, Offset(r.left, r.top), Size(r.width, r.height))
                     // the zoomed-in part, developed sharp, laid exactly over itself
                     val tile = detail
@@ -1511,9 +1586,9 @@ private fun PaintStep(
                         drawImage(tile.second.asImageBitmap(), dstOffset = IntOffset(a.x.toInt(), a.y.toInt()),
                             dstSize = IntSize((c.x - a.x).toInt(), (c.y - a.y).toInt()))
                     }
-                    // the light's shape, and its handles to drag
-                    overlayDraw?.invoke(this, aspect) { mu, mv -> zoom.toScreen(mu, mv, fit, size.width, size.height) }
-                    handlesFor?.invoke(aspect)?.forEach { (hu, hv) ->
+                    // the light's shape, and its handles to drag (hidden while comparing: the photo alone)
+                    if (!comparing) overlayDraw?.invoke(this, aspect) { mu, mv -> zoom.toScreen(mu, mv, fit, size.width, size.height) }
+                    if (!comparing) handlesFor?.invoke(aspect)?.forEach { (hu, hv) ->
                         val c = zoom.toScreen(hu, hv, fit, size.width, size.height)
                         drawCircle(Color(0xCC161615), 10.dp.toPx(), c)
                         drawCircle(LatentColors.Amber, 10.dp.toPx(), c, style = Stroke(2.dp.toPx()))
@@ -1531,6 +1606,17 @@ private fun PaintStep(
                         dstSize = IntSize(r.width.toInt(), r.height.toInt()), alpha = ov)
                 }
             }
+            // Compare: hold to see the print without this step's effect — the lights off, the fog
+            // gone, the dodging undone — and let go to come back. A label, never a hidden gesture:
+            // on the photo itself a touch already places, drags or paints.
+            Text(
+                when { comparing && before == null -> "developing…"; comparing -> "BEFORE"; else -> "hold: before" },
+                color = if (comparing) LatentColors.AmberInk else LatentColors.Text, fontSize = 10.sp, letterSpacing = 1.sp,
+                modifier = Modifier.align(Alignment.TopEnd).padding(8.dp).clip(RoundedCornerShape(999.dp))
+                    .background(if (comparing) LatentColors.Amber else Color(0xCC161615))
+                    .pointerInput(Unit) { detectTapGestures(onPress = { comparing = true; tryAwaitRelease(); comparing = false }) }
+                    .padding(horizontal = 10.dp, vertical = 5.dp),
+            )
             if (zoom.zoomed) Text("${String.format(Locale.US, "%.1f", zoom.scale)}×  · " + (if (sharpening) "sharpening… · fit" else "fit"), color = LatentColors.AmberInk, fontSize = 10.sp,
                 modifier = Modifier.align(Alignment.TopStart).padding(6.dp).clip(RoundedCornerShape(999.dp)).background(LatentColors.Amber)
                     .pointerInput(Unit) { detectTapGestures(onTap = { Haptics.tick(context); zoom.reset(); detail = null }) }
@@ -1539,7 +1625,8 @@ private fun PaintStep(
         if (tabs == null) brushRows() else {
             // Tabs: one group of controls at a time, in a space of fixed height, so the photo
             // keeps its size whichever tab is open (a long tab scrolls within the space).
-            Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 4.dp), horizontalArrangement = Arrangement.spacedBy(18.dp)) {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 4.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.Top) {
+            Row(horizontalArrangement = Arrangement.spacedBy(18.dp)) {
                 (tabs.map { it.first } + "BRUSH").forEachIndexed { i, name ->
                     val on = i == tab
                     val bar by animateFloatAsState(if (on) 1f else 0f, tween(220), label = "tab")
@@ -1548,6 +1635,16 @@ private fun PaintStep(
                         Box(Modifier.padding(top = 3.dp).height(2.dp).width((28 * bar).dp).clip(RoundedCornerShape(1.dp)).background(LatentColors.Amber))
                     }
                 }
+            }
+            // undo and redo on every tab: one history for the brush and the step's settings
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                key(historyTick) {
+                    Text("undo", color = if (undo.isNotEmpty()) LatentColors.Amber else LatentColors.TextDim, fontSize = 11.sp,
+                        modifier = Modifier.pointerInput(Unit) { detectTapGestures(onTap = { undoStep() }) })
+                    Text("redo", color = if (redo.isNotEmpty()) LatentColors.Amber else LatentColors.TextDim, fontSize = 11.sp,
+                        modifier = Modifier.pointerInput(Unit) { detectTapGestures(onTap = { redoStep() }) })
+                }
+            }
             }
             Box(Modifier.fillMaxWidth().height(CONTROLS_HEIGHT)) {
                 Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
