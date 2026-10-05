@@ -128,6 +128,7 @@ private fun Root() {
             onOpenReport = { screen = "report" },
             onOpenVendor = { screen = "vendor" },
             onOpenProbe = { screen = "probe" },
+            onOpenDepth = { screen = "depth" },
             onOpenLogs = { screen = "logs" },
             onOpenExtension = { screen = "extension" },
             onOpenAbout = { screen = "about" },
@@ -157,6 +158,7 @@ private fun Root() {
         "logs" -> LogScreen(onBack = { screen = "settings" })
         "about" -> AboutScreen(onBack = { screen = "settings" })
         "probe" -> ProbeScreen(settings = settings, onBack = { screen = "settings" })
+        "depth" -> DepthTestScreen(onBack = { screen = "settings" })
         "vendor" -> VendorScreen(
             settings = settings,
             exposedKeys = controllerRef?.exposedVendorKeys() ?: emptyList(),

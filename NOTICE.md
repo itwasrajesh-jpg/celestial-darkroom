@@ -54,3 +54,15 @@ Local changes to the engine are kept as patch files in this repository's
 
 "Celestial Darkroom" and "Celestial" are names, not licensed code: GPLv3 covers the software,
 not the naming of it.
+
+## Depth model (downloaded on first use, not part of the app)
+
+The depth model is **Depth Anything V2 Small** by Lihe Yang, Bingyi Kang, Zilong Huang, Zhen Zhao,
+Xiaogang Xu, Jiashi Feng and Hengshuang Zhao — https://github.com/DepthAnything/Depth-Anything-V2 —
+licensed under the Apache License 2.0 (the Small model only; the larger models are not used, as
+they are licensed for non-commercial use). The ONNX export is by fabio-sim —
+https://github.com/fabio-sim/Depth-Anything-ONNX — also Apache-2.0. For this app its weights are
+stored at half size (computed at full precision) and it is hosted as a release asset of this
+repository. Apache-2.0 is compatible with this app's GPLv3.
+
+It runs with **ONNX Runtime** (Microsoft, MIT License) — https://github.com/microsoft/onnxruntime
