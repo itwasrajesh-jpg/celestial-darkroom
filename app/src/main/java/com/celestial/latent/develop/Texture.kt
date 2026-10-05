@@ -45,6 +45,14 @@ data class Texture(
      * reading tops out, and Cinebloom and the fog filter both reach the top.
      */
     val family: String? = null,
+    /**
+     * How sharp the references look ([Softness]): the width of their sharpest clean edges, as a
+     * fraction of the frame's long side (NaN = not measured), and any sharpening halo.
+     */
+    val edgeWidth: Float = Float.NaN,
+    val halo: Float = 0f,
+    /** The lens blur that makes the test shot as soft as the references (µm on the film; 0 = none). */
+    val matchedBlurUm: Float = 0f,
 ) {
 
     /** The filter family: the known one, else suggested from how far the bloom reaches. */
@@ -73,7 +81,7 @@ data class Texture(
         diffusionStrength = bloomAmount,
         glare = glarePercent > 0.05f,
         glarePercent = glarePercent,
-    )
+    ).let { if (matchedBlurUm > 0f) it.copy(lensBlurUm = matchedBlurUm) else it }
 
     companion object {
         /**
@@ -123,6 +131,9 @@ data class Texture(
                 grainMeasured = withGrain.isNotEmpty(),
                 // a known filter survives averaging only when every reference agrees on it
                 family = list.map { it.family }.distinct().singleOrNull(),
+                // sharpness over the references that could show it
+                edgeWidth = list.map { it.edgeWidth }.filter { !it.isNaN() }.let { if (it.isEmpty()) Float.NaN else it.average().toFloat() },
+                halo = list.filter { !it.edgeWidth.isNaN() }.let { m -> if (m.isEmpty()) 0f else m.map { it.halo }.average().toFloat() },
             )
         }
 

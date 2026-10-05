@@ -45,6 +45,8 @@ object LookSession {
     var clearShares: Map<Uri, Float> = emptyMap()
     /** The screen's air switch: on, those references are measured past their air. */
     var lookPastAir: Boolean = true
+    /** How sharp the test shot is (edge width as a fraction of its long side), NaN until measured. */
+    var testSharpness: Float = Float.NaN
     var testIsRaw: Boolean = true
     var result: Reconstruct.Attempt? = null
     var resultBitmap: Bitmap? = null
@@ -64,7 +66,7 @@ object LookSession {
         atmospheres = emptyMap()
         useAtmosphere = true
         atmosphereReport = ""
-        clearPrints = emptyMap(); clearShares = emptyMap(); lookPastAir = true
+        clearPrints = emptyMap(); clearShares = emptyMap(); lookPastAir = true; testSharpness = Float.NaN
         testIsRaw = true
         result = null
         resultBitmap = null

@@ -106,6 +106,21 @@ fun LookScreen(settings: AppSettings, onBack: () -> Unit) {
      * A piece of the reference at its original resolution. Grain is fine detail and does not
      * survive the downscaling used for everything else, so it has to be measured here.
      */
+    /**
+     * The middle of a picture at its own full resolution, for sharpness, with the picture's long
+     * side: film's gentle softness is finer than a shrunken copy can show.
+     */
+    fun sharpCropOf(uri: Uri): Pair<Bitmap, Int>? = runCatching {
+        context.contentResolver.openInputStream(uri)?.use { input ->
+            val decoder = android.graphics.BitmapRegionDecoder.newInstance(input, false) ?: return@use null
+            val side = minOf(decoder.width, decoder.height, 768)
+            val left = (decoder.width - side) / 2; val top = (decoder.height - side) / 2
+            val crop = decoder.decodeRegion(android.graphics.Rect(left, top, left + side, top + side), null)
+            val long = maxOf(decoder.width, decoder.height); decoder.recycle()
+            crop?.let { it to long }
+        }
+    }.getOrNull()
+
     fun grainCropOf(uri: Uri): Bitmap? = runCatching {
         context.contentResolver.openInputStream(uri)?.use { input ->
             // newInstance can return null for a file it cannot open in regions.
@@ -151,8 +166,13 @@ fun LookScreen(settings: AppSettings, onBack: () -> Unit) {
                     val crop = grainCropOf(uri)
                     // Developed here? Then its texture is known exactly from the note inside it —
                     // including a filter (like fog) that measuring cannot tell apart.
-                    addedTextures += com.celestial.latent.develop.Atmosphere.textureOf(context, uri)
+                    val tex = com.celestial.latent.develop.Atmosphere.textureOf(context, uri)
                         ?: com.celestial.latent.develop.Texture.of(bmp, crop)
+                    // and how sharp it looks, measured close up, as a fraction of its long side
+                    val sharp = sharpCropOf(uri)?.let { (piece, long) ->
+                        com.celestial.latent.develop.Softness.of(piece)?.let { r -> r.width / long to r.halo }.also { piece.recycle() }
+                    }
+                    addedTextures += if (sharp != null) tex.copy(edgeWidth = sharp.first, halo = sharp.second) else tex
                     crop?.recycle()
                     maps[uri] = bmp
                 }
@@ -173,6 +193,20 @@ fun LookScreen(settings: AppSettings, onBack: () -> Unit) {
     // The test shot is measured as soon as it is chosen, so the screen can say what it and the
     // references have in common before anything is built.
     var testFingerprint by remember { mutableStateOf<Fingerprint?>(null) }
+    var testSharpness by remember { mutableStateOf(com.celestial.latent.develop.LookSession.testSharpness) }
+    /** How sharp the test shot already is, measured close up the same way (a RAW decoded at 2400 px). */
+    fun measureTestSharpness(uri: Uri, raw: Boolean) {
+        testSharpness = Float.NaN
+        Thread {
+            testSharpness = runCatching {
+                if (raw) com.celestial.latent.develop.Develop.openRaw(context, uri, 2400).use { src ->
+                    com.celestial.latent.develop.Softness.of(src)?.let { it.width / maxOf(src.width, src.height) } ?: Float.NaN
+                } else sharpCropOf(uri)?.let { (piece, long) ->
+                    (com.celestial.latent.develop.Softness.of(piece)?.let { it.width / long } ?: Float.NaN).also { piece.recycle() }
+                } ?: Float.NaN
+            }.getOrElse { Float.NaN }
+        }.start()
+    }
     val pickTest = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
         runCatching { context.contentResolver.takePersistableUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION) }
@@ -185,6 +219,7 @@ fun LookScreen(settings: AppSettings, onBack: () -> Unit) {
         testShot = uri
         status = if (testIsRaw) "test shot chosen (RAW)" else "test shot chosen (JPEG)"
         if (!testIsRaw) Thread { thumbnailOf(uri)?.let { testFingerprint = Fingerprint.of(it) } }.start()
+        measureTestSharpness(uri, testIsRaw)
     }
 
     var progress by remember { mutableStateOf(com.celestial.latent.develop.LookSession.progress) }
@@ -209,7 +244,9 @@ fun LookScreen(settings: AppSettings, onBack: () -> Unit) {
     /** Re-develops the test shot with the fit's emulsion plus whatever has been adjusted. */
     // What the references say about grain, halation, bloom and glare. Declared here rather than
     // further down in the layout, because the re-render and the save both need it.
-    val texture = if (textures.isEmpty()) null else com.celestial.latent.develop.Texture.average(textures)
+    val texture = if (textures.isEmpty()) null else com.celestial.latent.develop.Texture.average(textures).let {
+        it.copy(matchedBlurUm = com.celestial.latent.develop.Softness.matchingBlurUm(it.edgeWidth, testSharpness, com.celestial.latent.develop.Recipe().filmFormatMm))
+    }
 
     fun rerender() {
         val best = result ?: return
@@ -309,7 +346,7 @@ fun LookScreen(settings: AppSettings, onBack: () -> Unit) {
                         com.celestial.latent.develop.LookSession.clear()
                         references = emptyList(); textures = emptyList(); thumbs = emptyMap()
                         atmospheres = emptyMap(); useAtmosphere = true; atmosphereReport = ""
-                        clearPrints = emptyMap(); clearShares = emptyMap(); lookPastAir = true
+                        clearPrints = emptyMap(); clearShares = emptyMap(); lookPastAir = true; testSharpness = Float.NaN
                         testShot = null; result = null; resultBitmap = null; progress = null; saved = ""
                         tweak = com.celestial.latent.develop.Tweak()
                     }).padding(horizontal = 8.dp, vertical = 4.dp),
@@ -417,10 +454,10 @@ fun LookScreen(settings: AppSettings, onBack: () -> Unit) {
         // Everything the screen holds is mirrored into the session, so a back gesture does not
     // throw away a set of references and a fit that took minutes.
     LaunchedEffect(references, textures, thumbs, testShot, testIsRaw, result, resultBitmap, progress, saved, tweak, atmospheres, useAtmosphere, atmosphereReport,
-        clearPrints, clearShares, lookPastAir) {
+        clearPrints, clearShares, lookPastAir, testSharpness) {
         com.celestial.latent.develop.LookSession.let { s ->
             s.references = references; s.textures = textures; s.thumbs = thumbs
-            s.clearPrints = clearPrints; s.clearShares = clearShares; s.lookPastAir = lookPastAir
+            s.clearPrints = clearPrints; s.clearShares = clearShares; s.lookPastAir = lookPastAir; s.testSharpness = testSharpness
             s.atmospheres = atmospheres; s.useAtmosphere = useAtmosphere; s.atmosphereReport = atmosphereReport
             s.testShot = testShot; s.testIsRaw = testIsRaw
             s.result = result; s.resultBitmap = resultBitmap; s.progress = progress; s.saved = saved
@@ -433,6 +470,16 @@ fun LookScreen(settings: AppSettings, onBack: () -> Unit) {
             Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(LatentColors.Surface).padding(13.dp)) {
                 Reading("grain", if (!t.grainMeasured) "left to the film — references too small to show it" else (if (t.grainFineness > 0.55f) "fine · " else "coarse · ") + "%.2f".format(t.grainAmount))
                 Reading("halation", (if (t.halationAmount > 0.8f) "strong · " else "gentle · ") + "%.2f".format(t.halationAmount))
+                Reading("sharpness", if (t.edgeWidth.isNaN()) "not measured — no clean edges to read" else {
+                    // as thousandths of the frame's long side: how wide its sharpest edges are
+                    "edges %.2f‰".format(t.edgeWidth * 1000f) +
+                        (if (testSharpness.isNaN()) "" else " · your camera %.2f‰".format(testSharpness * 1000f)) +
+                        (when {
+                            testSharpness.isNaN() -> ""
+                            t.matchedBlurUm > 0f -> " → lens blur %.0f µm".format(t.matchedBlurUm)
+                            else -> " → yours is as soft already, or the references are crisper: left as is"
+                        }) + (if (t.halo > 0.03f) " · sharpened look (halos)" else "")
+                })
                 Reading("bloom", t.bloomFamily.replace('_', ' ') + " · " + "%.2f".format(t.bloomAmount))
                 Reading("veiling glare", "%.1f%%".format(t.glarePercent))
                 Text(
