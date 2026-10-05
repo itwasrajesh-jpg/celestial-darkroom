@@ -39,6 +39,12 @@ object LookSession {
     var useAtmosphere: Boolean = true
     /** What the atmosphere lookup found, or why not — kept so it survives leaving the screen. */
     var atmosphereReport: String = ""
+    /** Outside references with air in them (mist, haze): each one's fingerprint measured only where the air is clear. */
+    var clearPrints: Map<Uri, Fingerprint> = emptyMap()
+    /** How much of each of those was clear enough to measure from. */
+    var clearShares: Map<Uri, Float> = emptyMap()
+    /** The screen's air switch: on, those references are measured past their air. */
+    var lookPastAir: Boolean = true
     var testIsRaw: Boolean = true
     var result: Reconstruct.Attempt? = null
     var resultBitmap: Bitmap? = null
@@ -58,6 +64,7 @@ object LookSession {
         atmospheres = emptyMap()
         useAtmosphere = true
         atmosphereReport = ""
+        clearPrints = emptyMap(); clearShares = emptyMap(); lookPastAir = true
         testIsRaw = true
         result = null
         resultBitmap = null

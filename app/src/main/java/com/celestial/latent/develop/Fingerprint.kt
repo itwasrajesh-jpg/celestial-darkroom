@@ -176,6 +176,38 @@ data class Fingerprint(
             2.0f, 2.0f, 1.2f, 1.4f,            // skin most of all, then foliage
         )
 
+        /**
+         * Each figure in words, for a film that comes out higher on it than the references, then lower.
+         * Signs as measured: warmth is red over blue, green is green over magenta, roll-off rising
+         * means gentler highlights, the saturation slope rising means colour strengthening into the
+         * brights, skin hue rising means yellower, foliage hue rising means bluer greens.
+         */
+        private val WORDS = listOf(
+            "blacks more lifted" to "blacks deeper", "shadows lighter" to "shadows darker", "mid-tones lighter" to "mid-tones darker",
+            "highlights brighter" to "highlights duller", "whites brighter" to "whites greyer",
+            "more contrast" to "less contrast", "highlights roll off more gently" to "highlights clip more abruptly",
+            "greys warmer" to "greys cooler", "greys greener" to "greys more magenta",
+            "shadows warmer" to "shadows cooler", "shadows greener" to "shadows more magenta",
+            "highlights warmer" to "highlights cooler", "highlights greener" to "highlights more magenta",
+            "more saturated" to "less saturated", "colour stronger in the brights" to "colour fading in the brights",
+            "skin more yellow" to "skin more red", "skin more saturated" to "skin paler",
+            "greens bluer" to "greens yellower", "greens more saturated" to "greens duller",
+        )
+
+        /**
+         * What sets a film apart from the references, biggest first, in plain words: the figures the
+         * search itself compares (the same weights, only what both can show), each in its direction.
+         * Only the ones that matter — at least a third of the biggest difference — and at most [limit].
+         */
+        fun differences(candidate: Fingerprint, reference: Fingerprint, judgeable: FloatArray?, limit: Int = 3): List<String> {
+            val r = candidate.residuals(reference, judgeable)
+            val order = r.indices.sortedByDescending { kotlin.math.abs(r[it]) }
+            val biggest = kotlin.math.abs(r[order.first()])
+            if (biggest < 0.04f) return emptyList()
+            return order.filter { kotlin.math.abs(r[it]) >= max(0.04f, 0.33f * biggest) }.take(limit)
+                .map { if (r[it] > 0f) WORDS[it].first else WORDS[it].second }
+        }
+
         /** What can fairly be judged between a reference and an undeveloped test shot. */
         fun judgeable(reference: Fingerprint, testShot: Fingerprint): FloatArray =
             FloatArray(LABELS.size) { i ->
@@ -185,10 +217,14 @@ data class Fingerprint(
         /** Averages a set of fingerprints — how a reference set becomes one target. */
         fun average(list: List<Fingerprint>): Fingerprint {
             require(list.isNotEmpty())
-            val n = list.size.toFloat()
-            val sums = FloatArray(LABELS.size)
-            for (f in list) f.asList().forEachIndexed { i, v -> sums[i] += v }
-            val a = FloatArray(LABELS.size) { sums[it] / n }
+            // Each figure weighted by its evidence. A reference with no skin in it records skin hue as 0 —
+            // "nothing measured", not "red" — and a plain mean pulled the set's skin towards red; a hazy
+            // reference's tones describe only its clear part. With full evidence everywhere (the usual
+            // case) this is exactly the plain mean, as before.
+            val sums = FloatArray(LABELS.size); val weights = FloatArray(LABELS.size)
+            for (f in list) f.asList().forEachIndexed { i, v -> val w = f.coverage.getOrElse(i) { 1f }; sums[i] += v * w; weights[i] += w }
+            val plain = FloatArray(LABELS.size).also { m -> for (f in list) f.asList().forEachIndexed { i, v -> m[i] += v / list.size } }
+            val a = FloatArray(LABELS.size) { if (weights[it] > 1e-4f) sums[it] / weights[it] else plain[it] }
             return Fingerprint(
                 a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8], a[9], a[10],
                 a[11], a[12], a[13], a[14], a[15], a[16], a[17], a[18],
@@ -210,16 +246,22 @@ data class Fingerprint(
          * that happens to be a dark photograph should not make the look darker, only the
          * relationships between its tones should count.
          */
-        fun of(bmp: Bitmap): Fingerprint {
+        fun of(bmp: Bitmap, clear: BooleanArray? = null): Fingerprint {
             val step = max(1, max(bmp.width, bmp.height) / 320)
             val n = (bmp.width / step) * (bmp.height / step)
             val lum = FloatArray(n)
             val r = FloatArray(n); val g = FloatArray(n); val b = FloatArray(n)
             var i = 0
+            // [clear] (from [Haze.read]): one flag per grid position — false where air is in front,
+            // and the film is not measured there. The grid position is counted apart from the kept
+            // samples, since the two part ways as soon as one is skipped.
+            var at = 0
             var y = 0
-            while (y < bmp.height && i < n) {
+            while (y < bmp.height && at < n) {
                 var x = 0
-                while (x < bmp.width && i < n) {
+                while (x < bmp.width && at < n) {
+                    if (clear != null && !clear.getOrElse(at) { true }) { at++; x += step; continue }
+                    at++
                     val p = bmp.getPixel(x, y)
                     val rr = ((p shr 16) and 0xFF) / 255f
                     val gg = ((p shr 8) and 0xFF) / 255f
@@ -307,6 +349,10 @@ data class Fingerprint(
             // contrast are always measurable; the rest depend on what is actually in the frame.
             val total = count.toFloat().coerceAtLeast(1f)
             val cover = FloatArray(LABELS.size) { 1f }
+            // Measured past its air: the spread of tones (shadows … roll-off) describes only the clear
+            // part of the scene — mostly foliage, say, without the bright clouds — so it counts in
+            // proportion. The black point and the colours are the film's, and stay fully trusted.
+            if (clear != null) { val share = (count.toFloat() / at.coerceAtLeast(1)).coerceIn(0f, 1f); for (k in 1..6) cover[k] = share }
             // How much of the picture was actually neutral, not a fixed guess. This was pinned
             // at a quarter regardless, and since coverage is square-rooted before weighting, the
             // measure whose whole job is catching a colour cast was running at half strength.

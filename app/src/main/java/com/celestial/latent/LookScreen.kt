@@ -74,6 +74,11 @@ fun LookScreen(settings: AppSettings, onBack: () -> Unit) {
     /** A full-size develop of the test shot is under way. */
     var fullRunning by remember { mutableStateOf(false) }
     var atmosphereReport by remember { mutableStateOf(com.celestial.latent.develop.LookSession.atmosphereReport) }
+    var clearPrints by remember { mutableStateOf(com.celestial.latent.develop.LookSession.clearPrints) }
+    var clearShares by remember { mutableStateOf(com.celestial.latent.develop.LookSession.clearShares) }
+    var lookPastAir by remember { mutableStateOf(com.celestial.latent.develop.LookSession.lookPastAir) }
+    /** What the film is matched to, per reference: past its air when it had any and the switch is on. */
+    fun printsForMatch(): List<Fingerprint> = references.map { (uri, fp) -> if (lookPastAir) clearPrints[uri] ?: fp else fp }
     /** The air the film is matched with: the first reference that has any, when the switch is on. */
     fun activeAtmosphere(): com.celestial.latent.develop.Atmosphere? = if (useAtmosphere) atmospheres.values.firstOrNull() else null
     var status by remember { mutableStateOf("") }
@@ -127,6 +132,7 @@ fun LookScreen(settings: AppSettings, onBack: () -> Unit) {
             val addedTextures = ArrayList<com.celestial.latent.develop.Texture>()
             val maps = HashMap<Uri, Bitmap>()
             val addedAtmo = HashMap<Uri, com.celestial.latent.develop.Atmosphere>()
+            val addedClear = HashMap<Uri, Fingerprint>(); val addedShares = HashMap<Uri, Float>()
             val lookups = ArrayList<String>()
             uris.forEach { uri ->
                 // Made in this app with fog or light? Then that air is known exactly.
@@ -135,6 +141,11 @@ fun LookScreen(settings: AppSettings, onBack: () -> Unit) {
                 runCatching { context.contentResolver.takePersistableUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION) }
                 thumbnailOf(uri)?.let { bmp ->
                     added += uri to Fingerprint.of(bmp)
+                    // From outside the app (no note of its air)? Then look for mist and haze, and
+                    // measure it again past the air, so the search does not blame the film for it.
+                    if (!addedAtmo.containsKey(uri)) com.celestial.latent.develop.Haze.read(bmp)?.let { h ->
+                        addedClear[uri] = Fingerprint.of(bmp, h.clear); addedShares[uri] = h.clearShare
+                    }
                     // Grain, halation, bloom and glare are read off the picture rather than
                     // searched for: they leave signatures a measurement can find directly.
                     val crop = grainCropOf(uri)
@@ -150,6 +161,7 @@ fun LookScreen(settings: AppSettings, onBack: () -> Unit) {
             textures = textures + addedTextures
             thumbs = thumbs + maps
             atmospheres = atmospheres + addedAtmo
+            clearPrints = clearPrints + addedClear; clearShares = clearShares + addedShares
             // what the atmosphere lookup found for these references, shown under them
             atmosphereReport = lookups.distinct().joinToString(" · ")
             status = "${references.size} references"
@@ -254,8 +266,17 @@ fun LookScreen(settings: AppSettings, onBack: () -> Unit) {
         }.start()
     }
 
-    val target = if (references.isEmpty()) null else Fingerprint.average(references.map { it.second })
-    val spread = if (references.size > 1) Fingerprint.spread(references.map { it.second }) else 0f
+    val target = if (references.isEmpty()) null else Fingerprint.average(printsForMatch())
+    // What still sets the closest film apart from the references, measured off its own picture
+    var differences by remember { mutableStateOf<List<String>>(emptyList()) }
+    LaunchedEffect(resultBitmap, target, testFingerprint) {
+        val made = resultBitmap; val tgt = target
+        differences = if (made == null || tgt == null) emptyList() else kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+            val shot = testFingerprint
+            Fingerprint.differences(Fingerprint.of(made), tgt, shot?.let { Fingerprint.judgeable(tgt, it) })
+        }
+    }
+    val spread = if (references.size > 1) Fingerprint.spread(printsForMatch()) else 0f
 
     expanded?.let { bmp ->
         Box(
@@ -288,6 +309,7 @@ fun LookScreen(settings: AppSettings, onBack: () -> Unit) {
                         com.celestial.latent.develop.LookSession.clear()
                         references = emptyList(); textures = emptyList(); thumbs = emptyMap()
                         atmospheres = emptyMap(); useAtmosphere = true; atmosphereReport = ""
+                        clearPrints = emptyMap(); clearShares = emptyMap(); lookPastAir = true
                         testShot = null; result = null; resultBitmap = null; progress = null; saved = ""
                         tweak = com.celestial.latent.develop.Tweak()
                     }).padding(horizontal = 8.dp, vertical = 4.dp),
@@ -373,12 +395,32 @@ fun LookScreen(settings: AppSettings, onBack: () -> Unit) {
                 color = LatentColors.TextDim, fontSize = 11.sp, lineHeight = 15.sp, modifier = Modifier.padding(bottom = 18.dp),
             )
         }
+        // Outside references with mist or haze: found, and measured past it — a misty landscape's
+        // greyed distance is the air, not the film. Off: everything is matched as the film, as before.
+        if (clearShares.isNotEmpty()) {
+            Row(Modifier.fillMaxWidth().padding(bottom = 6.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("AIR", color = LatentColors.TextDim, fontSize = 10.sp, letterSpacing = 2.sp)
+                    Text("found in ${clearShares.size} of ${references.size} — measured from their clear parts (" +
+                        clearShares.values.joinToString(", ") { "${(it * 100).toInt()}%" } + ")",
+                        color = LatentColors.Text, fontSize = 12.sp)
+                }
+                Pill(if (lookPastAir) "on" else "off", accent = lookPastAir) { lookPastAir = !lookPastAir }
+            }
+            Text(
+                if (lookPastAir) "Mist and haze are left out, so they are not mistaken for a faded film. The film's own fade still counts."
+                else "Off: the air is matched as part of the film, as before.",
+                color = LatentColors.TextDim, fontSize = 11.sp, lineHeight = 15.sp, modifier = Modifier.padding(bottom = 18.dp),
+            )
+        }
 
         // Everything the screen holds is mirrored into the session, so a back gesture does not
     // throw away a set of references and a fit that took minutes.
-    LaunchedEffect(references, textures, thumbs, testShot, testIsRaw, result, resultBitmap, progress, saved, tweak, atmospheres, useAtmosphere, atmosphereReport) {
+    LaunchedEffect(references, textures, thumbs, testShot, testIsRaw, result, resultBitmap, progress, saved, tweak, atmospheres, useAtmosphere, atmosphereReport,
+        clearPrints, clearShares, lookPastAir) {
         com.celestial.latent.develop.LookSession.let { s ->
             s.references = references; s.textures = textures; s.thumbs = thumbs
+            s.clearPrints = clearPrints; s.clearShares = clearShares; s.lookPastAir = lookPastAir
             s.atmospheres = atmospheres; s.useAtmosphere = useAtmosphere; s.atmosphereReport = atmosphereReport
             s.testShot = testShot; s.testIsRaw = testIsRaw
             s.result = result; s.resultBitmap = resultBitmap; s.progress = progress; s.saved = saved
@@ -403,8 +445,8 @@ fun LookScreen(settings: AppSettings, onBack: () -> Unit) {
 
         // What the two sets share decides what can be matched at all, so it is worked out and
         // shown before a fit is started rather than left to be discovered in the result.
-        val shared = remember(references, testFingerprint) {
-            val ref = if (references.isEmpty()) null else Fingerprint.average(references.map { it.second })
+        val shared = remember(references, testFingerprint, clearPrints, lookPastAir) {
+            val ref = if (references.isEmpty()) null else Fingerprint.average(printsForMatch())
             val shot = testFingerprint
             if (ref == null || shot == null) emptyList() else {
                 val j = Fingerprint.judgeable(ref, shot)
@@ -484,8 +526,18 @@ fun LookScreen(settings: AppSettings, onBack: () -> Unit) {
             Row(Modifier.fillMaxWidth().padding(bottom = 18.dp), horizontalArrangement = Arrangement.SpaceBetween) {
                 Text("REFERENCE · TAP", color = LatentColors.TextDim, fontSize = 10.sp, letterSpacing = 1.sp)
                 Text(
-                    "CLOSEST · " + com.celestial.latent.develop.Reconstruct.percent(p.best?.distance),
+                    "CLOSEST · " + com.celestial.latent.develop.Reconstruct.verdict(p.best?.distance, spread),
                     color = LatentColors.TextDim, fontSize = 10.sp, letterSpacing = 1.sp,
+                )
+            }
+            // what the score means, and what still sets this film apart, in plain words
+            val d = p.best?.distance
+            if (d != null && spread > 0.001f) {
+                Text(
+                    (if (d <= spread) "As close as your references are to each other — as good as this set allows."
+                    else "Your references differ among themselves by %.2f; this film is %.1f× that.".format(java.util.Locale.US, spread, d / spread)) +
+                        (if (differences.isNotEmpty()) " Still different: " + differences.joinToString(" · ") + "." else ""),
+                    color = LatentColors.TextDim, fontSize = 11.sp, lineHeight = 15.sp, modifier = Modifier.padding(top = 4.dp, bottom = 18.dp),
                 )
             }
         }

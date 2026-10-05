@@ -482,6 +482,18 @@ object Reconstruct {
         return out
     }
 
+    /**
+     * The match, honestly: against how much the references differ among themselves (the set's own
+     * spread, measured the same way). Within it, the film is as close as the references are to one
+     * another — as good as the set allows. A single reference has no spread: then the old figure.
+     */
+    fun verdict(distance: Float?, spread: Float): String = when {
+        distance == null -> "—"
+        spread <= 0.001f -> percent(distance)
+        distance <= spread -> "WITHIN YOUR SET"
+        else -> "%.1f× YOUR SET".format(java.util.Locale.US, distance / spread)
+    }
+
     fun percent(distance: Float?): String =
         if (distance == null) "—"
         else "${(100.0 * Math.exp(-1.2 * distance)).toInt().coerceIn(0, 99)}%"
