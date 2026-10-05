@@ -65,23 +65,28 @@ import kotlinx.coroutines.launch
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun BlackHoleIntro(onDone: () -> Unit) {
+fun BlackHoleIntro(onDone: () -> Unit, persistent: Boolean = false) {
     val context = LocalContext.current
     // 3.6 s the very first time, 2.2 s after
     val duration = remember {
         val p = context.getSharedPreferences("latent_intro", android.content.Context.MODE_PRIVATE)
         val seen = p.getBoolean("blackHoleSeen", false)
         p.edit().putBoolean("blackHoleSeen", true).apply()
-        if (seen) 2.2f else 3.6f
+        // shown on demand, it is always the full version
+        if (seen && !persistent) 2.2f else 3.6f
     }
     var failed by remember { mutableStateOf(false) }
     // no graphics: the old opening, the name developing in
-    if (failed) LaunchOverlay(onDone) else BlackHoleScene(duration, onDone, onFail = { failed = true })
+    if (failed) LaunchOverlay(onDone) else BlackHoleScene(duration, onDone, onFail = { failed = true }, persistent = persistent)
 }
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun BlackHoleScene(duration: Float, onDone: () -> Unit, onFail: () -> Unit) {
+/**
+ * [persistent]: shown on demand from Settings, to be looked at — it plays in, then stays (the disc
+ * keeps turning, the camera drifts slowly round) until a tap. No time limit, no early ending.
+ */
+private fun BlackHoleScene(duration: Float, onDone: () -> Unit, onFail: () -> Unit, persistent: Boolean = false) {
     val scope = rememberCoroutineScope()
     val fade = remember { Animatable(1f) }
     var finishing by remember { mutableStateOf(false) }
@@ -90,7 +95,7 @@ private fun BlackHoleScene(duration: Float, onDone: () -> Unit, onFail: () -> Un
     val density = LocalDensity.current.density
     // black until the first frame is drawn: the surface is see-through before that, and the camera is behind it
     var drawn by remember { mutableStateOf(false) }
-    val renderer = remember { BlackHoleRenderer(duration, density, onSlow = { main.post { finishing = true } }, onFail = { main.post { onFail() } },
+    val renderer = remember { BlackHoleRenderer(duration, density, persistent, onSlow = { if (!persistent) main.post { finishing = true } }, onFail = { main.post { onFail() } },
         onFirstFrame = { main.post { drawn = true } }) }
     fun finish() { finishing = true }
     LaunchedEffect(finishing) {
@@ -104,11 +109,11 @@ private fun BlackHoleScene(duration: Float, onDone: () -> Unit, onFail: () -> Un
         while (!finishing) {
             val now = withFrameNanos { it }
             elapsed = (now - start) / 1e9f
-            if (elapsed >= duration) finish()
+            if (!persistent && elapsed >= duration) finish()
         }
     }
     // the safety net: never hang on the intro
-    LaunchedEffect(Unit) { delay(((duration + 2.5f) * 1000).toLong()); finish() }
+    LaunchedEffect(Unit) { if (!persistent) { delay(((duration + 2.5f) * 1000).toLong()); finish() } }
 
     BoxWithConstraints(Modifier.fillMaxSize()) {
         AndroidView(
@@ -166,6 +171,8 @@ private fun BlackHoleScene(duration: Float, onDone: () -> Unit, onFail: () -> Un
 private class BlackHoleRenderer(
     private val duration: Float,
     private val density: Float,
+    /** On demand: after the glide in, the camera keeps drifting slowly round, so it stays alive. */
+    private val persistent: Boolean,
     private val onSlow: () -> Unit,
     private val onFail: () -> Unit,
     private val onFirstFrame: () -> Unit,
@@ -217,7 +224,10 @@ private class BlackHoleRenderer(
         alloc()
         // camera: glide in from 27 to 18 radii while turning slightly; tilted 0.3 rad for a film look
         val k = minOf(1f, el / duration); val e = k * k * (3 - 2 * k)
-        val dist = 27f - 9f * e; val yaw = 0.6f + 0.5f * e; val pitch = 0.11f; val roll = 0.3f
+        // a slow orbit once it has arrived, eased in from rest (the glide ends at rest), 0.025 rad/s after ~4 s
+        val after = maxOf(0f, el - duration)
+        val drift = if (persistent) 0.025f * (after - 2f * (1f - kotlin.math.exp(-after / 2f))) else 0f
+        val dist = 27f - 9f * e; val yaw = 0.6f + 0.5f * e + drift; val pitch = 0.11f; val roll = 0.3f
         val cp = kotlin.math.cos(pitch); val sp = kotlin.math.sin(pitch)
         val cam = floatArrayOf(dist * cp * kotlin.math.cos(yaw), dist * sp, dist * cp * kotlin.math.sin(yaw))
         val f = floatArrayOf(-cam[0] / dist, -cam[1] / dist, -cam[2] / dist)

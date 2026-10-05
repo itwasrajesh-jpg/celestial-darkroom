@@ -38,7 +38,7 @@ import com.celestial.latent.camera.Lenses
 import com.celestial.latent.ui.LatentColors
 
 @Composable
-fun SettingsScreen(settings: AppSettings, onChange: (AppSettings) -> Unit, onOpenReport: () -> Unit, onOpenVendor: () -> Unit, onOpenProbe: () -> Unit, onOpenDepth: () -> Unit, onOpenLogs: () -> Unit, onOpenExtension: () -> Unit, onOpenAbout: () -> Unit, onBack: () -> Unit) {
+fun SettingsScreen(settings: AppSettings, onChange: (AppSettings) -> Unit, onOpenReport: () -> Unit, onOpenVendor: () -> Unit, onOpenProbe: () -> Unit, onOpenDepth: () -> Unit, onOpenLogs: () -> Unit, onOpenExtension: () -> Unit, onOpenAbout: () -> Unit, onBack: () -> Unit, onShowOpening: () -> Unit = {}) {
     Column(
         Modifier.fillMaxSize().background(LatentColors.Background).statusBarsPadding().navigationBarsPadding()
             .verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 12.dp),
@@ -83,6 +83,8 @@ fun SettingsScreen(settings: AppSettings, onChange: (AppSettings) -> Unit, onOpe
         Section("Film")
         UpdateRow()
         ToggleRow("Opening animation", "A black hole, traced live, as the name develops in. Tap to skip it at any time.", settings.openingAnimation) { onChange(settings.copy(openingAnimation = it)) }
+        // to show it off: the full opening, staying until you tap — whether or not it plays at start
+        Text("Show the opening (stays until you tap) ›", color = LatentColors.Amber, fontSize = 14.sp, modifier = Modifier.combinedClickable(onClick = onShowOpening).padding(vertical = 10.dp))
         ToggleRow("Film in the viewfinder", "Draws the preview through the film look. Turn off to use the plain camera preview.", settings.filmPreview) { onChange(settings.copy(filmPreview = it)) }
         ToggleRow("Let the film level the exposure", "Off: the camera decides brightness — what you expose is what develops. On: the engine brightens or darkens every shot to its own target, which cancels out the EV dial.", settings.engineAutoExposure) { onChange(settings.copy(engineAutoExposure = it)) }
         ToggleRow("Develop every photo", "Single shots are developed with the selected film in the background. Bursts are never auto-developed.", settings.autoDevelop) { onChange(settings.copy(autoDevelop = it)) }
