@@ -207,7 +207,9 @@ object Develop {
             val maps = lights.mapNotNull { l -> Sun.lightMap(input, l, scale, log)?.let { l to it } }
             // the lights' bounce off what they hit — a scene setting, like its size (light 1's)
             val bounceAmount = lights.first().bounce
-            val bounce = if (bounceAmount > 0f && maps.any { it.first.surface > 0f }) Sun.bounce(input, maps, scale, log) else null
+            // a sun through a window bounces from where it lands on the floor (in its own map), not from the frame
+            val byEye = maps.filter { it.second.measured <= 0f }
+            val bounce = if (bounceAmount > 0f && byEye.any { it.first.surface > 0f }) Sun.bounce(input, byEye, scale, log) else null
             Sun.apply(src, maps, mask, input, log, bounce, bounceAmount)
         }.onFailure { t -> Log.e("Latent", "light: could not light the surfaces", t) }
     }

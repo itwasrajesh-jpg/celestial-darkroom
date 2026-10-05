@@ -52,7 +52,12 @@ object Sun {
                 val small: FloatArray)
 
     /** A light's effect on the picture, 0..1, at GRID size; sampled to any size. */
-    class LightMap(val w: Int, val h: Int, val v: FloatArray) {
+    /**
+     * [measured]: for a sun through an opening, its strength in the photo's own exposure (÷ π, as a
+     * surface reflects it); 0 for lights set by eye. [floor]: the light bouncing up from where
+     * that sun lands on the assumed floor (÷ π), at the same size; null if none.
+     */
+    class LightMap(val w: Int, val h: Int, val v: FloatArray, val measured: Float = 0f, val floor: FloatArray? = null) {
         fun sample(u: Float, vv: Float): Float = bilinear(v, w, h, u, vv)
     }
 
@@ -206,7 +211,7 @@ object Sun {
         synchronized(maps) { maps[key] }?.let { return it }
         val t0 = System.currentTimeMillis()
         val sc = scene(input, sceneScale)
-        val m = light(sc, look) ?: return null
+        val m = light(sc, look, input) ?: return null
         log("${look.type} on surfaces worked out in ${System.currentTimeMillis() - t0} ms")
         return m.also { synchronized(maps) { maps[key] = it } }
     }
@@ -264,6 +269,97 @@ object Sun {
         return Scene(gw, gh, f, cx, cy, near, far, Z, Zs, P, N, T, wf).also { synchronized(scenes) { scenes[key] = it } }
     }
 
+    /** A window the sun shines in through: the wall's depth, which pixels let light through, the sun's strength. */
+    internal class Opening(val wallZ: Float, val pass: BooleanArray, val sun: Float)
+
+    /**
+     * The opening of a sun light, from its rectangle: the bright parts inside (the panes, above the
+     * rectangle's median brightness and a little more) let light through; the dark parts (frame,
+     * bars) don't; the wall is at the depth of those dark parts. The sun is measured from the
+     * panes: direct sun is about ten times a bright daylit surface, in the photo's own exposure.
+     */
+    internal fun opening(sc: Scene, input: Input, l: RaysLook): Opening? {
+        if (!l.hasOpening) return null
+        val gw = sc.gw; val gh = sc.gh
+        val x0 = (min(l.ox0, l.ox1) * gw).toInt().coerceIn(0, gw - 1); val x1 = (max(l.ox0, l.ox1) * gw).toInt().coerceIn(0, gw - 1)
+        val y0 = (min(l.oy0, l.oy1) * gh).toInt().coerceIn(0, gh - 1); val y1 = (max(l.oy0, l.oy1) * gh).toInt().coerceIn(0, gh - 1)
+        if (x1 <= x0 || y1 <= y0) return null
+        val inside = ArrayList<Float>()
+        for (y in y0..y1) for (x in x0..x1) inside += input.lum[y * gw + x]
+        val sorted = inside.sorted(); val cut = sorted[(sorted.size * 0.55f).toInt().coerceAtMost(sorted.size - 1)]
+        val pass = BooleanArray(gw * gh); val panes = ArrayList<Float>(); val frame = ArrayList<Float>()
+        for (y in y0..y1) for (x in x0..x1) {
+            val i = y * gw + x
+            if (input.lum[i] > cut) { pass[i] = true; panes += input.lum[i] } else frame += sc.Zs[i]
+        }
+        if (panes.isEmpty()) return null
+        val wallZ = (if (frame.isNotEmpty()) frame.sorted()[frame.size / 2] else sc.Zs[((y0 + y1) / 2) * gw + (x0 + x1) / 2])
+        return Opening(wallZ, pass, 10f * panes.sorted()[panes.size / 2])
+    }
+
+    /**
+     * Sun through the opening at a point: only in the room (in front of the wall), only if its line
+     * towards the sun leaves through a pane, and only if nothing in the room blocks the way there.
+     */
+    internal fun throughOpening(sc: Scene, op: Opening, px: Float, py: Float, pz: Float, d: FloatArray, jit: Float, M: Int = 24): Float {
+        if (d[2] < 0.02f || pz >= op.wallZ - 0.01f * sc.far) return 0f
+        val t = (op.wallZ - pz) / d[2]
+        val qx = px + d[0] * t; val qy = py + d[1] * t; val qz = op.wallZ
+        val qu = (qx / qz * sc.f + sc.cx).toInt(); val qv = (qy / qz * sc.f + sc.cy).toInt()
+        if (qu < 0 || qu >= sc.gw || qv < 0 || qv >= sc.gh || !op.pass[qv * sc.gw + qu]) return 0f
+        val span = t * 0.95f; var vis = 1f
+        for (s in 1..M) {
+            val tt = span * ((s - 1 + jit) / M)
+            val rx = px + d[0] * tt; val ry = py + d[1] * tt; val rz = pz + d[2] * tt
+            if (rz <= 0.05f) continue
+            val ru = (rx / rz * sc.f + sc.cx).toInt(); val rv = (ry / rz * sc.f + sc.cy).toInt()
+            if (ru < 0 || ru >= sc.gw || rv < 0 || rv >= sc.gh) continue
+            val j = rv * sc.gw + ru; val zs = sc.Zs[j]; val th = max(sc.T[j], 1.5f * span / M)
+            val b = ((rz - zs - 0.002f * sc.far) / (0.005f * sc.far)).coerceIn(0f, 1f) * ((zs + th - rz) / max(0.1f * th, 0.005f)).coerceIn(0f, 1f)
+            vis *= 1f - b
+            if (vis < 0.01f) break
+        }
+        return vis
+    }
+
+    /**
+     * Where the sun through the opening lands on an assumed floor (0.6–2.6 m below the camera, the
+     * photo taken roughly level), that patch reflects 30% of it upwards as a soft light; each visible
+     * surface gets it by distance and angle. Returned ÷ π, in the photo's own exposure. Physically
+     * this is modest — one narrow window's patch adds ~10% to a wall two metres away — as it should be.
+     */
+    private fun floorBounce(sc: Scene, op: Opening, l: RaysLook, d: FloatArray): FloatArray? {
+        if (d[2] < 0.02f || d[1] >= 0f) return null                         // the sun must be beyond the window and above
+        val floorY = 0.6f + 2.0f * l.floor
+        val gx = 120; val gz = 90; val halfX = 0.6f * sc.far
+        val cellArea = (2f * halfX / gx) * ((op.wallZ - 0.2f) / gz)
+        val pts = ArrayList<FloatArray>()
+        for (iz in 0 until gz) for (ix in 0 until gx) {
+            val x = -halfX + (ix + 0.5f) * 2f * halfX / gx; val z = 0.2f + (iz + 0.5f) * (op.wallZ - 0.2f) / gz
+            val t = (op.wallZ - z) / d[2]
+            val qx = x + d[0] * t; val qy = floorY + d[1] * t
+            val qu = (qx / op.wallZ * sc.f + sc.cx).toInt(); val qv = (qy / op.wallZ * sc.f + sc.cy).toInt()
+            if (qu in 0 until sc.gw && qv in 0 until sc.gh && op.pass[qv * sc.gw + qu]) pts += floatArrayOf(x, floorY, z)
+        }
+        if (pts.isEmpty()) return null
+        val rng = java.util.Random(3); val use = if (pts.size > 160) pts.shuffled(rng).take(160) else pts
+        val weight = pts.size.toFloat() / use.size
+        val radiosity = 0.30f * op.sun * (-d[1])                            // what the patch sends up (÷ π later)
+        val n = sc.gw * sc.gh; val e = FloatArray(n)
+        for (i in 0 until n) {
+            var sum = 0f
+            for (p in use) {
+                val tx = p[0] - sc.P[i * 3]; val ty = p[1] - sc.P[i * 3 + 1]; val tz = p[2] - sc.P[i * 3 + 2]
+                val r2 = max(tx * tx + ty * ty + tz * tz, 1e-4f); val r = sqrt(r2)
+                val down = ty / r; if (down <= 0f) continue                    // the floor sees only what is above it
+                val recv = (sc.N[i * 3] * tx + sc.N[i * 3 + 1] * ty + sc.N[i * 3 + 2] * tz) / r; if (recv <= 0f) continue
+                sum += down * recv / r2
+            }
+            e[i] = radiosity * sum * cellArea * weight / (PI_F * PI_F)        // irradiance ÷ π, then ÷ π as reflected
+        }
+        return depthSmooth(e, sc.Z, sc.gw, sc.gh, 3, 0.08f)
+    }
+
     /** A point in the scene at a place on the picture, at the depth seen there, nudged nearer or farther. */
     internal fun pointAt(sc: Scene, u: Float, v: Float, nudge: Float): FloatArray {
         val z0 = bilinear(sc.Zs, sc.gw, sc.gh, u, v)
@@ -273,7 +369,7 @@ object Sun {
     }
 
     /** One light on every surface: by the angle each faces it, how far it is, and whether it is in shadow. */
-    private fun light(sc: Scene, look: RaysLook): LightMap? {
+    private fun light(sc: Scene, look: RaysLook, input: Input): LightMap? {
         val l = look.withDefaults()
         val gw = sc.gw; val gh = sc.gh; val n = gw * gh
         val direct = FloatArray(n)
@@ -302,9 +398,16 @@ object Sun {
             "sun" -> {
                 val d = toward(l, gw.toFloat() / gh) ?: return null
                 val march = 0.375f * sc.far
+                val op = opening(sc, input, l)
                 for (i in 0 until n) {
                     val fa = facing(i, d[0], d[1], d[2]); val jit = rng.nextFloat()
-                    if (fa > 0f) direct[i] = fa * visible(i, d[0], d[1], d[2], march, jit)
+                    if (fa > 0f) direct[i] = fa * (if (op != null)
+                        throughOpening(sc, op, sc.P[i * 3] + sc.N[i * 3] * step0, sc.P[i * 3 + 1] + sc.N[i * 3 + 1] * step0, sc.P[i * 3 + 2] + sc.N[i * 3 + 2] * step0, d, jit)
+                        else visible(i, d[0], d[1], d[2], march, jit))
+                }
+                if (op != null) {
+                    val m = clean(sc, direct)
+                    return LightMap(m.w, m.h, m.v, measured = op.sun / PI_F, floor = floorBounce(sc, op, l, d))
                 }
             }
             "area" -> {
@@ -594,19 +697,44 @@ object Sun {
                         val fl = look.reveal * 0.03f * tex
                         fr = max(cr, fl * bilinear3(input.tint, gw, gh, u, v, 0)); fg = max(cg, fl * bilinear3(input.tint, gw, gh, u, v, 1)); fb = max(cb, fl * bilinear3(input.tint, gw, gh, u, v, 2))
                     }
-                    val c = chroma[li]; val s = look.surface * d
-                    ar += s * c[0] * fr; ag += s * c[1] * fg; ab += s * c[2] * fb
+                    val c = chroma[li]
+                    if (map.measured > 0f) {
+                        // a sun through a window, in absolute terms: its measured strength x the surface's own
+                        // colour (the room's tint, the photo's texture, an ordinary 18%) — as in the proof that read as real
+                        val l = LUM[0] * cr + LUM[1] * cg + LUM[2] * cb
+                        val tex = ((l + 1e-4f) / (bilinear(input.lumBig, gw, gh, u, v) + 1e-4f)).coerceIn(0.3f, 3f)
+                        val s = look.surface * d * map.measured * 0.18f * tex
+                        ar += s * c[0] * bilinear3(input.tint, gw, gh, u, v, 0); ag += s * c[1] * bilinear3(input.tint, gw, gh, u, v, 1); ab += s * c[2] * bilinear3(input.tint, gw, gh, u, v, 2)
+                    } else {
+                        val s = look.surface * d
+                        ar += s * c[0] * fr; ag += s * c[1] * fg; ab += s * c[2] * fb
+                    }
+                }
+                // where window sunlight lands on the floor, it bounces up into the room (real at the middle of the slider)
+                for ((li, pair) in active.withIndex()) {
+                    val (look, map) = pair
+                    val fm = map.floor ?: continue
+                    val e = bounceStrength(bounceAmount) * look.surface * cover * bilinear(fm, gw, gh, u, v)
+                    if (e <= 0f) continue
+                    val l = LUM[0] * cr + LUM[1] * cg + LUM[2] * cb
+                    val tex = ((l + 1e-4f) / (bilinear(input.lumBig, gw, gh, u, v) + 1e-4f)).coerceIn(0.3f, 3f)
+                    val c = chroma[li]; val s = e * 0.18f * tex
+                    ar += s * c[0] * bilinear3(input.tint, gw, gh, u, v, 0); ag += s * c[1] * bilinear3(input.tint, gw, gh, u, v, 1); ab += s * c[2] * bilinear3(input.tint, gw, gh, u, v, 2)
                 }
                 if (bounce != null && bounceAmount > 0f) {
                     // the bounce lands like any light: on what each surface reflects, without the noise
-                    ar += bounceAmount * cover * bilinear3(bounce, gw, gh, u, v, 0) * cr
-                    ag += bounceAmount * cover * bilinear3(bounce, gw, gh, u, v, 1) * cg
-                    ab += bounceAmount * cover * bilinear3(bounce, gw, gh, u, v, 2) * cb
+                    val m = bounceStrength(bounceAmount) * cover
+                    ar += m * bilinear3(bounce, gw, gh, u, v, 0) * cr
+                    ag += m * bilinear3(bounce, gw, gh, u, v, 1) * cg
+                    ab += m * bilinear3(bounce, gw, gh, u, v, 2) * cb
                 }
                 if (ar != 0f || ag != 0f || ab != 0f) { f.put(o, r + ar); f.put(o + 1, g + ag); f.put(o + 2, b + ab) }
             }
         }
     }
+
+    /** The bounce slider: 0 none … 0.5 real (physical) … 1 dramatic (4× real). */
+    fun bounceStrength(b: Float): Float = if (b <= 0.5f) b / 0.5f else 1f + (b - 0.5f) / 0.5f * 3f
 
     private fun bilinear3(a: FloatArray, w: Int, h: Int, u: Float, vv: Float, c: Int): Float {
         val x = (u * w - 0.5f).coerceIn(0f, (w - 1).toFloat()); val y = (vv * h - 0.5f).coerceIn(0f, (h - 1).toFloat())

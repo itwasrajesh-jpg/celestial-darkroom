@@ -882,7 +882,7 @@ private fun raysHandles(l: RaysLook, aspect: Float): List<Pair<Float, Float>> {
     if (!l.placed) return emptyList()
     val d = l.withDefaults()
     return when (d.type) {
-        "sun" -> listOf(d.u to d.v, d.u2 to d.v2)
+        "sun" -> listOf(d.u to d.v, d.u2 to d.v2) + (if (d.hasOpening) listOf(d.ox0 to d.oy0, d.ox1 to d.oy1) else emptyList())
         "spot" -> { val (e1, e2) = coneEdges(d, aspect); listOf(d.u to d.v, d.u2 to d.v2, e1, e2) }
         // a panel: its middle, where it aims, and a corner for its size
         "area" -> listOf(d.u to d.v, d.u2 to d.v2, (d.u + d.aw / 2f) to (d.v + d.ah / 2f))
@@ -900,7 +900,12 @@ private fun raysDragged(l: RaysLook, i: Int, u: Float, v: Float, aspect: Float):
         return d.copy(u = d.u + mdu, v = d.v + mdv, u2 = d.u2 + mdu, v2 = d.v2 + mdv)
     }
     return when (d.type) {
-        "sun" -> if (i == 0) moved(u - d.u, v - d.v) else d.copy(u2 = u, v2 = v)
+        "sun" -> when (i) {
+            0 -> moved(u - d.u, v - d.v)
+            1 -> d.copy(u2 = u, v2 = v)
+            2 -> d.copy(ox0 = u, oy0 = v)                                              // the opening's corners
+            else -> d.copy(ox1 = u, oy1 = v)
+        }
         "spot" -> when (i) {
             0 -> moved(u - d.u, v - d.v)
             1 -> d.copy(u2 = u, v2 = v)
@@ -930,6 +935,11 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawRaysLight(l: Ra
     val p = at(d.u, d.v)
     when (d.type) {
         "sun" -> {
+            if (d.hasOpening) {
+                val c1 = at(minOf(d.ox0, d.ox1), minOf(d.oy0, d.oy1)); val c2 = at(maxOf(d.ox0, d.ox1), maxOf(d.oy0, d.oy1))
+                drawRect(Color.White.copy(alpha = 0.10f), c1, androidx.compose.ui.geometry.Size(c2.x - c1.x, c2.y - c1.y))
+                drawRect(Color.White.copy(alpha = 0.85f), c1, androidx.compose.ui.geometry.Size(c2.x - c1.x, c2.y - c1.y), style = Stroke(w))
+            }
             val q = at(d.u2, d.v2)
             drawLine(a, p, q, w)
             val ang = kotlin.math.atan2(q.y - p.y, q.x - p.x); val hl = 14.dp.toPx()
@@ -1009,12 +1019,19 @@ private fun RaysLightTab(
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 Chip("add light", on = look.mode == "add") { onLook(look.copy(mode = "add")) }
                 Chip("through gaps", on = look.mode == "gaps") { onLook(look.copy(mode = "gaps")) }
+                // a sun can shine in through a window: a rectangle to fit over it, the sun placed beyond
+                if (look.type == "sun" && look.placed) Chip("opening", on = look.hasOpening) {
+                    onLook(if (look.hasOpening) look.copy(ox0 = Float.NaN, oy0 = Float.NaN, ox1 = Float.NaN, oy1 = Float.NaN)
+                    else look.copy(ox0 = (look.u - 0.15f).coerceIn(0f, 1f), oy0 = (look.v - 0.2f).coerceIn(0f, 1f),
+                        ox1 = (look.u + 0.15f).coerceIn(0f, 1f), oy1 = (look.v + 0.2f).coerceIn(0f, 1f),
+                        front = if (look.front < 0.3f) 0.6f else look.front))
+                }
             }
         }
         Row(Modifier.fillMaxWidth().padding(top = 6.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             Text(
                 if (placing) "tap the photo where the light comes from" else when (look.type) {
-                    "sun" -> "drag the arrow's tip to aim it, its tail to move it"
+                    "sun" -> if (look.hasOpening) "fit the white corners to the window; the arrow aims the sun" else "drag the arrow's tip to aim it, its tail to move it"
                     "spot" -> "drag the light, its aim, or the cone's edges"
                     "area" -> "drag the middle to move, the dot to aim, a corner to size"
                     else -> "drag the light to move it"
@@ -1074,12 +1091,22 @@ private fun SurfaceTab(look: RaysLook, sceneScale: Float, onLook: (RaysLook) -> 
             SettleSlider("nearer", "farther", look.nudge, -1f..1f) { onLook(look.copy(nudge = (it * 20f).roundToInt() / 20f)) }
             SettleSlider("small pool", "wide pool", look.reach, 0f..1f) { onLook(look.copy(reach = (it * 20f).roundToInt() / 20f)) }
         }
+        if (look.type == "sun" && look.hasOpening) {
+            Text("Through the window, 100% is the sun measured from the panes.", color = LatentColors.TextDim, fontSize = 11.sp)
+            // where its sunlight lands and bounces up into the room
+            SettleSlider("floor: near", "far below", look.floor, 0f..1f) { onLook(look.copy(floor = (it * 20f).roundToInt() / 20f)) }
+        }
         // how much the light may show where the photo recorded almost nothing
         SettleSlider("strict", "reveal", look.reveal, 0f..1f) { onLook(look.copy(reveal = (it * 20f).roundToInt() / 20f)) }
         // the scene's size, shared by every light: sets the depth's scale, and so how far shadows reach
         SettleSlider("scene: close-up", "wide", sceneScale, 0f..1f) { onScene((it * 20f).roundToInt() / 20f) }
         // light bouncing off what the lights hit, onto everything near: shared by every light
-        SettleSlider("bounce", "${(sceneBounce * 100f).roundToInt()}%", sceneBounce, 0f..1f) { onBounce((it * 20f).roundToInt() / 20f) }
+        val bounceText = when {
+            kotlin.math.abs(sceneBounce - 0.5f) < 0.03f -> "real"
+            sceneBounce < 0.5f -> "${(sceneBounce / 0.5f * 100f).roundToInt()}% of real"
+            else -> "%.1f× real · dramatic".format(java.util.Locale.US, com.celestial.latent.develop.Sun.bounceStrength(sceneBounce))
+        }
+        SettleSlider("bounce", bounceText, sceneBounce, 0f..1f) { onBounce((it * 20f).roundToInt() / 20f) }
     }
 }
 

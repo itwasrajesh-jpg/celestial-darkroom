@@ -52,6 +52,8 @@ object Beams {
         val rng = java.util.Random(11)
         // the light's geometry
         val sunDir = if (l.type == "sun") Sun.toward(l, gw.toFloat() / gh) ?: return null else null
+        // a sun through a window: only through its panes, only in the room — the frame and bars stripe the shaft
+        val op = if (sunDir != null) Sun.opening(sc, input, l) else null
         val L = if (l.type != "sun") Sun.pointAt(sc, l.u, l.v, l.nudge) else null
         // how far a lamp's glow spreads: ~10 cm … 1.5 m in a room (tested: a wider range made a veil, not a glow)
         val lenM = (0.02f + 0.3f * l.length) * far
@@ -100,7 +102,8 @@ object Beams {
                 val px = rx * s; val py = ry * s; val pz = rz * s
                 var lit = 0f; var tx = 0f; var ty = 0f; var tz = 0f       // light arriving, and the way it travels
                 if (sunDir != null) {
-                    lit = blocked(px, py, pz, sunDir[0], sunDir[1], sunDir[2], 0.375f * far, rng.nextFloat())
+                    lit = if (op != null) Sun.throughOpening(sc, op, px, py, pz, sunDir, rng.nextFloat(), M)
+                        else blocked(px, py, pz, sunDir[0], sunDir[1], sunDir[2], 0.375f * far, rng.nextFloat())
                     tx = -sunDir[0]; ty = -sunDir[1]; tz = -sunDir[2]
                 } else if (L != null) {
                     var lx = L[0]; var ly = L[1]; var lz = L[2]
