@@ -390,6 +390,8 @@ fun PrintPanel(
     onRaysMap: (ExposureMap?) -> Unit,
     raysLook: RaysLook,
     onRaysLook: (RaysLook) -> Unit,
+    extraLights: List<RaysLook> = emptyList(),
+    onExtraLights: (List<RaysLook>) -> Unit = {},
     renderWithMasks: (Recipe, Int, Masks) -> Bitmap?,
     renderRegionWithMasks: ((Recipe, Int, Masks, Region) -> Bitmap?)? = null,
     modifier: Modifier = Modifier,
@@ -401,8 +403,16 @@ fun PrintPanel(
     var fogPicking by remember { mutableStateOf(false) }
     // the rays step's light: placing it, the next tap on the print sets where the light comes from
     var raysPlacing by remember { mutableStateOf(false) }
-    // the light as it is being dragged; follows the saved one whenever that changes
-    var raysLive by remember(raysLook) { mutableStateOf(raysLook.withDefaults()) }
+    // Which light the LIGHT step edits: 0 is light 1 (kept where it always was), then lights 2-4.
+    var selected by remember { mutableStateOf(0) }
+    val lights = listOf(raysLook) + extraLights
+    val sel = lights[selected.coerceIn(0, lights.size - 1)]
+    fun setSel(l: RaysLook) {
+        if (selected <= 0 || selected > extraLights.size) onRaysLook(l)
+        else onExtraLights(extraLights.toMutableList().also { it[selected - 1] = l })
+    }
+    // the selected light as it is being dragged; follows the saved one whenever that changes
+    var raysLive by remember(sel) { mutableStateOf(sel.withDefaults()) }
     // all four masks as they stand; each painting step swaps in its own, as it is being painted
     val all = Masks(exposureMap, softenMap, fogMap, raysMap, raysOn = true)
     val pickScope = rememberCoroutineScope()
@@ -469,17 +479,34 @@ fun PrintPanel(
                     startMap = { a -> ExposureMap.blank(a).also { it.stops.fill(1f) } },
                     modifier = Modifier.fillMaxSize(),
                     renderRegion = renderRegionWithMasks?.let { f -> { r, e, m, reg -> f(r, e, all.copy(rays = m), reg) } },
-                    pickMode = raysPlacing || !raysLook.placed,
-                    onPick = { u, v -> raysPlacing = false; onRaysLook(raysLook.copy(u = u, v = v, u2 = Float.NaN, v2 = Float.NaN).withDefaults()) },
+                    pickMode = raysPlacing || !sel.placed,
+                    onPick = { u, v -> raysPlacing = false; setSel(sel.copy(u = u, v = v, u2 = Float.NaN, v2 = Float.NaN).withDefaults()) },
                     // while a handle is dragged only the outline moves; the print re-develops on release
                     handlesFor = { a -> raysHandles(raysLive, a) },
-                    onHandleDrag = { i, u, v, final, a -> raysLive = raysDragged(raysLive, i, u, v, a); if (final) onRaysLook(raysLive) },
+                    onHandleDrag = { i, u, v, final, a -> raysLive = raysDragged(raysLive, i, u, v, a); if (final) setSel(raysLive) },
                     overlayDraw = { a, toScreen -> drawRaysLight(raysLive, a, toScreen) },
                     tabs = listOf(
-                        "LIGHT" to @Composable { RaysLightTab(raysLook, placing = raysPlacing || !raysLook.placed, onLook = onRaysLook, onPlace = { raysPlacing = !raysPlacing }) },
-                        "BEAM" to @Composable { RaysBeamTab(raysLook, onLook = onRaysLook) },
+                        "LIGHT" to @Composable {
+                            RaysLightTab(sel, placing = raysPlacing || !sel.placed, onLook = { setSel(it) }, onPlace = { raysPlacing = !raysPlacing },
+                                count = lights.size, selected = selected.coerceIn(0, lights.size - 1),
+                                onSelect = { i -> selected = i; raysPlacing = false },
+                                onAdd = {
+                                    // a new lamp: lights surfaces, no beams to start; tap the photo to place it
+                                    onExtraLights(extraLights + RaysLook(type = "point", amount = 0f, surface = 1f, reach = 0.3f, reveal = 0.3f))
+                                    selected = extraLights.size + 1; raysPlacing = true
+                                },
+                                onRemove = {
+                                    if (selected >= 1) { onExtraLights(extraLights.filterIndexed { i, _ -> i != selected - 1 }); selected = 0; raysPlacing = false }
+                                })
+                        },
+                        "SURFACE" to @Composable {
+                            SurfaceTab(sel, sceneScale = raysLook.scale, onLook = { setSel(it) },
+                                onScene = { sc -> onRaysLook(raysLook.copy(scale = sc)) })
+                        },
+                        "BEAM" to @Composable { RaysBeamTab(sel, onLook = { setSel(it) }) },
                     ),
-                    refreshKey = raysLook)
+                    // any light changing re-develops the print
+                    refreshKey = lights)
             }
         }
     }
@@ -913,8 +940,20 @@ private fun SettleSlider(left: String, right: String, value: Float, range: Close
 
 /** The rays' LIGHT tab: its kind, its mode, where it is, and how bright. */
 @Composable
-private fun RaysLightTab(look: RaysLook, placing: Boolean, onLook: (RaysLook) -> Unit, onPlace: () -> Unit) {
+private fun RaysLightTab(
+    look: RaysLook, placing: Boolean, onLook: (RaysLook) -> Unit, onPlace: () -> Unit,
+    count: Int = 1, selected: Int = 0, onSelect: (Int) -> Unit = {}, onAdd: () -> Unit = {}, onRemove: () -> Unit = {},
+) {
     Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 6.dp)) {
+        // which light: a few lights per photo, chosen to enhance — not one on every lamp
+        Row(Modifier.fillMaxWidth().padding(bottom = 6.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("light", color = LatentColors.TextDim, fontSize = 11.sp, modifier = Modifier.padding(end = 2.dp))
+                for (i in 0 until count) Chip("${i + 1}", on = i == selected) { onSelect(i) }
+                if (count < 1 + com.celestial.latent.develop.ExtraLights.MAX) Chip("+", on = false) { onAdd() }
+            }
+            if (selected >= 1) Chip("remove", on = false) { onRemove() }
+        }
         // the kind of light, as in 3D software; switching keeps where it is
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
             listOf("point", "sun", "spot", "area").forEach { t ->
@@ -945,23 +984,35 @@ private fun RaysLightTab(look: RaysLook, placing: Boolean, onLook: (RaysLook) ->
                 SettleSlider("in the air", "${(look.amount * 100f).roundToInt()}%", look.amount, 0f..1f) { onLook(look.copy(amount = (it * 100f).roundToInt() / 100f)) }
             }
         }
-        // The same light on surfaces: what faces it brightens, what stands in its way casts a
-        // shadow — worked out from the photo's depth. The sun first; lamps and spots come next.
+    }
+}
+
+/**
+ * The SURFACE tab: the selected light on what it meets — how strongly, where it is in depth, how
+ * far its pool spreads, how much it may reveal in darkness — and the scene's size, which every
+ * light shares. Worked out from the photo's depth, so it needs the depth model.
+ */
+@Composable
+private fun SurfaceTab(look: RaysLook, sceneScale: Float, onLook: (RaysLook) -> Unit, onScene: (Float) -> Unit) {
+    Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 6.dp)) {
+        val context = androidx.compose.ui.platform.LocalContext.current
+        if (!com.celestial.latent.develop.Depth.isReady(context)) {
+            Text("Light on surfaces needs the depth model: Settings → Depth test → import it.", color = LatentColors.Amber, fontSize = 11.sp,
+                modifier = Modifier.padding(bottom = 4.dp))
+        }
+        SettleSlider("on surfaces", "${(look.surface * 100f).roundToInt()}%", look.surface, 0f..2f) { onLook(look.copy(surface = (it * 100f).roundToInt() / 100f)) }
         if (look.type == "sun") {
-            val context = androidx.compose.ui.platform.LocalContext.current
-            if (!com.celestial.latent.develop.Depth.isReady(context)) {
-                Text("On surfaces needs the depth model: Settings → Depth test → import it.", color = LatentColors.Amber, fontSize = 11.sp,
-                    modifier = Modifier.padding(top = 4.dp))
-            }
-            SettleSlider("on surfaces", "${(look.surface * 100f).roundToInt()}%", look.surface, 0f..2f) { onLook(look.copy(surface = (it * 100f).roundToInt() / 100f)) }
             // the arrow aims across the picture; in depth the sun can be in front of the subject or behind it
             SettleSlider("in front", "behind", look.front, -1f..1f) { onLook(look.copy(front = (it * 20f).roundToInt() / 20f)) }
-            // how big the scene is sets the depth's scale, and so how far shadows reach
-            SettleSlider("close-up", "wide", look.scale, 0f..1f) { onLook(look.copy(scale = (it * 20f).roundToInt() / 20f)) }
         } else {
-            Text("On surfaces: the sun for now — lamps and spots come next.", color = LatentColors.TextDim, fontSize = 11.sp,
-                modifier = Modifier.padding(top = 4.dp))
+            // a lamp sits at the depth where it was tapped; this tucks it nearer or farther
+            SettleSlider("nearer", "farther", look.nudge, -1f..1f) { onLook(look.copy(nudge = (it * 20f).roundToInt() / 20f)) }
+            SettleSlider("small pool", "wide pool", look.reach, 0f..1f) { onLook(look.copy(reach = (it * 20f).roundToInt() / 20f)) }
         }
+        // how much the light may show where the photo recorded almost nothing
+        SettleSlider("strict", "reveal", look.reveal, 0f..1f) { onLook(look.copy(reveal = (it * 20f).roundToInt() / 20f)) }
+        // the scene's size, shared by every light: sets the depth's scale, and so how far shadows reach
+        SettleSlider("scene: close-up", "wide", sceneScale, 0f..1f) { onScene((it * 20f).roundToInt() / 20f) }
     }
 }
 

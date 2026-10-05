@@ -191,22 +191,29 @@ object Develop {
      * pixels in place, so their settings are part of the key: changing either must re-decode,
      * otherwise the edit would silently do nothing on an already-processed copy.
      */
-    /** The photo's depth for the sun on surfaces, when the look asks for it; never stops a develop. */
-    private fun sunInput(context: Context, source: Uri, framing: Framing, src: Source, look: RaysLook, log: (String) -> Unit): Sun.Input? =
-        if (!Sun.wanted(look)) null else runCatching { Sun.prepare(context, source, framing, src, log) }
-            .getOrElse { t -> Log.e("Latent", "sun: could not prepare the depth", t); null }
+    /** The photo's depth, when any light lights surfaces; never stops a develop. */
+    private fun sunInput(context: Context, source: Uri, framing: Framing, src: Source, lights: List<RaysLook>, log: (String) -> Unit): Sun.Input? =
+        if (lights.none { Sun.wanted(it) }) null else runCatching { Sun.prepare(context, source, framing, src, log) }
+            .getOrElse { t -> Log.e("Latent", "light: could not prepare the depth", t); null }
 
-    /** The sun on surfaces, before the film; a failure is logged and the photo develops without it. */
-    private fun sunOnSurfaces(src: Source, look: RaysLook, mask: ExposureMap?, input: Sun.Input?, log: (String) -> Unit) {
-        if (input == null) return
-        runCatching { Sun.lightMap(input, look, log)?.let { Sun.apply(src, look, mask, it, log) } }
-            .onFailure { t -> Log.e("Latent", "sun: could not light the surfaces", t) }
+    /**
+     * Every light on surfaces, together, before the film; a failure is logged and the photo
+     * develops without it. The scene's size is light 1's setting: it describes the scene, not a light.
+     */
+    private fun sunOnSurfaces(src: Source, lights: List<RaysLook>, mask: ExposureMap?, input: Sun.Input?, log: (String) -> Unit) {
+        if (input == null || lights.isEmpty()) return
+        runCatching {
+            val scale = lights.first().scale
+            val maps = lights.mapNotNull { l -> Sun.lightMap(input, l, scale, log)?.let { l to it } }
+            Sun.apply(src, maps, mask, input, log)
+        }.onFailure { t -> Log.e("Latent", "light: could not light the surfaces", t) }
     }
 
     fun openCached(context: Context, source: Uri, isRaw: Boolean, maxEdge: Int, recipe: Recipe, iso: Int,
                    softenMask: ExposureMap? = null, pairFirst: Uri? = null, framing: Framing = Framing(),
                    fogMask: ExposureMap? = null, fogLook: FogLook = FogLook(),
                    raysMask: ExposureMap? = null, raysLook: RaysLook = RaysLook(),
+                   extraLights: List<RaysLook> = emptyList(),
                    log: (String) -> Unit = {}): Source {
         // The pristine decode is cached on its own, so changing a pre-engine setting costs a
         // copy rather than a fresh decode of the file (which was over a second every time).
@@ -237,17 +244,18 @@ object Develop {
             softenMask?.let { "${it.width}x${it.height}:${it.stops.contentHashCode()}" } ?: "-",
             fogMask?.let { "${it.width}x${it.height}:${it.stops.contentHashCode()}:${fogLook.key()}" } ?: "-",
             if (raysLook.placed) "${raysLook.key()}:${raysMask?.let { "${it.width}x${it.height}:${it.stops.contentHashCode()}" } ?: "all"}" else "-",
-            // the sun on surfaces needs the depth model: once it is installed, prepare again
-            if (Sun.wanted(raysLook)) "sun:${Depth.isReady(context)}" else "-",
+            ExtraLights.key(extraLights),
+            // light on surfaces needs the depth model: once it is installed, prepare again
+            if ((listOf(raysLook) + extraLights).any { Sun.wanted(it) }) "sun:${Depth.isReady(context)}" else "-",
         ).joinToString("|")
         if (working.preparedFor == prep) return working
         working.frameFrom(pristine, framing)
         // the depth comes from the framed picture as it was, before fog or light touch it
-        val sunIn = sunInput(context, source, framing, working, raysLook, log)
+        val sunIn = sunInput(context, source, framing, working, listOf(raysLook) + extraLights, log)
         // the air first — it is in front of the lens — then the lens filter
         fogMask?.let { Fog.apply(working, it, fogLook, log) }
-        Rays.apply(working, raysLook, raysMask, fogMask, fogLook.amount, log)          // light in the same air
-        sunOnSurfaces(working, raysLook, raysMask, sunIn, log)                           // and the same light on what it meets
+        for (light in listOf(raysLook) + extraLights) Rays.apply(working, light, raysMask, fogMask, fogLook.amount, log)   // light in the same air
+        sunOnSurfaces(working, listOf(raysLook) + extraLights, raysMask, sunIn, log)    // and the same lights on what they meet
         lensFilterSource(working, recipe, log)
         // A pair carries the noise of both frames: clean it for the noisier of the two.
         denoiseSource(working, recipe, isoUsed, log)
@@ -796,6 +804,7 @@ object Develop {
                     exposureMap: ExposureMap? = null, softenMask: ExposureMap? = null, pairFirst: Uri? = null,
                     framing: Framing = Framing(), fogMask: ExposureMap? = null, fogLook: FogLook = FogLook(),
                     raysMask: ExposureMap? = null, raysLook: RaysLook = RaysLook(),
+                    extraLights: List<RaysLook> = emptyList(),
                     log: (String) -> Unit = {}): Uri {
         log(if (maxEdge > 0) "decoding…" else "decoding at full size…")
         val pair = pairFirst != null && isRaw
@@ -808,10 +817,10 @@ object Develop {
             try { opened.blankSized(fw, fh).also { it.frameFrom(opened, framing) } } finally { opened.close() }
         }
         return src.use { s ->
-            val sunIn = sunInput(context, source, framing, s, raysLook, log)
+            val sunIn = sunInput(context, source, framing, s, listOf(raysLook) + extraLights, log)
             fogMask?.let { Fog.apply(s, it, fogLook, log) }
-            Rays.apply(s, raysLook, raysMask, fogMask, fogLook.amount, log)
-            sunOnSurfaces(s, raysLook, raysMask, sunIn, log)
+            for (light in listOf(raysLook) + extraLights) Rays.apply(s, light, raysMask, fogMask, fogLook.amount, log)
+            sunOnSurfaces(s, listOf(raysLook) + extraLights, raysMask, sunIn, log)
             lensFilterSource(s, recipe, log)
             denoiseSource(s, recipe, if (pair) maxOf(isoOf(context, source), isoOf(context, pairFirst!!)) else isoOf(context, source), log)
             fastDiffusionSource(s, recipe, preview = false, softenMask = softenMask, log = log)

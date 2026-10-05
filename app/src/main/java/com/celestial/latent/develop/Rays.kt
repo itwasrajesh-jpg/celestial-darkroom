@@ -45,6 +45,20 @@ data class RaysLook(
     val front: Float = 0f,
     /** How big the scene is: 0 a close-up … 1 a wide view — sets the depth's scale, and so its shadows. */
     val scale: Float = 0.3f,
+    /**
+     * A lamp's place in depth, beyond where it was tapped: −1 nearer the camera … +1 farther. A
+     * lamp tapped on a bulb sits at the bulb's depth; this tucks it in front or behind, or places
+     * one that is outside the frame.
+     */
+    val nudge: Float = 0f,
+    /** How far a lamp's pool of light spreads before fading (inverse square, set by eye): 0 … 1. */
+    val reach: Float = 0.4f,
+    /**
+     * How much the light may reveal where the photo recorded almost nothing: 0 = it only scales
+     * what is there (strict, safe) … 1 = it assumes an ordinary surface there, in the room's own
+     * colour and with the photo's own faint texture — so a lamp's pool can show in a dark room.
+     */
+    val reveal: Float = 0f,
 ) {
     val placed: Boolean get() = u in 0f..1f && v in 0f..1f
 
@@ -68,8 +82,8 @@ data class RaysLook(
         LIGHT_SATURATION_MAX)
 
     /** Saved as "v3|…" with every field; older saves were all made in "through gaps". */
-    fun key(): String = listOf("v4", type, mode).joinToString("|") + "|" +
-        listOf(u, v, u2, v2, cone, amount, length, warmth, if (coloured) 1f else 0f, hue, tint, dust, fogOnly, surface, front, scale)
+    fun key(): String = listOf("v5", type, mode).joinToString("|") + "|" +
+        listOf(u, v, u2, v2, cone, amount, length, warmth, if (coloured) 1f else 0f, hue, tint, dust, fogOnly, surface, front, scale, nudge, reach, reveal)
             .joinToString("|") { "%.4f".format(Locale.US, it) }
 
     companion object {
@@ -79,6 +93,10 @@ data class RaysLook(
             if (s.isNullOrEmpty()) return RaysLook()
             return runCatching {
                 when {
+                    s.startsWith("v5|") -> {
+                        val p = s.split("|"); val f = p.drop(3).map { it.toFloat() }
+                        RaysLook(p[1], f[0], f[1], f[2], f[3], f[4], f[5], f[6], p[2], f[7], f[8] > 0.5f, f[9], f[10], f[11], f[12], f[13], f[14], f[15], f[16], f[17], f[18])
+                    }
                     s.startsWith("v4|") -> {
                         val p = s.split("|"); val f = p.drop(3).map { it.toFloat() }
                         RaysLook(p[1], f[0], f[1], f[2], f[3], f[4], f[5], f[6], p[2], f[7], f[8] > 0.5f, f[9], f[10], f[11], f[12], f[13], f[14], f[15])
@@ -323,6 +341,24 @@ private fun emit(look: RaysLook, gw: Int, gh: Int, level: Float): FloatArray {
         out[o] = e * k; out[o + 1] = e * k; out[o + 2] = e * k
     }
     return out
+}
+
+/**
+ * A photo's extra lights — lights 2, 3 and 4 — each the same kind of light as light 1 (which
+ * stays in [RaysLooks], so nothing made before changes). Saved one per line under the photo.
+ */
+object ExtraLights {
+    const val MAX = 3
+    private fun prefs(context: Context) = context.getSharedPreferences("latent_extra_lights", Context.MODE_PRIVATE)
+    fun load(context: Context, photo: Uri): List<RaysLook> =
+        prefs(context).getString(photo.toString(), null)?.lines()?.filter { it.isNotBlank() }?.map { RaysLook.parse(it) }?.take(MAX) ?: emptyList()
+    fun save(context: Context, photo: Uri, lights: List<RaysLook>) {
+        prefs(context).edit().apply {
+            if (lights.isEmpty()) remove(photo.toString()) else putString(photo.toString(), lights.take(MAX).joinToString("\n") { it.key() })
+        }.apply()
+    }
+    /** Every extra light's settings, for a develop's "prepared for" fingerprint. */
+    fun key(lights: List<RaysLook>): String = lights.joinToString(";") { it.key() }
 }
 
 /** Each photo's rays, kept beside it like its masks. */

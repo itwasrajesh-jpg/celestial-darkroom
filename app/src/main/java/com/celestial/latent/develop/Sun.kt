@@ -44,23 +44,28 @@ object Sun {
         -0.0085557f, -0.1532907f, 1.1618464f,
     )
 
-    /** What one photo gives the sun: its depth, and a small luminance copy for finding focus. */
-    class Input(val depth: FloatArray, val lum: FloatArray, val gw: Int, val gh: Int)
+    /**
+     * What one photo gives the lights: its depth; a small luminance copy for finding focus; and,
+     * for "reveal", the room's own colour and its broad brightness (to keep the photo's texture).
+     */
+    class Input(val depth: FloatArray, val lum: FloatArray, val gw: Int, val gh: Int, val tint: FloatArray, val lumBig: FloatArray)
 
-    /** The sun's light on the picture, 0..1, at GRID size; sampled to any size. */
+    /** A light's effect on the picture, 0..1, at GRID size; sampled to any size. */
     class LightMap(val w: Int, val h: Int, val v: FloatArray) {
-        fun sample(u: Float, vv: Float): Float {
-            val x = (u * w - 0.5f).coerceIn(0f, (w - 1).toFloat()); val y = (vv * h - 0.5f).coerceIn(0f, (h - 1).toFloat())
-            val x0 = x.toInt(); val y0 = y.toInt(); val x1 = min(x0 + 1, w - 1); val y1 = min(y0 + 1, h - 1)
-            val fx = x - x0; val fy = y - y0
-            val a = v[y0 * w + x0] * (1 - fx) + v[y0 * w + x1] * fx
-            val b = v[y1 * w + x0] * (1 - fx) + v[y1 * w + x1] * fx
-            return a * (1 - fy) + b * fy
-        }
+        fun sample(u: Float, vv: Float): Float = bilinear(v, w, h, u, vv)
     }
 
-    /** Whether this look asks for sun on surfaces at all. */
-    fun wanted(look: RaysLook): Boolean = look.type == "sun" && look.placed && look.surface > 0f
+    private fun bilinear(a: FloatArray, w: Int, h: Int, u: Float, vv: Float): Float {
+        val x = (u * w - 0.5f).coerceIn(0f, (w - 1).toFloat()); val y = (vv * h - 0.5f).coerceIn(0f, (h - 1).toFloat())
+        val x0 = x.toInt(); val y0 = y.toInt(); val x1 = min(x0 + 1, w - 1); val y1 = min(y0 + 1, h - 1)
+        val fx = x - x0; val fy = y - y0
+        val p = a[y0 * w + x0] * (1 - fx) + a[y0 * w + x1] * fx
+        val q = a[y1 * w + x0] * (1 - fx) + a[y1 * w + x1] * fx
+        return p * (1 - fy) + q * fy
+    }
+
+    /** Whether this light lights surfaces at all. */
+    fun wanted(look: RaysLook): Boolean = look.placed && look.surface > 0f
 
     /**
      * The direction towards the sun. Across the picture it is against the arrow's travel (the
@@ -115,7 +120,19 @@ object Sun {
             }
             d
         }
-        return Input(depth, lum, gw, gh).also { synchronized(memory) { memory[key] = it } }
+        // for "reveal": the room's own colour (a heavy blur, at luminance 1) and its broad brightness
+        val room = FloatArray(gw * gh * 3)
+        for (c in 0 until 3) {
+            val ch = gauss(FloatArray(gw * gh) { small[it * 3 + c] }, gw, gh, gw / 10f)
+            for (i in 0 until gw * gh) room[i * 3 + c] = ch[i]
+        }
+        val tint = FloatArray(gw * gh * 3)
+        for (i in 0 until gw * gh) {
+            val l = max(LUM[0] * room[i * 3] + LUM[1] * room[i * 3 + 1] + LUM[2] * room[i * 3 + 2], 1e-5f)
+            for (c in 0 until 3) tint[i * 3 + c] = (room[i * 3 + c] / l).coerceIn(0f, 2.5f)
+        }
+        val lumBig = gauss(lum, gw, gh, gw / 40f)
+        return Input(depth, lum, gw, gh, tint, lumBig).also { synchronized(memory) { memory[key] = it } }
     }
 
     /** A box-averaged copy of the picture at GRID size: linear ProPhoto RGB. */
@@ -159,12 +176,21 @@ object Sun {
 
     // -------------------------------------------------------------- the light on surfaces ----
 
+    /** The scene as 3D, shared by every light: built once per photo and scale. */
+    internal class Scene(
+        val gw: Int, val gh: Int, val f: Float, val cx: Float, val cy: Float, val near: Float, val far: Float,
+        val Z: FloatArray, val Zs: FloatArray, val P: FloatArray, val N: FloatArray, val T: FloatArray, val wf: FloatArray,
+    )
+
+    private val scenes = object : LinkedHashMap<String, Scene>(4, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Scene>?) = size > 3
+    }
     private val maps = object : LinkedHashMap<String, LightMap>(8, 0.75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, LightMap>?) = size > 6
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, LightMap>?) = size > 12
     }
 
     /** The scene's size from the user's scale: field of view, nearest and farthest, in metres. */
-    private fun scene(scale: Float): Triple<Float, Float, Float> {
+    private fun sceneSize(scale: Float): Triple<Float, Float, Float> {
         val s = scale.coerceIn(0f, 1f)
         val hfov = 20f + 55f * s
         val near = (0.6f * Math.pow(4.0, s.toDouble())).toFloat()
@@ -172,25 +198,26 @@ object Sun {
         return Triple(hfov, near, far)
     }
 
-    /** The sun's light for this photo and look, remembered until either changes. */
-    fun lightMap(input: Input, look: RaysLook, log: (String) -> Unit = {}): LightMap? {
-        val l = toward(look, input.gw.toFloat() / input.gh) ?: return null
-        val key = "${System.identityHashCode(input)}|${l.joinToString { "%.4f".format(java.util.Locale.US, it) }}|${"%.3f".format(java.util.Locale.US, look.scale)}"
+    /** One light's effect, remembered until the light, the photo or the scene's scale changes. */
+    fun lightMap(input: Input, look: RaysLook, sceneScale: Float, log: (String) -> Unit = {}): LightMap? {
+        if (!wanted(look)) return null
+        val key = "${System.identityHashCode(input)}|${look.key()}|${"%.3f".format(java.util.Locale.US, sceneScale)}"
         synchronized(maps) { maps[key] }?.let { return it }
         val t0 = System.currentTimeMillis()
-        val m = compute(input, l, look.scale)
-        log("sun on surfaces worked out in ${System.currentTimeMillis() - t0} ms")
+        val sc = scene(input, sceneScale)
+        val m = light(sc, look) ?: return null
+        log("${look.type} on surfaces worked out in ${System.currentTimeMillis() - t0} ms")
         return m.also { synchronized(maps) { maps[key] = it } }
     }
 
-    /** The method itself — the same steps, in the same order, as the version tested on five photos. */
-    internal fun compute(input: Input, toward: FloatArray, scale: Float): LightMap {
+    internal fun scene(input: Input, scale: Float): Scene {
+        val key = "${System.identityHashCode(input)}|${"%.3f".format(java.util.Locale.US, scale)}"
+        synchronized(scenes) { scenes[key] }?.let { return it }
         val gw = input.gw; val gh = input.gh; val n = gw * gh
-        val (hfov, near, far) = scene(scale)
+        val (hfov, near, far) = sceneSize(scale)
         val f = (gw / 2f) / tan(Math.toRadians(hfov / 2.0)).toFloat(); val cx = gw / 2f; val cy = gh / 2f
         // the depth, stretched back to the picture's shape (the model saw it squeezed square)
-        val dn = FloatArray(n)
-        val S = Depth.SIZE
+        val dn = FloatArray(n); val S = Depth.SIZE
         for (y in 0 until gh) for (x in 0 until gw) {
             val sx = ((x + 0.5f) * S / gw - 0.5f).coerceIn(0f, (S - 1).toFloat()); val sy = ((y + 0.5f) * S / gh - 0.5f).coerceIn(0f, (S - 1).toFloat())
             val x0 = sx.toInt(); val y0 = sy.toInt(); val x1 = min(x0 + 1, S - 1); val y1 = min(y0 + 1, S - 1); val fx = sx - x0; val fy = sy - y0
@@ -200,8 +227,7 @@ object Sun {
         val Z = FloatArray(n) { 1f / (1f / far + dn[it] * (1f / near - 1f / far)) }
         // thin near things (whiskers, hair, grass) set neither shape nor shadow: an opening of nearness
         val k = max(3, gw / 90).let { if (it % 2 == 0) it + 1 else it }
-        val nearness = FloatArray(n) { 1f / Z[it] }
-        val opened = dilate(erode(nearness, gw, gh, k), gw, gh, k)
+        val opened = dilate(erode(FloatArray(n) { 1f / Z[it] }, gw, gh, k), gw, gh, k)
         val Zs = FloatArray(n) { 1f / max(opened[it], 1e-6f) }
         // shape: positions and the way each surface faces, from the smoothed depth
         val Zb = gauss(Zs, gw, gh, 2.5f)
@@ -222,52 +248,134 @@ object Sun {
             if (nz > 0) { nx = -nx; ny = -ny; nz = -nz }                 // facing the camera
             N[i * 3] = nx; N[i * 3 + 1] = ny; N[i * 3 + 2] = nz
         }
-        // light: by the angle each surface faces the sun, times whether the sun reaches it
-        val lx = toward[0]; val ly = toward[1]; val lz = toward[2]
-        val wrap = 0.3f
-        val march = 0.375f * far; val thick = 0.11f * far; val step0 = 0.001f * far
-        val tol = 0.002f * far; val rampIn = 0.005f * far; val rampOut = 0.0125f * far
-        val M = 48
-        val rng = java.util.Random(2)
-        val direct = FloatArray(n)
+        // how far each surface plausibly extends behind what the camera sees: about as deep as
+        // its object is wide (twice the distance to the nearest depth edge). A fixed thickness made
+        // a chandelier's thin arms into walls and blocked a lamp from its whole ceiling.
+        val edge = BooleanArray(n)
         for (y in 0 until gh) for (x in 0 until gw) {
-            val i = y * gw + x
-            val facing = ((N[i * 3] * lx + N[i * 3 + 1] * ly + N[i * 3 + 2] * lz + wrap) / (1f + wrap)).coerceIn(0f, 1f)
-            if (facing <= 0f) { rng.nextFloat(); continue }
-            // the surface point — from the smoothed depth, like its angle — stepped off the surface first
-            val sx = P[i * 3] + N[i * 3] * step0; val sy = P[i * 3 + 1] + N[i * 3 + 1] * step0; val sz = P[i * 3 + 2] + N[i * 3 + 2] * step0
-            val jit = rng.nextFloat()
+            val xa = max(x - 1, 0); val xb = min(x + 1, gw - 1); val ya = max(y - 1, 0); val yb = min(y + 1, gh - 1)
+            val gx = (ln(Zs[y * gw + xb]) - ln(Zs[y * gw + xa])) / (xb - xa); val gy = (ln(Zs[yb * gw + x]) - ln(Zs[ya * gw + x])) / (yb - ya)
+            edge[y * gw + x] = sqrt(gx * gx + gy * gy) >= 0.04f
+        }
+        val dist = distanceToEdge(edge, gw, gh)
+        val T = FloatArray(n) { (2f * dist[it] * Zs[it] / f).coerceIn(0.02f, 0.11f * far) }
+        val wf = focusWeight(input.lum, Zs, gw, gh)
+        return Scene(gw, gh, f, cx, cy, near, far, Z, Zs, P, N, T, wf).also { synchronized(scenes) { scenes[key] = it } }
+    }
+
+    /** A point in the scene at a place on the picture, at the depth seen there, nudged nearer or farther. */
+    private fun pointAt(sc: Scene, u: Float, v: Float, nudge: Float): FloatArray {
+        val z0 = bilinear(sc.Zs, sc.gw, sc.gh, u, v)
+        val z = (z0 - 0.012f * sc.far + nudge * 0.25f * sc.far).coerceAtLeast(sc.near * 0.3f)    // just in front of what it sits on
+        val x = u * sc.gw; val y = v * sc.gh
+        return floatArrayOf((x - sc.cx) / sc.f * z, (y - sc.cy) / sc.f * z, z)
+    }
+
+    /** One light on every surface: by the angle each faces it, how far it is, and whether it is in shadow. */
+    private fun light(sc: Scene, look: RaysLook): LightMap? {
+        val l = look.withDefaults()
+        val gw = sc.gw; val gh = sc.gh; val n = gw * gh
+        val direct = FloatArray(n)
+        val rng = java.util.Random(2)
+        val wrap = 0.3f; val M = 48
+        val step0 = 0.001f * sc.far; val tol = 0.002f * sc.far; val rampIn = 0.005f * sc.far
+        fun visible(i: Int, lx: Float, ly: Float, lz: Float, span: Float, jit: Float): Float {
+            val sx = sc.P[i * 3] + sc.N[i * 3] * step0; val sy = sc.P[i * 3 + 1] + sc.N[i * 3 + 1] * step0; val sz = sc.P[i * 3 + 2] + sc.N[i * 3 + 2] * step0
+            val minThick = 1.5f * span / M                     // never thinner than a step: thin things cannot be skipped over
             var vis = 1f
             for (s in 1..M) {
-                val t = march * ((s - 1 + jit) / M)
+                val t = span * ((s - 1 + jit) / M)
                 val qx = sx + lx * t; val qy = sy + ly * t; val qz = sz + lz * t
                 if (qz <= 0.05f) continue
-                val qu = (qx / qz * f + cx).toInt(); val qv = (qy / qz * f + cy).toInt()
+                val qu = (qx / qz * sc.f + sc.cx).toInt(); val qv = (qy / qz * sc.f + sc.cy).toInt()
                 if (qu < 0 || qu >= gw || qv < 0 || qv >= gh) continue
-                val zs = Zs[qv * gw + qu]
-                val behind = ((qz - zs - tol) / rampIn).coerceIn(0f, 1f) * ((zs + thick - qz) / rampOut).coerceIn(0f, 1f)
+                val j = qv * gw + qu; val zs = sc.Zs[j]; val th = max(sc.T[j], minThick)
+                val behind = ((qz - zs - tol) / rampIn).coerceIn(0f, 1f) * ((zs + th - qz) / max(0.1f * th, 0.005f)).coerceIn(0f, 1f)
                 vis *= 1f - behind
                 if (vis < 0.01f) break
             }
-            direct[i] = facing * vis
+            return vis
         }
-        // on abrupt depth edges the angle is a guess: those pixels take their own surface's light
-        val lz2 = FloatArray(n) { ln(Zs[it]) }
+        fun facing(i: Int, dx: Float, dy: Float, dz: Float) = ((sc.N[i * 3] * dx + sc.N[i * 3 + 1] * dy + sc.N[i * 3 + 2] * dz + wrap) / (1f + wrap)).coerceIn(0f, 1f)
+        when (l.type) {
+            "sun" -> {
+                val d = toward(l, gw.toFloat() / gh) ?: return null
+                val march = 0.375f * sc.far
+                for (i in 0 until n) {
+                    val fa = facing(i, d[0], d[1], d[2]); val jit = rng.nextFloat()
+                    if (fa > 0f) direct[i] = fa * visible(i, d[0], d[1], d[2], march, jit)
+                }
+            }
+            else -> {
+                // a lamp — or, for an area, five lamps along its line: soft shadows from its size
+                val lamps = if (l.type == "area" && !l.u2.isNaN()) (0 until 5).map { k -> val t = k / 4f
+                        pointAt(sc, l.u + (l.u2 - l.u) * t, l.v + (l.v2 - l.v) * t, l.nudge) }
+                    else listOf(pointAt(sc, l.u, l.v, l.nudge))
+                val reachM = (0.05f + 0.6f * l.reach) * sc.far
+                val exclude = 0.03f * sc.far                     // the lamp's own housing does not block it
+                // a spot shines only within its cone, aimed at the depth seen at its aim point
+                val aim = if (l.type == "spot" && !l.u2.isNaN()) pointAt(sc, l.u2, l.v2, 0f).let { a ->
+                    val L = lamps[0]; val ax = a[0] - L[0]; val ay = a[1] - L[1]; val az = a[2] - L[2]; val an = sqrt(ax * ax + ay * ay + az * az).coerceAtLeast(1e-6f)
+                    floatArrayOf(ax / an, ay / an, az / an) } else null
+                for (i in 0 until n) {
+                    val jit = rng.nextFloat()
+                    var sum = 0f
+                    for (L in lamps) {
+                        val tx = L[0] - sc.P[i * 3]; val ty = L[1] - sc.P[i * 3 + 1]; val tz = L[2] - sc.P[i * 3 + 2]
+                        val r = sqrt(tx * tx + ty * ty + tz * tz).coerceAtLeast(1e-4f)
+                        val dx = tx / r; val dy = ty / r; val dz = tz / r
+                        val fa = facing(i, dx, dy, dz); if (fa <= 0f) continue
+                        var gate = 1f
+                        if (aim != null) {
+                            val cosA = -(dx * aim[0] + dy * aim[1] + dz * aim[2])
+                            val ang = kotlin.math.acos(cosA.coerceIn(-1f, 1f))
+                            val t = ((ang - l.cone * 0.8f) / (l.cone * 0.4f)).coerceIn(0f, 1f)
+                            gate = 1f - t * t * (3f - 2f * t)
+                            if (gate <= 0f) continue
+                        }
+                        val fall = reachM * reachM / (r * r + reachM * reachM)
+                        sum += fa * fall * gate * visible(i, dx, dy, dz, max(r - exclude, 0f), jit)
+                    }
+                    direct[i] = sum / lamps.size
+                }
+            }
+        }
+        return clean(sc, direct)
+    }
+
+    /** No seams on depth edges; noise smoothed within surfaces; the light blurred as the lens blurred the scene. */
+    private fun clean(sc: Scene, direct: FloatArray): LightMap {
+        val gw = sc.gw; val gh = sc.gh; val n = gw * gh
         val good = FloatArray(n)
         for (y in 0 until gh) for (x in 0 until gw) {
-            val i = y * gw + x
             val xa = max(x - 1, 0); val xb = min(x + 1, gw - 1); val ya = max(y - 1, 0); val yb = min(y + 1, gh - 1)
-            val gx = (lz2[y * gw + xb] - lz2[y * gw + xa]) / (xb - xa); val gy = (lz2[yb * gw + x] - lz2[ya * gw + x]) / (yb - ya)
-            good[i] = if (sqrt(gx * gx + gy * gy) < 0.04f) 1f else 0f
+            val gx = (ln(sc.Zs[y * gw + xb]) - ln(sc.Zs[y * gw + xa])) / (xb - xa); val gy = (ln(sc.Zs[yb * gw + x]) - ln(sc.Zs[ya * gw + x])) / (yb - ya)
+            good[y * gw + x] = if (sqrt(gx * gx + gy * gy) < 0.04f) 1f else 0f
         }
-        val num = depthSmooth(FloatArray(n) { direct[it] * good[it] }, Zs, gw, gh, 3, 0.04f)
-        val den = depthSmooth(good, Zs, gw, gh, 3, 0.04f)
+        val num = depthSmooth(FloatArray(n) { direct[it] * good[it] }, sc.Zs, gw, gh, 3, 0.04f)
+        val den = depthSmooth(good, sc.Zs, gw, gh, 3, 0.04f)
         for (i in 0 until n) if (good[i] < 0.5f && den[i] > 1e-3f) direct[i] = num[i] / den[i]
-        val smoothed = depthSmooth(direct, Z, gw, gh, 2, 0.05f)
-        // away from the plane of focus, blur the light as the lens blurred the scene
-        val wf = focusWeight(input.lum, Zs, gw, gh)
+        val smoothed = depthSmooth(direct, sc.Z, gw, gh, 2, 0.05f)
         val blurred = gauss(smoothed, gw, gh, gw / 40f)
-        return LightMap(gw, gh, FloatArray(n) { wf[it] * smoothed[it] + (1f - wf[it]) * blurred[it] })
+        return LightMap(gw, gh, FloatArray(n) { sc.wf[it] * smoothed[it] + (1f - sc.wf[it]) * blurred[it] })
+    }
+
+    /** Distance in pixels to the nearest edge pixel: a two-pass chamfer (3-4), close to true distance. */
+    private fun distanceToEdge(edge: BooleanArray, gw: Int, gh: Int): FloatArray {
+        val big = 1e9f; val d = FloatArray(gw * gh) { if (edge[it]) 0f else big }
+        for (y in 0 until gh) for (x in 0 until gw) {
+            val i = y * gw + x; var m = d[i]
+            if (x > 0) m = min(m, d[i - 1] + 1f)
+            if (y > 0) { m = min(m, d[i - gw] + 1f); if (x > 0) m = min(m, d[i - gw - 1] + 1.4142f); if (x < gw - 1) m = min(m, d[i - gw + 1] + 1.4142f) }
+            d[i] = m
+        }
+        for (y in gh - 1 downTo 0) for (x in gw - 1 downTo 0) {
+            val i = y * gw + x; var m = d[i]
+            if (x < gw - 1) m = min(m, d[i + 1] + 1f)
+            if (y < gh - 1) { m = min(m, d[i + gw] + 1f); if (x < gw - 1) m = min(m, d[i + gw + 1] + 1.4142f); if (x > 0) m = min(m, d[i + gw - 1] + 1.4142f) }
+            d[i] = m
+        }
+        return FloatArray(gw * gh) { min(d[it], max(gw, gh).toFloat()) }
     }
 
     /**
@@ -342,26 +450,55 @@ object Sun {
     // ------------------------------------------------------------------------- applying ----
 
     /**
-     * Adds the sun to the picture, in place, before the film: each pixel's light is multiplied
-     * by 1 + strength × sun × colour, where the brush ([mask]) lets it fall. Multiplying means
-     * the sun scales what each surface reflects: black stays black, and nothing is painted on.
+     * Adds every light to the picture, in place, before the film. Each light adds
+     * strength × light × colour × what the surface reflects — the photo's own value there, or,
+     * with "reveal", at least an ordinary surface in the room's colour carrying the photo's own
+     * faint texture. With reveal at 0 this only scales what was recorded: black stays black.
+     * The brush ([mask]) says where light may fall, for every light alike.
      */
-    fun apply(src: Develop.Source, look: RaysLook, mask: ExposureMap?, map: LightMap, log: (String) -> Unit = {}) {
-        if (look.surface <= 0f) return
-        log("sun on surfaces")
+    fun apply(src: Develop.Source, lights: List<Pair<RaysLook, LightMap>>, mask: ExposureMap?, input: Input, log: (String) -> Unit = {}) {
+        val active = lights.filter { it.first.surface > 0f }
+        if (active.isEmpty()) return
+        log("light on surfaces (${active.size})")
         val w = src.width; val h = src.height
         val f = src.image.data.order(ByteOrder.nativeOrder()).asFloatBuffer()
-        val c = look.chroma(); val k = look.surface
+        val chroma = active.map { it.first.chroma() }
+        val gw = input.gw; val gh = input.gh
         for (y in 0 until h) {
             val v = (y + 0.5f) / h
             for (x in 0 until w) {
                 val u = (x + 0.5f) / w
-                var d = map.sample(u, v)
-                if (mask != null) d *= mask.sample(u, v).coerceIn(0f, 1f)
-                if (d <= 0f) continue
+                val cover = mask?.sample(u, v)?.coerceIn(0f, 1f) ?: 1f
+                if (cover <= 0f) continue
                 val o = (y * w + x) * 3
-                f.put(o, f.get(o) * (1f + k * d * c[0])); f.put(o + 1, f.get(o + 1) * (1f + k * d * c[1])); f.put(o + 2, f.get(o + 2) * (1f + k * d * c[2]))
+                val r = f.get(o); val g = f.get(o + 1); val b = f.get(o + 2)
+                var ar = 0f; var ag = 0f; var ab = 0f
+                for ((k, pair) in active.withIndex()) {
+                    val (look, map) = pair
+                    val d = map.sample(u, v) * cover
+                    if (d <= 0f) continue
+                    var fr = r; var fg = g; var fb = b
+                    if (look.reveal > 0f) {
+                        // an ordinary surface where too little was recorded, keeping the photo's own texture
+                        val l = LUM[0] * r + LUM[1] * g + LUM[2] * b
+                        val tex = ((l + 1e-4f) / (bilinear(input.lumBig, gw, gh, u, v) + 1e-4f)).coerceIn(0.3f, 3f)
+                        val fl = look.reveal * 0.03f * tex
+                        fr = max(r, fl * bilinear3(input.tint, gw, gh, u, v, 0)); fg = max(g, fl * bilinear3(input.tint, gw, gh, u, v, 1)); fb = max(b, fl * bilinear3(input.tint, gw, gh, u, v, 2))
+                    }
+                    val c = chroma[k]; val s = look.surface * d
+                    ar += s * c[0] * fr; ag += s * c[1] * fg; ab += s * c[2] * fb
+                }
+                if (ar != 0f || ag != 0f || ab != 0f) { f.put(o, r + ar); f.put(o + 1, g + ag); f.put(o + 2, b + ab) }
             }
         }
+    }
+
+    private fun bilinear3(a: FloatArray, w: Int, h: Int, u: Float, vv: Float, c: Int): Float {
+        val x = (u * w - 0.5f).coerceIn(0f, (w - 1).toFloat()); val y = (vv * h - 0.5f).coerceIn(0f, (h - 1).toFloat())
+        val x0 = x.toInt(); val y0 = y.toInt(); val x1 = min(x0 + 1, w - 1); val y1 = min(y0 + 1, h - 1)
+        val fx = x - x0; val fy = y - y0
+        val p = a[(y0 * w + x0) * 3 + c] * (1 - fx) + a[(y0 * w + x1) * 3 + c] * fx
+        val q = a[(y1 * w + x0) * 3 + c] * (1 - fx) + a[(y1 * w + x1) * 3 + c] * fx
+        return p * (1 - fy) + q * fy
     }
 }

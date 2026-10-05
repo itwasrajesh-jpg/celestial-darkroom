@@ -114,6 +114,8 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
     // ...and god rays: where the light comes from, how bright and how far, and where they may fall.
     var raysMap by remember { mutableStateOf(ExposureMaps.load(context, source, ExposureMaps.RAYS)) }
     var raysLook by remember { mutableStateOf(com.celestial.latent.develop.RaysLooks.load(context, source)) }
+    // lights 2, 3 and 4: the same kind of light as light 1, kept beside it
+    var extraLights by remember { mutableStateOf(com.celestial.latent.develop.ExtraLights.load(context, source)) }
     /** Everything painted on this photo, as one value, so no render can mix them up. */
     fun currentMasks() = Masks(exposureMap, softenMap, fogMap, raysMap, raysOn = true)
     // A double exposure: this frame was made onto an earlier one, and is shown and printed as both.
@@ -173,7 +175,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                 val iso = Develop.isoOf(context, source)
                 // The working buffer belongs to the cache and is reused; never closed here.
                 src = Develop.openCached(context, source, isRaw, DECODE_EDGE, r, iso, softenMask = softenMap, pairFirst = pairFirst, framing = framing,
-                    fogMask = fogMap, fogLook = fogLook, raysMask = raysMap, raysLook = raysLook) { m -> status = m }
+                    fogMask = fogMap, fogLook = fogLook, raysMask = raysMap, raysLook = raysLook, extraLights = extraLights) { m -> status = m }
                 // Middle of the frame first on the quick pass: it appears sooner and reads the same.
                 val target = if (cropFraction < 1f) Develop.centreCrop(src!!, cropFraction).also { cropped = it } else src!!
                 val t0 = System.nanoTime()
@@ -204,7 +206,8 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
             val iso = Develop.isoOf(context, source)
             val s0 = Develop.openCached(context, source, isRaw, DECODE_EDGE, r, iso, softenMask = masks.soften, pairFirst = pairFirst, framing = framing,
                 fogMask = masks.fog, fogLook = fogLook,
-                raysMask = masks.rays, raysLook = if (masks.raysOn) raysLook else com.celestial.latent.develop.RaysLook()) { }
+                raysMask = masks.rays, raysLook = if (masks.raysOn) raysLook else com.celestial.latent.develop.RaysLook(),
+                extraLights = if (masks.raysOn) extraLights else emptyList()) { }
             val (bytes, _) = Develop.render(context, s0, r.copy(previewMaxSize = edge), preview = true, exposureMap = masks.dodge, softenMask = masks.soften)
             BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
         } catch (t: Throwable) {
@@ -223,7 +226,8 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
             val iso = Develop.isoOf(context, source)
             val whole = Develop.openCached(context, source, isRaw, DETAIL_EDGE, r, iso, softenMask = masks.soften, pairFirst = pairFirst, framing = framing,
                 fogMask = masks.fog, fogLook = fogLook,
-                raysMask = masks.rays, raysLook = if (masks.raysOn) raysLook else com.celestial.latent.develop.RaysLook()) { }
+                raysMask = masks.rays, raysLook = if (masks.raysOn) raysLook else com.celestial.latent.develop.RaysLook(),
+                extraLights = if (masks.raysOn) extraLights else emptyList()) { }
             Develop.cropRegion(whole, region).use { part ->
                 val (bytes, _) = Develop.render(context, part, r.copy(previewMaxSize = edge), preview = true,
                     exposureMap = masks.dodge?.crop(region), softenMask = masks.soften)
@@ -337,6 +341,13 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
         }
         if (!printing && src != null) render(fast = false)
     }
+    // The extra lights, kept with the photo after a moment's pause, like light 1.
+    LaunchedEffect(extraLights) {
+        delay(400)
+        val l = extraLights
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { com.celestial.latent.develop.ExtraLights.save(context, source, l) }
+        if (!printing && src != null) render(fast = false)
+    }
     // Back from PRINT: the strips may have changed the exposure while the preview slept.
     LaunchedEffect(printing) { if (!printing && src != null) render(fast = false) }
     // The decoded copy is kept by Develop.Cache so coming back is instant; nothing to free here.
@@ -388,6 +399,8 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                     onRaysMap = { raysMap = it },
                     raysLook = raysLook,
                     onRaysLook = { raysLook = it },
+                    extraLights = extraLights,
+                    onExtraLights = { extraLights = it },
                     renderWithMasks = { r, edge, mk -> renderStill(r, edge, mk) },
                     renderRegionWithMasks = { r, edge, mk, reg -> renderDetail(r, reg, edge, mk) },
                     modifier = Modifier.fillMaxSize(),
@@ -959,7 +972,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                     fullRunning = true; fullStarted = System.currentTimeMillis(); status = "full size: queued"; fullError = null
                     fullJob = com.celestial.latent.develop.DevelopQueue.submitFull(
                         context, source, isRaw, recipe, upscale = printSize, exposureMap = exposureMap, softenMask = softenMap, pairFirst = pairFirst, framing = framing,
-                        fogMask = fogMap, fogLook = fogLook, raysMask = raysMap, raysLook = raysLook,
+                        fogMask = fogMap, fogLook = fogLook, raysMask = raysMap, raysLook = raysLook, extraLights = extraLights,
                         onStatus = { m ->
                             status = "full size: $m"
                             if (m.startsWith("failed")) fullError =
