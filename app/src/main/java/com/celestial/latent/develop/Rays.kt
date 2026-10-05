@@ -36,6 +36,15 @@ data class RaysLook(
     val dust: Float = 0.5f,
     /** 0: beams everywhere … 1: beams only where fog is painted (real beams need hazy air). */
     val fogOnly: Float = 0f,
+    /**
+     * How strongly the light lands on surfaces (0 = only in the air): the sun lighting what it
+     * faces, with real shadows, worked out from the photo's estimated depth. Sun only for now.
+     */
+    val surface: Float = 0f,
+    /** Where the sun is in depth: −1 behind the camera (lighting faces) … +1 behind the subject (rims). */
+    val front: Float = 0f,
+    /** How big the scene is: 0 a close-up … 1 a wide view — sets the depth's scale, and so its shadows. */
+    val scale: Float = 0.3f,
 ) {
     val placed: Boolean get() = u in 0f..1f && v in 0f..1f
 
@@ -59,8 +68,8 @@ data class RaysLook(
         LIGHT_SATURATION_MAX)
 
     /** Saved as "v3|…" with every field; older saves were all made in "through gaps". */
-    fun key(): String = listOf("v3", type, mode).joinToString("|") + "|" +
-        listOf(u, v, u2, v2, cone, amount, length, warmth, if (coloured) 1f else 0f, hue, tint, dust, fogOnly)
+    fun key(): String = listOf("v4", type, mode).joinToString("|") + "|" +
+        listOf(u, v, u2, v2, cone, amount, length, warmth, if (coloured) 1f else 0f, hue, tint, dust, fogOnly, surface, front, scale)
             .joinToString("|") { "%.4f".format(Locale.US, it) }
 
     companion object {
@@ -70,6 +79,10 @@ data class RaysLook(
             if (s.isNullOrEmpty()) return RaysLook()
             return runCatching {
                 when {
+                    s.startsWith("v4|") -> {
+                        val p = s.split("|"); val f = p.drop(3).map { it.toFloat() }
+                        RaysLook(p[1], f[0], f[1], f[2], f[3], f[4], f[5], f[6], p[2], f[7], f[8] > 0.5f, f[9], f[10], f[11], f[12], f[13], f[14], f[15])
+                    }
                     s.startsWith("v3|") -> {
                         val p = s.split("|"); val f = p.drop(3).map { it.toFloat() }
                         RaysLook(p[1], f[0], f[1], f[2], f[3], f[4], f[5], f[6], p[2], f[7], f[8] > 0.5f, f[9], f[10], f[11], f[12])

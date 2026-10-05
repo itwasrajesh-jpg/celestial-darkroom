@@ -947,7 +947,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                 (if (pairFirst != null) " · DOUBLE EXPOSURE" else "") +
                 (if (!framing.isIdentity) " · FRAMED" else "") +
                 (if (fogMap?.isBlank == false) " · FOGGED" else "") +
-                (if (raysLook.placed) " · RAYS" else ""),
+                (if (raysLook.placed) " · LIGHT" else ""),
                 color = LatentColors.Line, fontSize = 9.sp, letterSpacing = 1.5.sp, lineHeight = 13.sp,
                 // takes the space the button leaves and wraps if it must — it used to crush the button
                 modifier = Modifier.weight(1f).padding(end = 12.dp))

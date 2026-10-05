@@ -191,6 +191,18 @@ object Develop {
      * pixels in place, so their settings are part of the key: changing either must re-decode,
      * otherwise the edit would silently do nothing on an already-processed copy.
      */
+    /** The photo's depth for the sun on surfaces, when the look asks for it; never stops a develop. */
+    private fun sunInput(context: Context, source: Uri, framing: Framing, src: Source, look: RaysLook, log: (String) -> Unit): Sun.Input? =
+        if (!Sun.wanted(look)) null else runCatching { Sun.prepare(context, source, framing, src, log) }
+            .getOrElse { t -> Log.e("Latent", "sun: could not prepare the depth", t); null }
+
+    /** The sun on surfaces, before the film; a failure is logged and the photo develops without it. */
+    private fun sunOnSurfaces(src: Source, look: RaysLook, mask: ExposureMap?, input: Sun.Input?, log: (String) -> Unit) {
+        if (input == null) return
+        runCatching { Sun.lightMap(input, look, log)?.let { Sun.apply(src, look, mask, it, log) } }
+            .onFailure { t -> Log.e("Latent", "sun: could not light the surfaces", t) }
+    }
+
     fun openCached(context: Context, source: Uri, isRaw: Boolean, maxEdge: Int, recipe: Recipe, iso: Int,
                    softenMask: ExposureMap? = null, pairFirst: Uri? = null, framing: Framing = Framing(),
                    fogMask: ExposureMap? = null, fogLook: FogLook = FogLook(),
@@ -225,12 +237,17 @@ object Develop {
             softenMask?.let { "${it.width}x${it.height}:${it.stops.contentHashCode()}" } ?: "-",
             fogMask?.let { "${it.width}x${it.height}:${it.stops.contentHashCode()}:${fogLook.key()}" } ?: "-",
             if (raysLook.placed) "${raysLook.key()}:${raysMask?.let { "${it.width}x${it.height}:${it.stops.contentHashCode()}" } ?: "all"}" else "-",
+            // the sun on surfaces needs the depth model: once it is installed, prepare again
+            if (Sun.wanted(raysLook)) "sun:${Depth.isReady(context)}" else "-",
         ).joinToString("|")
         if (working.preparedFor == prep) return working
         working.frameFrom(pristine, framing)
+        // the depth comes from the framed picture as it was, before fog or light touch it
+        val sunIn = sunInput(context, source, framing, working, raysLook, log)
         // the air first — it is in front of the lens — then the lens filter
         fogMask?.let { Fog.apply(working, it, fogLook, log) }
         Rays.apply(working, raysLook, raysMask, fogMask, fogLook.amount, log)          // light in the same air
+        sunOnSurfaces(working, raysLook, raysMask, sunIn, log)                           // and the same light on what it meets
         lensFilterSource(working, recipe, log)
         // A pair carries the noise of both frames: clean it for the noisier of the two.
         denoiseSource(working, recipe, isoUsed, log)
@@ -791,8 +808,10 @@ object Develop {
             try { opened.blankSized(fw, fh).also { it.frameFrom(opened, framing) } } finally { opened.close() }
         }
         return src.use { s ->
+            val sunIn = sunInput(context, source, framing, s, raysLook, log)
             fogMask?.let { Fog.apply(s, it, fogLook, log) }
             Rays.apply(s, raysLook, raysMask, fogMask, fogLook.amount, log)
+            sunOnSurfaces(s, raysLook, raysMask, sunIn, log)
             lensFilterSource(s, recipe, log)
             denoiseSource(s, recipe, if (pair) maxOf(isoOf(context, source), isoOf(context, pairFirst!!)) else isoOf(context, source), log)
             fastDiffusionSource(s, recipe, preview = false, softenMask = softenMask, log = log)

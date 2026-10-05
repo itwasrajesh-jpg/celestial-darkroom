@@ -293,7 +293,7 @@ private fun StepIndicator(active: Int, available: Int, onSelect: (Int) -> Unit, 
     // Four names in one row, measured: "TEST STRIP" and 16 dp gaps would need ~394 dp of the ~357
     // a phone has, and the last would be crushed. "STRIP", 12 dp gaps and 1.2 sp letter spacing
     // come to about 331 dp.
-    val steps = listOf("STRIP", "COLOUR", "DODGE & BURN", "SOFTEN", "FOG", "RAYS")
+    val steps = listOf("STRIP", "COLOUR", "DODGE & BURN", "SOFTEN", "FOG", "LIGHT")
     // six names are wider than a phone: the row scrolls sideways
     Row(modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         steps.forEachIndexed { i, label ->
@@ -786,7 +786,7 @@ private val RAYS_TINT = Color(0xFFF2DFA8)
 
 /** Rays: where they may fall — 1 fully, 0 not at all. Unpainted, they fall everywhere. */
 private val RAYS_SPEC = PaintSpec(
-    hint = "Tap where the light comes from. Paint Clear where rays should not fall.",
+    hint = "Place the light and aim it. Paint Clear where it should not fall — in the air or on surfaces.",
     minusLabel = "Clear", plusLabel = "Rays",
     min = 0f, max = 1f, overlayFull = 1f,
     tintPlus = RAYS_TINT, tintMinus = RAYS_TINT,
@@ -938,12 +938,29 @@ private fun RaysLightTab(look: RaysLook, placing: Boolean, onLook: (RaysLook) ->
                 color = if (placing) LatentColors.Amber else LatentColors.TextDim, fontSize = 11.sp, modifier = Modifier.weight(1f))
             if (look.placed) Chip(if (placing) "cancel" else "re-place", on = placing) { onPlace() }
         }
-        // how bright, beside a swatch of the light's colour
+        // how bright in the air (the beams), beside a swatch of the light's colour
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.size(14.dp).clip(RoundedCornerShape(999.dp)).background(Color(Fog.swatchOf(look.chroma()))))
             Box(Modifier.weight(1f).padding(start = 6.dp)) {
-                SettleSlider("amount", "${(look.amount * 100f).roundToInt()}%", look.amount, 0f..1f) { onLook(look.copy(amount = (it * 100f).roundToInt() / 100f)) }
+                SettleSlider("in the air", "${(look.amount * 100f).roundToInt()}%", look.amount, 0f..1f) { onLook(look.copy(amount = (it * 100f).roundToInt() / 100f)) }
             }
+        }
+        // The same light on surfaces: what faces it brightens, what stands in its way casts a
+        // shadow — worked out from the photo's depth. The sun first; lamps and spots come next.
+        if (look.type == "sun") {
+            val context = androidx.compose.ui.platform.LocalContext.current
+            if (!com.celestial.latent.develop.Depth.isReady(context)) {
+                Text("On surfaces needs the depth model: Settings → Depth test → import it.", color = LatentColors.Amber, fontSize = 11.sp,
+                    modifier = Modifier.padding(top = 4.dp))
+            }
+            SettleSlider("on surfaces", "${(look.surface * 100f).roundToInt()}%", look.surface, 0f..2f) { onLook(look.copy(surface = (it * 100f).roundToInt() / 100f)) }
+            // the arrow aims across the picture; in depth the sun can be in front of the subject or behind it
+            SettleSlider("in front", "behind", look.front, -1f..1f) { onLook(look.copy(front = (it * 20f).roundToInt() / 20f)) }
+            // how big the scene is sets the depth's scale, and so how far shadows reach
+            SettleSlider("close-up", "wide", look.scale, 0f..1f) { onLook(look.copy(scale = (it * 20f).roundToInt() / 20f)) }
+        } else {
+            Text("On surfaces: the sun for now — lamps and spots come next.", color = LatentColors.TextDim, fontSize = 11.sp,
+                modifier = Modifier.padding(top = 4.dp))
         }
     }
 }
