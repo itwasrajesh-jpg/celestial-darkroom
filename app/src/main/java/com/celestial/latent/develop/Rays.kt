@@ -59,6 +59,13 @@ data class RaysLook(
      * colour and with the photo's own faint texture — so a lamp's pool can show in a dark room.
      */
     val reveal: Float = 0f,
+    /** An area light's width and height, as fractions of the picture's width and height (set by its corner handle). */
+    val aw: Float = 0.2f, val ah: Float = 0.12f,
+    /**
+     * Light bouncing off what the added lights hit, onto everything those surfaces can see: 0 … 1.
+     * A scene setting (light 1's is used), like the scene's size.
+     */
+    val bounce: Float = 0.5f,
 ) {
     val placed: Boolean get() = u in 0f..1f && v in 0f..1f
 
@@ -68,7 +75,8 @@ data class RaysLook(
         return when (type) {
             "sun" -> copy(u2 = (u + 0.12f).coerceIn(0f, 1f), v2 = (v + 0.2f).coerceIn(0f, 1f))
             "spot" -> copy(u2 = u, v2 = (v + 0.3f).coerceIn(0f, 1f))
-            "area" -> copy(u = (u - 0.15f).coerceIn(0f, 1f), u2 = (u + 0.15f).coerceIn(0f, 1f), v2 = v)
+            // a panel faces its aim point: below and towards the picture's middle to start
+            "area" -> copy(u2 = (u + (0.5f - u) * 0.5f).coerceIn(0f, 1f), v2 = (v + 0.3f).coerceIn(0f, 1f))
             else -> this
         }
     }
@@ -82,8 +90,8 @@ data class RaysLook(
         LIGHT_SATURATION_MAX)
 
     /** Saved as "v3|…" with every field; older saves were all made in "through gaps". */
-    fun key(): String = listOf("v5", type, mode).joinToString("|") + "|" +
-        listOf(u, v, u2, v2, cone, amount, length, warmth, if (coloured) 1f else 0f, hue, tint, dust, fogOnly, surface, front, scale, nudge, reach, reveal)
+    fun key(): String = listOf("v6", type, mode).joinToString("|") + "|" +
+        listOf(u, v, u2, v2, cone, amount, length, warmth, if (coloured) 1f else 0f, hue, tint, dust, fogOnly, surface, front, scale, nudge, reach, reveal, aw, ah, bounce)
             .joinToString("|") { "%.4f".format(Locale.US, it) }
 
     companion object {
@@ -93,6 +101,10 @@ data class RaysLook(
             if (s.isNullOrEmpty()) return RaysLook()
             return runCatching {
                 when {
+                    s.startsWith("v6|") -> {
+                        val p = s.split("|"); val f = p.drop(3).map { it.toFloat() }
+                        RaysLook(p[1], f[0], f[1], f[2], f[3], f[4], f[5], f[6], p[2], f[7], f[8] > 0.5f, f[9], f[10], f[11], f[12], f[13], f[14], f[15], f[16], f[17], f[18], f[19], f[20], f[21])
+                    }
                     s.startsWith("v5|") -> {
                         val p = s.split("|"); val f = p.drop(3).map { it.toFloat() }
                         RaysLook(p[1], f[0], f[1], f[2], f[3], f[4], f[5], f[6], p[2], f[7], f[8] > 0.5f, f[9], f[10], f[11], f[12], f[13], f[14], f[15], f[16], f[17], f[18])
@@ -252,13 +264,6 @@ private fun traceGaps(look: RaysLook, bright: FloatArray, gw: Int, gh: Int): Flo
                 val k = look.amount / STEPS
                 rays[o] = r * k; rays[o + 1] = g * k; rays[o + 2] = b * k
             }
-            "area" -> {
-                // a light with size: the rays from several points along its line, averaged — softer beams
-                for (k in 0 until AREA_POINTS) {
-                    val t = k.toFloat() / (AREA_POINTS - 1)
-                    fromPoint(px, py, lx + (l2x - lx) * t, ly + (l2y - ly) * t, AREA_STEPS, 1f / AREA_POINTS, o)
-                }
-            }
             "spot" -> {
                 // a point light that only shines within its cone, its edge softened
                 val ax = l2x - lx; val ay = l2y - ly
@@ -329,11 +334,6 @@ private fun emit(look: RaysLook, gw: Int, gh: Int, level: Float): FloatArray {
                     1f - t * t * (3f - 2f * t)
                 }
                 if (gate > 0f) point(px, py, lx, ly) * gate else 0f
-            }
-            "area" -> {
-                var sum = 0f
-                for (i in 0 until 5) { val t = i / 4f; sum += point(px, py, lx + (l2x - lx) * t, ly + (l2y - ly) * t) }
-                sum / 5f
             }
             else -> point(px, py, lx, ly)
         }

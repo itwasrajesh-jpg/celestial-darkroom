@@ -406,6 +406,8 @@ fun PrintPanel(
     var raysPlacing by remember { mutableStateOf(false) }
     // Which light the LIGHT step edits: 0 is light 1 (kept where it always was), then lights 2-4.
     var selected by remember { mutableStateOf(0) }
+    // bumped when the depth model is installed from the SURFACE tab, so the print re-develops with the light
+    var depthTick by remember { mutableStateOf(0) }
     val lights = listOf(raysLook) + extraLights
     val sel = lights[selected.coerceIn(0, lights.size - 1)]
     fun setSel(l: RaysLook) {
@@ -533,12 +535,14 @@ fun PrintPanel(
                         },
                         "SURFACE" to @Composable {
                             SurfaceTab(sel, sceneScale = raysLook.scale, onLook = { setSel(it) },
-                                onScene = { sc -> onRaysLook(raysLook.copy(scale = sc)) })
+                                onScene = { sc -> onRaysLook(raysLook.copy(scale = sc)) },
+                                onDepthReady = { depthTick++ },
+                                sceneBounce = raysLook.bounce, onBounce = { b -> onRaysLook(raysLook.copy(bounce = b)) })
                         },
                         "BEAM" to @Composable { RaysBeamTab(sel, onLook = { setSel(it) }) },
                     ),
-                    // any light changing re-develops the print
-                    refreshKey = lights)
+                    // any light changing re-develops the print — and the depth model arriving
+                    refreshKey = lights to depthTick)
             }
         }
     }
@@ -880,7 +884,8 @@ private fun raysHandles(l: RaysLook, aspect: Float): List<Pair<Float, Float>> {
     return when (d.type) {
         "sun" -> listOf(d.u to d.v, d.u2 to d.v2)
         "spot" -> { val (e1, e2) = coneEdges(d, aspect); listOf(d.u to d.v, d.u2 to d.v2, e1, e2) }
-        "area" -> listOf(d.u to d.v, d.u2 to d.v2, ((d.u + d.u2) / 2f) to ((d.v + d.v2) / 2f))
+        // a panel: its middle, where it aims, and a corner for its size
+        "area" -> listOf(d.u to d.v, d.u2 to d.v2, (d.u + d.aw / 2f) to (d.v + d.ah / 2f))
         else -> listOf(d.u to d.v)
     }
 }
@@ -909,9 +914,9 @@ private fun raysDragged(l: RaysLook, i: Int, u: Float, v: Float, aspect: Float):
             }
         }
         "area" -> when (i) {
-            0 -> d.copy(u = u, v = v)
-            1 -> d.copy(u2 = u, v2 = v)
-            else -> moved(u - (d.u + d.u2) / 2f, v - (d.v + d.v2) / 2f)
+            0 -> d.copy(u = u, v = v)                                                  // moves; keeps its aim and size
+            1 -> d.copy(u2 = u, v2 = v)                                                // turns to face this point
+            else -> d.copy(aw = (2f * kotlin.math.abs(u - d.u)).coerceIn(0.02f, 1f), ah = (2f * kotlin.math.abs(v - d.v)).coerceIn(0.02f, 1f))
         }
         else -> d.copy(u = u, v = v)
     }
@@ -943,7 +948,15 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawRaysLight(l: Ra
                 drawLine(a, p, Offset(p.x + (pe.x - p.x) * 1.6f, p.y + (pe.y - p.y) * 1.6f), w)
             }
         }
-        "area" -> drawLine(a.copy(alpha = 0.7f), p, at(d.u2, d.v2), 5.dp.toPx())
+        "area" -> {
+            // the panel, and a line to where it faces (it lights from its front only)
+            val c1 = at(d.u - d.aw / 2f, d.v - d.ah / 2f); val c2 = at(d.u + d.aw / 2f, d.v - d.ah / 2f)
+            val c3 = at(d.u + d.aw / 2f, d.v + d.ah / 2f); val c4 = at(d.u - d.aw / 2f, d.v + d.ah / 2f)
+            val path = androidx.compose.ui.graphics.Path().apply { moveTo(c1.x, c1.y); lineTo(c2.x, c2.y); lineTo(c3.x, c3.y); lineTo(c4.x, c4.y); close() }
+            drawPath(path, a.copy(alpha = 0.18f))
+            drawPath(path, a, style = Stroke(w))
+            drawLine(a.copy(alpha = 0.6f), p, at(d.u2, d.v2), w)
+        }
         else -> {
             for (k in 0 until 8) {
                 val t = k * PI.toFloat() / 4f
@@ -1003,7 +1016,7 @@ private fun RaysLightTab(
                 if (placing) "tap the photo where the light comes from" else when (look.type) {
                     "sun" -> "drag the arrow's tip to aim it, its tail to move it"
                     "spot" -> "drag the light, its aim, or the cone's edges"
-                    "area" -> "drag the ends to resize, the middle to move"
+                    "area" -> "drag the middle to move, the dot to aim, a corner to size"
                     else -> "drag the light to move it"
                 },
                 color = if (placing) LatentColors.Amber else LatentColors.TextDim, fontSize = 11.sp, modifier = Modifier.weight(1f))
@@ -1016,6 +1029,8 @@ private fun RaysLightTab(
                 SettleSlider("in the air", "${(look.amount * 100f).roundToInt()}%", look.amount, 0f..1f) { onLook(look.copy(amount = (it * 100f).roundToInt() / 100f)) }
             }
         }
+        // the light's colour, for the whole light (it used to sit in BEAM)
+        LightColourRows(look, onLook)
     }
 }
 
@@ -1025,13 +1040,31 @@ private fun RaysLightTab(
  * light shares. Worked out from the photo's depth, so it needs the depth model.
  */
 @Composable
-private fun SurfaceTab(look: RaysLook, sceneScale: Float, onLook: (RaysLook) -> Unit, onScene: (Float) -> Unit) {
+private fun SurfaceTab(look: RaysLook, sceneScale: Float, onLook: (RaysLook) -> Unit, onScene: (Float) -> Unit, onDepthReady: () -> Unit = {},
+                       sceneBounce: Float = 0.5f, onBounce: (Float) -> Unit = {}) {
     Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 6.dp)) {
         val context = androidx.compose.ui.platform.LocalContext.current
-        if (!com.celestial.latent.develop.Depth.isReady(context)) {
-            Text("Light on surfaces needs the depth model: Settings → Depth test → import it.", color = LatentColors.Amber, fontSize = 11.sp,
-                modifier = Modifier.padding(bottom = 4.dp))
+        // The depth model is installed from right here: pick the saved file; it is checked
+        // against its fingerprint before use, exactly as from Settings.
+        var ready by remember { mutableStateOf(com.celestial.latent.develop.Depth.isReady(context)) }
+        var status by remember { mutableStateOf("") }
+        val picker = androidx.activity.compose.rememberLauncherForActivityResult(androidx.activity.result.contract.ActivityResultContracts.OpenDocument()) { uri ->
+            if (uri != null) {
+                status = "importing…"
+                Thread {
+                    com.celestial.latent.develop.Depth.importFrom(context, uri) { got, total -> status = "importing… ${got * 100 / total}%" }
+                        .onSuccess { ready = true; status = ""; onDepthReady() }
+                        .onFailure { t -> status = "not imported: ${t.message}"; android.util.Log.e("Latent", "depth import failed", t) }
+                }.start()
+            }
         }
+        if (!ready) {
+            Row(Modifier.fillMaxWidth().padding(bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("Light on surfaces needs the depth model (about 50 MB, once).", color = LatentColors.Amber, fontSize = 11.sp, modifier = Modifier.weight(1f))
+                Chip("import file", on = false) { picker.launch(arrayOf("*/*")) }
+            }
+        }
+        if (status.isNotEmpty()) Text(status, color = LatentColors.Amber, fontSize = 11.sp, modifier = Modifier.padding(bottom = 4.dp))
         SettleSlider("on surfaces", "${(look.surface * 100f).roundToInt()}%", look.surface, 0f..2f) { onLook(look.copy(surface = (it * 100f).roundToInt() / 100f)) }
         if (look.type == "sun") {
             // the arrow aims across the picture; in depth the sun can be in front of the subject or behind it
@@ -1045,14 +1078,15 @@ private fun SurfaceTab(look: RaysLook, sceneScale: Float, onLook: (RaysLook) -> 
         SettleSlider("strict", "reveal", look.reveal, 0f..1f) { onLook(look.copy(reveal = (it * 20f).roundToInt() / 20f)) }
         // the scene's size, shared by every light: sets the depth's scale, and so how far shadows reach
         SettleSlider("scene: close-up", "wide", sceneScale, 0f..1f) { onScene((it * 20f).roundToInt() / 20f) }
+        // light bouncing off what the lights hit, onto everything near: shared by every light
+        SettleSlider("bounce", "${(sceneBounce * 100f).roundToInt()}%", sceneBounce, 0f..1f) { onBounce((it * 20f).roundToInt() / 20f) }
     }
 }
 
-/** The rays' BEAM tab: how far it reaches, its colour, its dust, and how much it needs fog. */
+/** The light's colour — the whole light's, on surfaces and in the air — moved word for word from BEAM. */
 @Composable
-private fun RaysBeamTab(look: RaysLook, onLook: (RaysLook) -> Unit) {
-    Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 6.dp)) {
-        SettleSlider("short", "long", look.length, 0.1f..1f) { onLook(look.copy(length = (it * 100f).roundToInt() / 100f)) }
+private fun LightColourRows(look: RaysLook, onLook: (RaysLook) -> Unit) {
+    Column(Modifier.fillMaxWidth()) {
         // the light's colour: a colour temperature, and optionally a hue of its own
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.weight(1f)) { SettleSlider("cool", "warm", look.warmth, -1f..1f) { onLook(look.copy(warmth = it)) } }
@@ -1075,6 +1109,14 @@ private fun RaysBeamTab(look: RaysLook, onLook: (RaysLook) -> Unit) {
             }
             SettleSlider("pale", "vivid", look.tint, 0f..1f) { onLook(look.copy(tint = it)) }
         }
+    }
+}
+
+/** The rays' BEAM tab: how far it reaches, its colour, its dust, and how much it needs fog. */
+@Composable
+private fun RaysBeamTab(look: RaysLook, onLook: (RaysLook) -> Unit) {
+    Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 6.dp)) {
+        SettleSlider("short", "long", look.length, 0.1f..1f) { onLook(look.copy(length = (it * 100f).roundToInt() / 100f)) }
         SettleSlider("smooth", "dusty", look.dust, 0f..1f) { onLook(look.copy(dust = it)) }
         // real beams only show in hazy air: lean them on the painted fog as much as you like
         SettleSlider("always", "only in fog", look.fogOnly, 0f..1f) { onLook(look.copy(fogOnly = it)) }

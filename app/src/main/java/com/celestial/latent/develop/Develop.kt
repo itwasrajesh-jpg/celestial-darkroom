@@ -205,7 +205,10 @@ object Develop {
         runCatching {
             val scale = lights.first().scale
             val maps = lights.mapNotNull { l -> Sun.lightMap(input, l, scale, log)?.let { l to it } }
-            Sun.apply(src, maps, mask, input, log)
+            // the lights' bounce off what they hit — a scene setting, like its size (light 1's)
+            val bounceAmount = lights.first().bounce
+            val bounce = if (bounceAmount > 0f && maps.any { it.first.surface > 0f }) Sun.bounce(input, maps, scale, log) else null
+            Sun.apply(src, maps, mask, input, log, bounce, bounceAmount)
         }.onFailure { t -> Log.e("Latent", "light: could not light the surfaces", t) }
     }
 

@@ -48,7 +48,8 @@ object Sun {
      * What one photo gives the lights: its depth; a small luminance copy for finding focus; and,
      * for "reveal", the room's own colour and its broad brightness (to keep the photo's texture).
      */
-    class Input(val depth: FloatArray, val lum: FloatArray, val gw: Int, val gh: Int, val tint: FloatArray, val lumBig: FloatArray)
+    class Input(val depth: FloatArray, val lum: FloatArray, val gw: Int, val gh: Int, val tint: FloatArray, val lumBig: FloatArray,
+                val small: FloatArray)
 
     /** A light's effect on the picture, 0..1, at GRID size; sampled to any size. */
     class LightMap(val w: Int, val h: Int, val v: FloatArray) {
@@ -132,7 +133,7 @@ object Sun {
             for (c in 0 until 3) tint[i * 3 + c] = (room[i * 3 + c] / l).coerceIn(0f, 2.5f)
         }
         val lumBig = gauss(lum, gw, gh, gw / 40f)
-        return Input(depth, lum, gw, gh, tint, lumBig).also { synchronized(memory) { memory[key] = it } }
+        return Input(depth, lum, gw, gh, tint, lumBig, small).also { synchronized(memory) { memory[key] = it } }
     }
 
     /** A box-averaged copy of the picture at GRID size: linear ProPhoto RGB. */
@@ -306,11 +307,41 @@ object Sun {
                     if (fa > 0f) direct[i] = fa * visible(i, d[0], d[1], d[2], march, jit)
                 }
             }
+            "area" -> {
+                // A panel, as in Maya: a rectangle facing its aim point, lighting only from its front
+                // face (brightest straight ahead), sampled across its surface — so the bigger it is,
+                // the softer its shadows (measured: full shadow 8% → 0.5% of the cat, 5 cm → 60 cm).
+                val C = pointAt(sc, l.u, l.v, l.nudge)
+                val A = if (!l.u2.isNaN()) pointAt(sc, l.u2, l.v2, 0f) else floatArrayOf(C[0], C[1] + 1f, C[2])
+                var fx = A[0] - C[0]; var fy = A[1] - C[1]; var fz = A[2] - C[2]
+                val fn = sqrt(fx * fx + fy * fy + fz * fz).coerceAtLeast(1e-6f); fx /= fn; fy /= fn; fz /= fn
+                // its own axes: across (level with the ground) and up its face
+                var ux = -fz; var uy = 0f; var uz = fx                                // F × (0, −1, 0)
+                val un = sqrt(ux * ux + uz * uz)
+                if (un < 1e-4f) { ux = 1f; uz = 0f } else { ux /= un; uz /= un }
+                val vx = fy * uz - fz * uy; val vy = fz * ux - fx * uz; val vz = fx * uy - fy * ux
+                val hw = l.aw / 2f * gw / sc.f * C[2]; val hh = l.ah / 2f * gh / sc.f * C[2]
+                val reachM = (0.05f + 0.6f * l.reach) * sc.far
+                val S = 4
+                for (i in 0 until n) {
+                    var sum = 0f
+                    for (a in 0 until S) for (b in 0 until S) {
+                        val x = ((a + rng.nextFloat()) / S * 2f - 1f) * hw; val y = ((b + rng.nextFloat()) / S * 2f - 1f) * hh
+                        val Lx = C[0] + ux * x + vx * y; val Ly = C[1] + uy * x + vy * y; val Lz = C[2] + uz * x + vz * y
+                        val tx = Lx - sc.P[i * 3]; val ty = Ly - sc.P[i * 3 + 1]; val tz = Lz - sc.P[i * 3 + 2]
+                        val r = sqrt(tx * tx + ty * ty + tz * tz).coerceAtLeast(1e-4f)
+                        val dx = tx / r; val dy = ty / r; val dz = tz / r
+                        val emit = -(dx * fx + dy * fy + dz * fz); if (emit <= 0f) continue      // behind the panel: dark
+                        val fa = facing(i, dx, dy, dz); if (fa <= 0f) continue
+                        val fall = reachM * reachM / (r * r + reachM * reachM)
+                        sum += fa * emit * fall * visible(i, dx, dy, dz, max(r - 0.01f * sc.far, 0f), rng.nextFloat())
+                    }
+                    direct[i] = sum / (S * S)
+                }
+            }
             else -> {
-                // a lamp — or, for an area, five lamps along its line: soft shadows from its size
-                val lamps = if (l.type == "area" && !l.u2.isNaN()) (0 until 5).map { k -> val t = k / 4f
-                        pointAt(sc, l.u + (l.u2 - l.u) * t, l.v + (l.v2 - l.v) * t, l.nudge) }
-                    else listOf(pointAt(sc, l.u, l.v, l.nudge))
+                // a lamp
+                val lamps = listOf(pointAt(sc, l.u, l.v, l.nudge))
                 val reachM = (0.05f + 0.6f * l.reach) * sc.far
                 val exclude = 0.03f * sc.far                     // the lamp's own housing does not block it
                 // a spot shines only within its cone, aimed at the depth seen at its aim point
@@ -342,6 +373,79 @@ object Sun {
         }
         return clean(sc, direct)
     }
+
+    private val bounces = object : LinkedHashMap<String, FloatArray>(4, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, FloatArray>?) = size > 4
+    }
+
+    /**
+     * One bounce, from what the photo shows (screen-space global illumination): each surface
+     * gathers, over 24 directions in the half of space it faces (more straight out, as real light
+     * arrives), the light that the visible surfaces it sees received from the added lights, tinted
+     * by their colour (an average surface reflects ~18%). Only the added lights bounce — the
+     * photo's real light already has its own bounce. Surfaces the camera never saw cannot bounce.
+     * Returns RGB at GRID size, remembered until the lights or the scene change.
+     */
+    fun bounce(input: Input, lights: List<Pair<RaysLook, LightMap>>, sceneScale: Float, log: (String) -> Unit = {}): FloatArray? {
+        if (lights.isEmpty()) return null
+        val key = "${System.identityHashCode(input)}|${"%.3f".format(java.util.Locale.US, sceneScale)}|" + lights.joinToString(";") { it.first.key() }
+        synchronized(bounces) { bounces[key] }?.let { return it }
+        val t0 = System.currentTimeMillis()
+        val sc = scene(input, sceneScale); val gw = sc.gw; val gh = sc.gh; val n = gw * gh
+        // what each surface sends onwards: the added light it received x its colour
+        val sorted = input.lum.copyOf().also { it.sort() }; val median = max(sorted[n / 2], 1e-5f)
+        val send = FloatArray(n * 3)
+        for ((look, map) in lights) {
+            val c = look.chroma(); val k = look.surface
+            for (i in 0 until n) {
+                val d = map.v[i] * k; if (d <= 0f) continue
+                for (ch in 0 until 3) send[i * 3 + ch] += (0.18f * input.small[i * 3 + ch] / median).coerceIn(0f, 0.9f) * d * c[ch]
+            }
+        }
+        val K = 24; val M = 16; val span = 0.3f * sc.far
+        val rng = java.util.Random(5)
+        val got = FloatArray(n * 3)
+        for (i in 0 until n) {
+            val nx = sc.N[i * 3]; val ny = sc.N[i * 3 + 1]; val nz = sc.N[i * 3 + 2]
+            // a frame around the surface's normal
+            var ax = 0f; var ay = 1f; var az = 0f
+            if (abs(ny) > 0.9f) { ax = 1f; ay = 0f }
+            var t1x = ny * az - nz * ay; var t1y = nz * ax - nx * az; var t1z = nx * ay - ny * ax
+            val tl = sqrt(t1x * t1x + t1y * t1y + t1z * t1z) + 1e-9f; t1x /= tl; t1y /= tl; t1z /= tl
+            val t2x = ny * t1z - nz * t1y; val t2y = nz * t1x - nx * t1z; val t2z = nx * t1y - ny * t1x
+            val sx = sc.P[i * 3] + nx * 0.002f * sc.far; val sy = sc.P[i * 3 + 1] + ny * 0.002f * sc.far; val sz = sc.P[i * 3 + 2] + nz * 0.002f * sc.far
+            var r0 = 0f; var g0 = 0f; var b0 = 0f
+            for (k in 0 until K) {
+                val u1 = (k + rng.nextFloat()) / K; val u2 = rng.nextFloat()
+                val rr = sqrt(u1); val phi = 2f * PI_F * u2; val z = sqrt(1f - u1)
+                val dx = t1x * rr * kotlin.math.cos(phi) + t2x * rr * kotlin.math.sin(phi) + nx * z
+                val dy = t1y * rr * kotlin.math.cos(phi) + t2y * rr * kotlin.math.sin(phi) + ny * z
+                val dz = t1z * rr * kotlin.math.cos(phi) + t2z * rr * kotlin.math.sin(phi) + nz * z
+                val jit = rng.nextFloat()
+                for (st in 1..M) {
+                    val q = (st - 1 + jit) / M; val t = span * q * sqrt(q)                 // finer steps near the surface
+                    val qx = sx + dx * t; val qy = sy + dy * t; val qz = sz + dz * t
+                    if (qz <= 0.05f) continue
+                    val qu = (qx / qz * sc.f + sc.cx).toInt(); val qv = (qy / qz * sc.f + sc.cy).toInt()
+                    if (qu < 0 || qu >= gw || qv < 0 || qv >= gh) break
+                    val j = qv * gw + qu; val zs = sc.Zs[j]
+                    if (qz > zs + 0.002f * sc.far && qz < zs + max(sc.T[j], 1.5f * span / M)) {
+                        r0 += send[j * 3]; g0 += send[j * 3 + 1]; b0 += send[j * 3 + 2]; break
+                    }
+                }
+            }
+            got[i * 3] = r0 / K; got[i * 3 + 1] = g0 / K; got[i * 3 + 2] = b0 / K
+        }
+        // bounce light is soft: smoothed within surfaces, never across depth edges
+        val out = FloatArray(n * 3)
+        for (ch in 0 until 3) {
+            val one = depthSmooth(FloatArray(n) { got[it * 3 + ch] }, sc.Zs, gw, gh, 5, 0.06f)
+            for (i in 0 until n) out[i * 3 + ch] = one[i]
+        }
+        log("bounce worked out in ${System.currentTimeMillis() - t0} ms")
+        return out.also { synchronized(bounces) { bounces[key] = it } }
+    }
+    private const val PI_F = 3.14159265f
 
     /** No seams on depth edges; noise smoothed within surfaces; the light blurred as the lens blurred the scene. */
     private fun clean(sc: Scene, direct: FloatArray): LightMap {
@@ -456,7 +560,8 @@ object Sun {
      * faint texture. With reveal at 0 this only scales what was recorded: black stays black.
      * The brush ([mask]) says where light may fall, for every light alike.
      */
-    fun apply(src: Develop.Source, lights: List<Pair<RaysLook, LightMap>>, mask: ExposureMap?, input: Input, log: (String) -> Unit = {}) {
+    fun apply(src: Develop.Source, lights: List<Pair<RaysLook, LightMap>>, mask: ExposureMap?, input: Input, log: (String) -> Unit = {},
+              bounce: FloatArray? = null, bounceAmount: Float = 0f) {
         val active = lights.filter { it.first.surface > 0f }
         if (active.isEmpty()) return
         log("light on surfaces (${active.size})")
@@ -491,6 +596,12 @@ object Sun {
                     }
                     val c = chroma[li]; val s = look.surface * d
                     ar += s * c[0] * fr; ag += s * c[1] * fg; ab += s * c[2] * fb
+                }
+                if (bounce != null && bounceAmount > 0f) {
+                    // the bounce lands like any light: on what each surface reflects, without the noise
+                    ar += bounceAmount * cover * bilinear3(bounce, gw, gh, u, v, 0) * cr
+                    ag += bounceAmount * cover * bilinear3(bounce, gw, gh, u, v, 1) * cg
+                    ab += bounceAmount * cover * bilinear3(bounce, gw, gh, u, v, 2) * cb
                 }
                 if (ar != 0f || ag != 0f || ab != 0f) { f.put(o, r + ar); f.put(o + 1, g + ag); f.put(o + 2, b + ab) }
             }
