@@ -82,7 +82,7 @@ fun SettingsScreen(settings: AppSettings, onChange: (AppSettings) -> Unit, onOpe
 
         Section("Film")
         UpdateRow()
-        ToggleRow("Opening animation", "The name develops in when the app starts. Tap to skip it at any time.", settings.openingAnimation) { onChange(settings.copy(openingAnimation = it)) }
+        ToggleRow("Opening animation", "A black hole, traced live, as the name develops in. Tap to skip it at any time.", settings.openingAnimation) { onChange(settings.copy(openingAnimation = it)) }
         ToggleRow("Film in the viewfinder", "Draws the preview through the film look. Turn off to use the plain camera preview.", settings.filmPreview) { onChange(settings.copy(filmPreview = it)) }
         ToggleRow("Let the film level the exposure", "Off: the camera decides brightness — what you expose is what develops. On: the engine brightens or darkens every shot to its own target, which cancels out the EV dial.", settings.engineAutoExposure) { onChange(settings.copy(engineAutoExposure = it)) }
         ToggleRow("Develop every photo", "Single shots are developed with the selected film in the background. Bursts are never auto-developed.", settings.autoDevelop) { onChange(settings.copy(autoDevelop = it)) }

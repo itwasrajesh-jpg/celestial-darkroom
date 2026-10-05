@@ -113,7 +113,7 @@ fun LaunchOverlay(onDone: () -> Unit) {
  * passes through a cool grey before settling at the app's own paper white. A plain fade would
  * lighten every channel together and look like a dissolve rather than a development.
  */
-private fun developing(t: Float): Color {
+internal fun developing(t: Float): Color {
     val p = t.coerceIn(0f, 1f)
     // Shadows rise faster than highlights, as density does.
     val level = Math.pow(p.toDouble(), 0.62).toFloat()

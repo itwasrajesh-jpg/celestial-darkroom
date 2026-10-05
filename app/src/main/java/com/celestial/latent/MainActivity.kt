@@ -179,7 +179,7 @@ private fun Root() {
         )
     }
 
-        if (opening) LaunchOverlay(onDone = { opening = false })
+        if (opening) BlackHoleIntro(onDone = { opening = false })
     }
 }
 
