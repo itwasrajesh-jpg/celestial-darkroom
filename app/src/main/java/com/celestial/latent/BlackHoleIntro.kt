@@ -11,6 +11,8 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -35,11 +37,25 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontStyle
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.compose.ui.viewinterop.AndroidView
 import com.celestial.latent.ui.LatentColors
 import java.nio.ByteBuffer
@@ -65,39 +81,44 @@ import kotlinx.coroutines.launch
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun BlackHoleIntro(onDone: () -> Unit, persistent: Boolean = false) {
+fun BlackHoleIntro(onDone: () -> Unit) {
     val context = LocalContext.current
     // 3.6 s the very first time, 2.2 s after
     val duration = remember {
         val p = context.getSharedPreferences("latent_intro", android.content.Context.MODE_PRIVATE)
         val seen = p.getBoolean("blackHoleSeen", false)
         p.edit().putBoolean("blackHoleSeen", true).apply()
-        // shown on demand, it is always the full version
-        if (seen && !persistent) 2.2f else 3.6f
+        if (seen) 2.2f else 3.6f
     }
     var failed by remember { mutableStateOf(false) }
     // no graphics: the old opening, the name developing in
-    if (failed) LaunchOverlay(onDone) else BlackHoleScene(duration, onDone, onFail = { failed = true }, persistent = persistent)
+    if (failed) LaunchOverlay(onDone) else BlackHoleScene(duration, onDone, onFail = { failed = true })
 }
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 /**
- * [persistent]: shown on demand from Settings, to be looked at — it plays in, then stays (the disc
- * keeps turning, the camera drifts slowly round) until a tap. No time limit, no early ending.
+ * It glides in, then it is yours to explore, as the live demo is: drag to orbit (with momentum),
+ * pinch to fall closer or pull away, and after 2.5 s untouched it turns slowly by itself. Touching
+ * during the glide takes over from wherever the camera is. A tap — no drag — closes it, fading
+ * to the camera beneath. It never closes by itself (Settings → Opening animation turns it off).
  */
-private fun BlackHoleScene(duration: Float, onDone: () -> Unit, onFail: () -> Unit, persistent: Boolean = false) {
-    val scope = rememberCoroutineScope()
+private fun BlackHoleScene(duration: Float, onDone: () -> Unit, onFail: () -> Unit) {
     val fade = remember { Animatable(1f) }
     var finishing by remember { mutableStateOf(false) }
     var elapsed by remember { mutableStateOf(0f) }
+    var explored by remember { mutableStateOf(false) }          // the hint goes at the first touch
     val main = remember { Handler(Looper.getMainLooper()) }
     val density = LocalDensity.current.density
+    val context = LocalContext.current
+    // Android's "remove animations" (the page's reduced motion): no idle drift
+    val reduced = remember { android.provider.Settings.Global.getFloat(context.contentResolver, android.provider.Settings.Global.ANIMATOR_DURATION_SCALE, 1f) == 0f }
+    var shownDist by remember { mutableStateOf(27f) }
+    var glView by remember { mutableStateOf<GLSurfaceView?>(null) }
     // black until the first frame is drawn: the surface is see-through before that, and the camera is behind it
     var drawn by remember { mutableStateOf(false) }
-    val renderer = remember { BlackHoleRenderer(duration, density, persistent, onSlow = { if (!persistent) main.post { finishing = true } }, onFail = { main.post { onFail() } },
+    val renderer = remember { BlackHoleRenderer(duration, density, reduced, onFail = { main.post { onFail() } },
         onFirstFrame = { main.post { drawn = true } }) }
-    fun finish() { finishing = true }
     LaunchedEffect(finishing) {
         if (!finishing) return@LaunchedEffect
         // fade out over 0.65 s, the camera showing through, then hand over
@@ -109,11 +130,20 @@ private fun BlackHoleScene(duration: Float, onDone: () -> Unit, onFail: () -> Un
         while (!finishing) {
             val now = withFrameNanos { it }
             elapsed = (now - start) / 1e9f
-            if (!persistent && elapsed >= duration) finish()
+            shownDist = renderer.distNow
         }
     }
-    // the safety net: never hang on the intro
-    LaunchedEffect(Unit) { if (!persistent) { delay(((duration + 2.5f) * 1000).toLong()); finish() } }
+    // the back gesture closes it too
+    BackHandler { finishing = true }
+    // stop drawing in the background, start again on return (the page's advice for an app)
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    DisposableEffect(lifecycle) {
+        val obs = LifecycleEventObserver { _, e ->
+            if (e == Lifecycle.Event.ON_PAUSE) glView?.onPause() else if (e == Lifecycle.Event.ON_RESUME) glView?.onResume()
+        }
+        lifecycle.addObserver(obs)
+        onDispose { lifecycle.removeObserver(obs) }
+    }
 
     BoxWithConstraints(Modifier.fillMaxSize()) {
         AndroidView(
@@ -126,11 +156,12 @@ private fun BlackHoleScene(duration: Float, onDone: () -> Unit, onFail: () -> Un
                     setZOrderMediaOverlay(true)
                     setRenderer(renderer)
                     renderMode = GLSurfaceView.RENDERMODE_CONTINUOUSLY
-                }
+                    keepScreenOn = true                                    // awake while it is open
+                }.also { glView = it }
             },
             modifier = Modifier.fillMaxSize(),
         )
-        // the spark of light rising out of the black hole, in the second half
+        // the spark of light rising out of the black hole, in the second half of the glide
         val k = (elapsed / duration).coerceIn(0f, 1f)
         if (k > 0.5f) {
             val q = (k - 0.5f) / 0.5f
@@ -157,9 +188,58 @@ private fun BlackHoleScene(duration: Float, onDone: () -> Unit, onFail: () -> Un
             Text("A FILM CAMERA", color = LatentColors.TextDim, fontSize = 10.sp, letterSpacing = 4.sp, textAlign = TextAlign.Center,
                 modifier = Modifier.padding(top = 14.dp).alpha(dev))
         }
+        // Once it is yours (arrived, or touched): the live page's text. Title and line at the top left;
+        // the hint at the bottom left, fading over 1.2 s at the first touch; the distance at the bottom right.
+        val ink = Color(0xFFEFE6D6); val dim = Color(0xFF9C917F); val warm = Color(0xFFFFB46B)
+        val hud = (if (explored) 1f else ((elapsed - duration) / 0.6f).coerceIn(0f, 1f)) * fade.value
+        val hintFade by androidx.compose.animation.core.animateFloatAsState(if (explored) 0f else 1f, tween(1200), label = "hint")
+        if (hud > 0f) {
+            Column(Modifier.align(Alignment.TopStart).statusBarsPadding().padding(start = 20.dp, top = 18.dp).alpha(hud)) {
+                Text("Black hole", color = ink, fontSize = 21.sp, fontFamily = FontFamily.Serif, fontStyle = FontStyle.Italic)
+                Text("Light paths traced live, pixel by pixel", color = dim, fontSize = 13.sp, fontFamily = FontFamily.Serif,
+                    modifier = Modifier.padding(top = 4.dp))
+            }
+            Row(Modifier.align(Alignment.BottomCenter).fillMaxWidth().navigationBarsPadding().padding(start = 20.dp, end = 20.dp, bottom = 20.dp).alpha(hud),
+                horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.Bottom) {
+                Text("Drag to look around. Pinch to fall closer. Tap to close.", color = ink, fontSize = 15.sp, lineHeight = 20.sp,
+                    fontFamily = FontFamily.Serif, fontStyle = FontStyle.Italic, modifier = Modifier.weight(1f).widthIn(max = 240.dp).alpha(hintFade))
+                Column(horizontalAlignment = Alignment.End, modifier = Modifier.padding(start = 16.dp)) {
+                    Text("%.1f".format(java.util.Locale.US, shownDist), color = warm, fontSize = 20.sp, fontFamily = FontFamily.Serif)
+                    Text("radii away", color = dim, fontSize = 13.sp, fontFamily = FontFamily.Serif)
+                }
+            }
+        }
         if (!drawn) Box(Modifier.fillMaxSize().background(Color.Black))
-        // a tap anywhere skips it — caught on top, since the GPU surface below may keep touches to itself
-        Box(Modifier.fillMaxSize().combinedClickable(onClick = { scope.launch { finish() } }))
+        // Touch, caught on top (the GPU surface below may keep touches to itself): one finger orbits,
+        // two pinch, a quick still tap closes. Moves are in density-independent pixels, as the demo's are.
+        val slop = 10f * density
+        Box(Modifier.fillMaxSize().pointerInput(Unit) {
+            awaitEachGesture {
+                val down = awaitFirstDown()
+                val t0 = down.uptimeMillis
+                var moved = 0f; var pinching = false; var everPinched = false; var startSpread = 0f; var lastTime = t0
+                renderer.touchDown(); explored = true
+                while (true) {
+                    val ev = awaitPointerEvent()
+                    val pressed = ev.changes.filter { it.pressed }
+                    ev.changes.firstOrNull()?.let { lastTime = it.uptimeMillis }
+                    if (pressed.isEmpty()) break
+                    if (pressed.size >= 2) {
+                        val spread = (pressed[0].position - pressed[1].position).getDistance()
+                        if (!pinching) { pinching = true; everPinched = true; startSpread = spread; renderer.pinchBegin() } else renderer.pinch(startSpread, spread)
+                    } else {
+                        pinching = false                                   // a finger lifted: the pinch ends, the other drags on
+                        val c = pressed[0]; val d = c.position - c.previousPosition
+                        moved += d.getDistance()
+                        renderer.drag(d.x / density, d.y / density)        // every move counts, from the first
+                    }
+                    ev.changes.forEach { it.consume() }
+                }
+                renderer.touchUp()
+                // a tap closes it: one finger, barely moved, let go within 0.4 s — never a drag, a pinch or a hold
+                if (!everPinched && moved <= slop && lastTime - t0 < 400L) finishing = true
+            }
+        })
     }
 }
 
@@ -171,9 +251,8 @@ private fun BlackHoleScene(duration: Float, onDone: () -> Unit, onFail: () -> Un
 private class BlackHoleRenderer(
     private val duration: Float,
     private val density: Float,
-    /** On demand: after the glide in, the camera keeps drifting slowly round, so it stays alive. */
-    private val persistent: Boolean,
-    private val onSlow: () -> Unit,
+    /** Android's "remove animations": the idle drift is switched off, as the page does for reduced motion. */
+    private val reducedMotion: Boolean,
     private val onFail: () -> Unit,
     private val onFirstFrame: () -> Unit,
 ) : GLSurfaceView.Renderer {
@@ -185,7 +264,33 @@ private class BlackHoleRenderer(
     private val tex = IntArray(1); private val fbo = IntArray(1)
     private var rw = 0; private var rh = 0; private var scale = 0.7f; private var vw = 2; private var vh = 2
     private var t0 = 0L; private var last = 0L; private var el = 0f
-    private var acc = 0f; private var frames = 0; private var slow = 0; private var failed = false; private var gaveUp = false
+    private var acc = 0f; private var frames = 0; private var failed = false
+
+    // The explorable camera — the live demo's, number for number — taking over from the glide when
+    // it ends, or at the first touch. Gestures arrive on the main thread; frames read them here.
+    private var exploring = false
+    private var yaw = 0.6f; private var pitch = 0.11f; private var dist = 27f
+    @Volatile private var held = false
+    @Volatile private var takeOver = false
+    @Volatile private var vyaw = 0f; @Volatile private var vpitch = 0f
+    @Volatile private var distTarget = 27f
+    @Volatile private var lastTouch = 0L
+    /** The current (smoothed) distance, for the read-out. */
+    @Volatile var distNow = 27f
+    private var pinchDist = 27f
+    private val lock = Any(); private var dYaw = 0f; private var dPitch = 0f      // drags since the last frame
+
+    fun touchDown() { held = true; takeOver = true; lastTouch = System.nanoTime() }
+    fun touchUp() { held = false; lastTouch = System.nanoTime() }
+    /** One finger moved (dx, dy) density-independent pixels: orbit, as the demo does (0.0055 rad each). */
+    fun drag(dx: Float, dy: Float) {
+        vyaw = -dx * 0.0055f; vpitch = dy * 0.0055f
+        synchronized(lock) { dYaw += vyaw; dPitch += vpitch }
+        lastTouch = System.nanoTime()
+    }
+    fun pinchBegin() { pinchDist = distTarget }
+    /** Two fingers: spreading them falls closer, pinching pulls away. */
+    fun pinch(startSpread: Float, spread: Float) { distTarget = pinchDist * startSpread / maxOf(spread, 1f); lastTouch = System.nanoTime() }
 
     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
         try {
@@ -213,21 +318,45 @@ private class BlackHoleRenderer(
         val now = System.nanoTime()
         if (t0 == 0L) { t0 = now; last = now }
         val dtMs = minOf((now - last) / 1e6f, 120f); last = now; el += dtMs / 1000f
-        // every 12 frames: if slow, draw smaller; if hopelessly slow, end the intro early
+        // sharpness: during the glide, the intro's rule (every 12 frames, smaller if over 30 ms);
+        // while exploring, the demo's (every 24 frames: smaller if over 26 ms, sharper if under 14 ms)
         acc += dtMs; frames++
-        if (frames >= 12) {
+        if (!exploring && frames >= 12) {
             val avg = acc / frames
             if (avg > 30f && scale > 0.35f) scale = maxOf(0.35f, scale * 0.8f)
-            if (avg > 70f) { slow++; if (slow >= 2 && !gaveUp) { gaveUp = true; onSlow() } }
+            acc = 0f; frames = 0
+        } else if (exploring && frames >= 24) {
+            val avg = acc / frames
+            if (avg > 26f && scale > 0.4f) scale = maxOf(0.4f, scale * 0.85f)
+            else if (avg < 14f && scale < 1.4f) scale = minOf(1.4f, scale * 1.08f)
             acc = 0f; frames = 0
         }
         alloc()
         // camera: glide in from 27 to 18 radii while turning slightly; tilted 0.3 rad for a film look
         val k = minOf(1f, el / duration); val e = k * k * (3 - 2 * k)
-        // a slow orbit once it has arrived, eased in from rest (the glide ends at rest), 0.025 rad/s after ~4 s
-        val after = maxOf(0f, el - duration)
-        val drift = if (persistent) 0.025f * (after - 2f * (1f - kotlin.math.exp(-after / 2f))) else 0f
-        val dist = 27f - 9f * e; val yaw = 0.6f + 0.5f * e + drift; val pitch = 0.11f; val roll = 0.3f
+        val roll = 0.3f
+        if (!exploring) {
+            yaw = 0.6f + 0.5f * e; dist = 27f - 9f * e; pitch = 0.11f
+            // arrived, or touched: from here it is yours, starting exactly where the glide is
+            if (k >= 1f || takeOver) { exploring = true; distTarget = dist; acc = 0f; frames = 0; scale = 0.85f }   // the page starts at 0.85
+        }
+        if (exploring) {
+            val dt = minOf(dtMs, 100f) / 1000f                       // the page caps a frame at 100 ms
+            synchronized(lock) { yaw += dYaw; pitch += dPitch; dYaw = 0f; dPitch = 0f }
+            if (!held) {
+                // let go: it glides on, slowing, like a spun globe. The page's numbers are per frame at
+                // 60 a second; scaled by dt x 60 so it feels the same at 120 Hz (the handoff's advice).
+                val f = dt * 60f
+                yaw += vyaw * f; pitch += vpitch * f
+                val decay = Math.pow(0.93, f.toDouble()).toFloat(); vyaw *= decay; vpitch *= decay
+                // untouched for 2.5 s, it drifts slowly round by itself — unless animations are removed
+                if (!reducedMotion && now - lastTouch > 2_500_000_000L) yaw += 0.035f * dt
+            }
+            pitch = pitch.coerceIn(-1.45f, 1.45f)
+            distTarget = distTarget.coerceIn(5f, 55f)
+            dist += (distTarget - dist) * minOf(1f, dt * 8f)
+        }
+        distNow = dist
         val cp = kotlin.math.cos(pitch); val sp = kotlin.math.sin(pitch)
         val cam = floatArrayOf(dist * cp * kotlin.math.cos(yaw), dist * sp, dist * cp * kotlin.math.sin(yaw))
         val f = floatArrayOf(-cam[0] / dist, -cam[1] / dist, -cam[2] / dist)

@@ -132,7 +132,6 @@ private fun Root() {
             onOpenLogs = { screen = "logs" },
             onOpenExtension = { screen = "extension" },
             onOpenAbout = { screen = "about" },
-            onShowOpening = { screen = "opening" },
             onBack = { screen = "camera" },
         )
         "look" -> LookScreen(settings = settings, onBack = { screen = "roll" })
@@ -158,7 +157,6 @@ private fun Root() {
         ) else { screen = "camera" }
         "logs" -> LogScreen(onBack = { screen = "settings" })
         "about" -> AboutScreen(onBack = { screen = "settings" })
-        "opening" -> BlackHoleIntro(onDone = { screen = "settings" }, persistent = true)
         "probe" -> ProbeScreen(settings = settings, onBack = { screen = "settings" })
         "depth" -> DepthTestScreen(onBack = { screen = "settings" })
         "vendor" -> VendorScreen(
