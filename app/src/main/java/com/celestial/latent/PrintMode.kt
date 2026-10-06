@@ -787,6 +787,8 @@ private val DODGE_TINT = Color(0xFFF4ECE0)  // where it was held back: pale
  */
 private class PaintSpec(
     val hint: String,
+    /** The mask's untouched value: the tint shows how far painting has moved it from this (0 for most; 1 for light). */
+    val neutral: Float = 0f,
     val minusLabel: String,
     val plusLabel: String,
     val min: Float,
@@ -851,14 +853,19 @@ private val RAYS_TINT = Color(0xFFF2DFA8)
 
 /** Rays: where they may fall — 1 fully, 0 not at all. Unpainted, they fall everywhere. */
 private val RAYS_SPEC = PaintSpec(
-    hint = "Place the light and aim it. Paint Clear where it should not fall — in the air or on surfaces.",
-    minusLabel = "Clear", plusLabel = "Rays",
-    min = 0f, max = 1f, overlayFull = 1f,
-    tintPlus = RAYS_TINT, tintMinus = RAYS_TINT,
+    hint = "Place the light and aim it. Paint more light where it should be stronger — it also adds a soft fill there, like a reflector — or less where it should not fall.",
+    neutral = 1f,
+    minusLabel = "less light", plusLabel = "more light",
+    min = 0f, max = 3f, overlayFull = 1f,
+    tintPlus = RAYS_TINT, tintMinus = Color(0xFF5B7FB5),
     status = { m, _ ->
-        if (m == null) "rays fall everywhere" else {
-            val area = Math.round(m.stops.count { it > 0.05f } * 100f / m.stops.size)
-            if (area <= 0) "rays fall nowhere" else "rays fall on $area% of the picture"
+        if (m == null) "the light at its own strength everywhere" else {
+            val more = Math.round(m.stops.count { it > 1.05f } * 100f / m.stops.size)
+            val less = Math.round(m.stops.count { it < 0.95f } * 100f / m.stops.size)
+            when {
+                more == 0 && less == 0 -> "the light at its own strength everywhere"
+                else -> listOfNotNull(if (more > 0) "more light on $more%" else null, if (less > 0) "less on $less%" else null).joinToString(" · ") + " of the picture"
+            }
         }
     },
 )
@@ -1326,14 +1333,10 @@ private fun PaintStep(
     // range as ranks (0 nearest … 1 farthest), a soft or sharp edge, an even fill or one that
     // thickens with distance; and a brush that stays on the depth where a stroke begins.
     var depthOpen by remember { mutableStateOf(false) }
-    var depthFrom by remember { mutableStateOf(0.4f) }
-    var depthTo by remember { mutableStateOf(1f) }
-    var depthSoft by remember { mutableStateOf(true) }
+    // where the brush (and fill) may paint: 0 everywhere, 1 the foreground, 2 the background
+    var depthSide by remember { mutableStateOf(0) }
     var depthRamp by remember { mutableStateOf(false) }
-    var stayOnDepth by remember { mutableStateOf(false) }
     var depthReady by remember { mutableStateOf(depthRanks?.raw != null) }
-    val depthOpenNow by rememberUpdatedState(depthOpen)
-    val strokeDepth = remember { FloatArray(1) { Float.NaN } }
     var line by remember { mutableStateOf<Pair<Pair<Float, Float>, Pair<Float, Float>>?>(null) }
     var brush by remember { mutableStateOf(1) }
     var strength by remember { mutableStateOf(1) }
@@ -1455,42 +1458,46 @@ private fun PaintStep(
      * anything is painted, and "fill" commits it like a finished stroke (undo, plus and minus,
      * strength all as for a brush). Thicker far: it ramps up across the range.
      */
+    /** Where painting may land, per mask cell: the chosen side (thicker far, for the background, if asked). */
+    fun sideWeights(w: Int, h: Int): FloatArray? {
+        if (depthSide == 0) return null
+        val fg = depthRanks?.foreground(w, h) ?: return null
+        val rk = if (depthRamp && depthSide == 2) depthRanks?.ranks(w, h) else null
+        return FloatArray(w * h) { k ->
+            val side = if (depthSide == 1) fg[k] else 1f - fg[k]
+            side * (if (rk != null) 0.15f + 0.85f * rk[k] else 1f)
+        }
+    }
+    /** The chosen side, shown in amber as the stroke being painted — "fill" commits it like a stroke. */
     fun fillByDistance() {
         val m = working ?: startMap(aspect).also { working = it }
-        val rk = depthRanks?.ranks(m.width, m.height) ?: return
-        val a = minOf(depthFrom, depthTo); val b = maxOf(depthFrom, depthTo); val e = if (depthSoft) 0.08f else 0.02f
-        fun ss(e0: Float, e1: Float, x: Float): Float { val t = ((x - e0) / (e1 - e0)).coerceIn(0f, 1f); return t * t * (3f - 2f * t) }
-        stroke = FloatArray(m.width * m.height) { k ->
-            val r = rk[k]
-            val inside = (if (a <= 0.001f) 1f else ss(a - e, a + e, r)) * (if (b >= 0.999f) 1f else 1f - ss(b - e, b + e, r))
-            inside * (if (depthRamp) 0.15f + 0.85f * ((r - a) / maxOf(b - a, 1e-3f)).coerceIn(0f, 1f) else 1f)
-        }
+        stroke = sideWeights(m.width, m.height) ?: return
         selectionShown = true
         strokeTick++
     }
     // the depth, worked out once for every step, the first time it is wanted
-    LaunchedEffect(depthOpen, stayOnDepth, print) {
+    LaunchedEffect(depthOpen, depthSide, print) {
         val dr = depthRanks ?: return@LaunchedEffect
         val pic = print ?: return@LaunchedEffect
-        if (!(depthOpen || stayOnDepth) || dr.raw != null || dr.busy) { depthReady = dr.raw != null; return@LaunchedEffect }
+        if (!(depthOpen || depthSide != 0) || dr.raw != null || dr.busy) { depthReady = dr.raw != null; return@LaunchedEffect }
         dr.busy = true
         val d = withContext(Dispatchers.Default) { runCatching { com.celestial.latent.develop.Depth.estimate(context, pic) }.getOrNull() }
         dr.raw = d; dr.busy = false; depthReady = d != null
     }
     // the selection follows the controls while the panel is open, and goes when it closes
-    LaunchedEffect(depthOpen, depthFrom, depthTo, depthSoft, depthRamp, depthReady) {
-        // only ever clears the selection preview — never a brush stroke being painted
-        if (depthOpen && depthReady) fillByDistance() else if (!depthOpen && selectionShown) { stroke = null; selectionShown = false; strokeTick++ }
+    // choosing a side shows it in amber until you paint; only ever clears that preview, never a brush stroke
+    LaunchedEffect(depthOpen, depthSide, depthRamp, depthReady) {
+        if (depthOpen && depthSide != 0 && depthReady) fillByDistance()
+        else if (selectionShown) { stroke = null; selectionShown = false; strokeTick++ }
     }
 
     fun stamp(u: Float, v: Float) {
         val m = working ?: startMap(aspect).also { working = it }
-        val fresh = stroke == null
+        if (selectionShown) { stroke = null; selectionShown = false }        // painting begins: the amber preview gives way
         val st = stroke ?: FloatArray(m.width * m.height).also { stroke = it }
         val r = BRUSH[brush] / zoom.scale      // the same size on screen at any zoom
-        // stay on this depth: the stroke's first dab decides the depth; paint lands only near it
-        val rk = if (stayOnDepth) depthRanks?.ranks(m.width, m.height) else null
-        if (rk != null && fresh) strokeDepth[0] = rk[((v * m.height).toInt().coerceIn(0, m.height - 1)) * m.width + (u * m.width).toInt().coerceIn(0, m.width - 1)]
+        // foreground or background chosen: the brush paints only there
+        val sideW = sideWeights(m.width, m.height)
         // distances in units of the long edge, so the brush is round on any shape of picture
         val aw = if (aspect >= 1f) 1f else aspect
         val ah = if (aspect >= 1f) 1f / aspect else 1f
@@ -1502,7 +1509,7 @@ private fun PaintStep(
             if (d >= 1f) continue
             val t = 1f - d; var fall = t * t * (3f - 2f * t)          // soft edge, like a card's shadow
             val k = j * m.width + i
-            if (rk != null && !strokeDepth[0].isNaN()) { val dd = (rk[k] - strokeDepth[0]) / 0.07f; fall *= kotlin.math.exp(-dd * dd) }
+            if (sideW != null) fall *= sideW[k]
             if (fall > st[k]) st[k] = fall
         }
         strokeTick++
@@ -1532,8 +1539,9 @@ private fun PaintStep(
         val px = IntArray(m.width * m.height)
         for (k in px.indices) {
             val sNow = (m.stops[k] + (if (st != null) sign * strokeAmount() * st[k] else 0f)).coerceIn(spec.min, spec.max)
-            val a = (kotlin.math.abs(sNow) / spec.overlayFull).coerceIn(0f, 1f)
-            val tint = if (sNow >= 0f) spec.tintPlus else spec.tintMinus
+            val dv = sNow - spec.neutral
+            val a = (kotlin.math.abs(dv) / spec.overlayFull).coerceIn(0f, 1f)
+            val tint = if (dv >= 0f) spec.tintPlus else spec.tintMinus
             val alpha = (a * 200).toInt().coerceIn(0, 255)
             px[k] = (alpha shl 24) or ((tint.red * 255).toInt() shl 16) or ((tint.green * 255).toInt() shl 8) or (tint.blue * 255).toInt()
         }
@@ -1583,25 +1591,24 @@ private fun PaintStep(
                 Chip("mask", on = showMask) { showMask = !showMask }
             }
         }
-        // Painting by depth: choose a range by distance — the photo shows it, amber, before anything
-        // is painted — and fill it with this brush; or let brush strokes keep to one depth.
+        // Painting by depth: everywhere, or only the foreground, or only the background — split
+        // automatically. The chosen side shows in amber; the brush and "fill" paint only there.
         if (depthOpen && depthRanks != null) Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 6.dp)) {
-            if (!depthReady) Text("working out the depth…", color = LatentColors.Amber, fontSize = 11.sp, modifier = Modifier.padding(bottom = 4.dp))
-            Text("from the nearest ${(minOf(depthFrom, depthTo) * 100).roundToInt()}% to ${(maxOf(depthFrom, depthTo) * 100).roundToInt()}% of the way back — shown in amber",
-                color = LatentColors.TextDim, fontSize = 11.sp)
-            SettleSlider("from: near", "far", depthFrom, 0f..1f) { depthFrom = (it * 50f).roundToInt() / 50f }
-            SettleSlider("to: near", "far", depthTo, 0f..1f) { depthTo = (it * 50f).roundToInt() / 50f }
-            Row(Modifier.fillMaxWidth().padding(top = 4.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            if (!depthReady && depthSide != 0) Text("working out the depth…", color = LatentColors.Amber, fontSize = 11.sp, modifier = Modifier.padding(bottom = 4.dp))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Chip("soft", on = depthSoft) { depthSoft = true }
-                    Chip("sharp", on = !depthSoft) { depthSoft = false }
-                    Chip("thicker far", on = depthRamp) { depthRamp = !depthRamp }
+                    Chip("all", on = depthSide == 0) { depthSide = 0 }
+                    Chip("foreground", on = depthSide == 1) { depthSide = 1 }
+                    Chip("background", on = depthSide == 2) { depthSide = 2 }
                 }
-                Chip("fill", on = true, enabled = depthReady) { fillByDistance(); endStroke(); selectionShown = false; fillByDistance() }
+                if (depthSide != 0) Chip("fill", on = true, enabled = depthReady) { fillByDistance(); endStroke(); selectionShown = false; fillByDistance() }
             }
             Row(Modifier.fillMaxWidth().padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                Chip("stay on this depth", on = stayOnDepth) { stayOnDepth = !stayOnDepth }
-                Text("  brush strokes keep to the depth they start on", color = LatentColors.TextDim, fontSize = 11.sp, modifier = Modifier.weight(1f))
+                if (depthSide == 2) Chip("thicker far", on = depthRamp) { depthRamp = !depthRamp }
+                Text(
+                    when (depthSide) { 1 -> "  amber: the foreground — the brush paints only there"; 2 -> "  amber: the background — the brush paints only there"; else -> "  the brush paints anywhere" },
+                    color = LatentColors.TextDim, fontSize = 11.sp, modifier = Modifier.weight(1f),
+                )
             }
         }
         // 3. where the mask stands, and the way back
@@ -1673,7 +1680,7 @@ private fun PaintStep(
                                 return@awaitEachGesture
                             }
                         }
-                        var painting = paintNow && !depthOpenNow && u0 in 0f..1f && v0 in 0f..1f
+                        var painting = paintNow && u0 in 0f..1f && v0 in 0f..1f
                         var zooming = false
                         var last = Pair(u0, v0)
                         val dragging = gradientTool && spec.gradientAmount != null
@@ -1830,6 +1837,37 @@ private class DepthRanks {
         order.forEachIndexed { i, k -> r[k] = i.toFloat() / last }
         cacheKey = key; cache = r
         return r
+    }
+
+    private var splitKey = ""; private var splitCache: FloatArray? = null
+    /**
+     * The foreground, as a weight per cell (1 near, 0 far, soft between): the photo's depths split
+     * at their natural gap — the split that keeps the near group and the far group each tightest
+     * (Otsu). Tested on a flower, a cat, a chandelier and a portrait: the subject each time.
+     */
+    @Synchronized fun foreground(w: Int, h: Int): FloatArray? {
+        val d = raw ?: return null
+        val key = "${w}x$h"; if (key == splitKey) return splitCache
+        val S = com.celestial.latent.develop.Depth.SIZE
+        val near = FloatArray(w * h) { k ->
+            val sx = (((k % w) + 0.5f) / w * S - 0.5f).coerceIn(0f, (S - 1).toFloat()); val sy = (((k / w) + 0.5f) / h * S - 0.5f).coerceIn(0f, (S - 1).toFloat())
+            val x0 = sx.toInt(); val y0 = sy.toInt(); val x1 = minOf(x0 + 1, S - 1); val y1 = minOf(y0 + 1, S - 1); val fx = sx - x0; val fy = sy - y0
+            (d[y0 * S + x0] * (1 - fx) + d[y0 * S + x1] * fx) * (1 - fy) + (d[y1 * S + x0] * (1 - fx) + d[y1 * S + x1] * fx) * fy
+        }
+        val bins = 64; val hist = DoubleArray(bins)
+        for (v in near) hist[(v.coerceIn(0f, 0.9999f) * bins).toInt()] += 1.0
+        val total = near.size.toDouble(); var bestT = 0.5f; var best = -1.0; var w0 = 0.0; var s0 = 0.0
+        val sAll = (0 until bins).sumOf { hist[it] * (it + 0.5) / bins }
+        for (i in 0 until bins - 1) {
+            w0 += hist[i] / total; s0 += hist[i] * (i + 0.5) / bins / total
+            val w1 = 1 - w0; if (w0 <= 0 || w1 <= 0) continue
+            val m0 = s0 / w0; val m1 = (sAll / total - s0) / w1; val between = w0 * w1 * (m0 - m1) * (m0 - m1)
+            if (between > best) { best = between; bestT = (i + 1f) / bins }
+        }
+        val e = 0.04f
+        val fg = FloatArray(w * h) { k -> val t = ((near[k] - (bestT - e)) / (2 * e)).coerceIn(0f, 1f); t * t * (3f - 2f * t) }
+        splitKey = key; splitCache = fg
+        return fg
     }
 }
 

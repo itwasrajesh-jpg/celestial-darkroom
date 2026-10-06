@@ -219,7 +219,7 @@ object Rays {
             val y0 = gyf.toInt(); val y1 = minOf(y0 + 1, gh - 1); val fy = gyf - y0
             for (x in 0 until w) {
                 val u = (x + 0.5f) / w
-                var cover = mask?.sample(u, v)?.coerceIn(0f, 1f) ?: 1f
+                var cover = mask?.sample(u, v)?.coerceIn(0f, 3f) ?: 1f
                 // real beams show in hazy air: "only in fog" leans the beam on the painted fog's veil
                 if (look.fogOnly > 0f) {
                     val veil = fogMask?.let { 1f - exp(-it.sample(u, v) * fogAmount) } ?: 0f

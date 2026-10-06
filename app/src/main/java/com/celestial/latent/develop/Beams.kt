@@ -188,7 +188,7 @@ object Beams {
             val v = (y + 0.5f) / h
             for (x in 0 until w) {
                 val u = (x + 0.5f) / w
-                val cover = mask?.sample(u, v)?.coerceIn(0f, 1f) ?: 1f
+                val cover = mask?.sample(u, v)?.coerceIn(0f, 3f) ?: 1f
                 var ar = 0f; var ag = 0f; var ab = 0f
                 if (cover > 0f) for ((k, pair) in airs.withIndex()) {
                     // gathered: the glow raised to a power, so it concentrates towards the light
@@ -200,7 +200,7 @@ object Beams {
                     ar += a * chroma[k][0]; ag += a * chroma[k][1]; ab += a * chroma[k][2]
                 }
                 val o = (y * w + x) * 3
-                val m = if (cover > 0f) 1f - (1f - veil) * cover else 1f
+                val m = if (cover > 0f) 1f - (1f - veil) * minOf(cover, 1f) else 1f     // more light does not thicken the air
                 f.put(o, f.get(o) * m + ar); f.put(o + 1, f.get(o + 1) * m + ag); f.put(o + 2, f.get(o + 2) * m + ab)
             }
         }

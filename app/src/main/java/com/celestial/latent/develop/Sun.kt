@@ -679,7 +679,7 @@ object Sun {
             val v = (y + 0.5f) / h
             for (x in 0 until w) {
                 val u = (x + 0.5f) / w
-                val cover = mask?.sample(u, v)?.coerceIn(0f, 1f) ?: 1f
+                val cover = mask?.sample(u, v)?.coerceIn(0f, 3f) ?: 1f
                 if (cover <= 0f) continue
                 val o = (y * w + x) * 3
                 val r = f.get(o); val g = f.get(o + 1); val b = f.get(o + 2)
@@ -688,6 +688,11 @@ object Sun {
                 for ((li, pair) in active.withIndex()) {
                     val (look, map) = pair
                     val d = map.sample(u, v) * cover
+                    // Painted "more light": also a soft fill there, in the light's colour, on what is painted
+                    // even where the light itself does not land — a reflector bouncing it back (half the
+                    // light's strength per step above normal).
+                    val fill = (cover - 1f).coerceAtLeast(0f) * 0.5f * look.surface
+                    if (fill > 0f) { val c = chroma[li]; ar += fill * c[0] * cr; ag += fill * c[1] * cg; ab += fill * c[2] * cb }
                     if (d <= 0f) continue
                     var fr = cr; var fg = cg; var fb = cb
                     if (look.reveal > 0f) {
