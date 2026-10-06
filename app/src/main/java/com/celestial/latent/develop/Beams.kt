@@ -191,7 +191,11 @@ object Beams {
                 val cover = mask?.sample(u, v)?.coerceIn(0f, 1f) ?: 1f
                 var ar = 0f; var ag = 0f; var ab = 0f
                 if (cover > 0f) for ((k, pair) in airs.withIndex()) {
-                    val a = sample(pair.second, gw, gh, u, v) * pair.first.amount * bright * cover
+                    // gathered: the glow raised to a power, so it concentrates towards the light
+                    // (a hand-made edit that read as real sunlight used about 1.6)
+                    var g = sample(pair.second, gw, gh, u, v)
+                    if (pair.first.gather > 0f && g > 0f) g = Math.pow(g.toDouble(), 1.0 + 1.2 * pair.first.gather).toFloat()
+                    val a = g * pair.first.amount * bright * cover
                     if (a <= 0f) continue
                     ar += a * chroma[k][0]; ag += a * chroma[k][1]; ab += a * chroma[k][2]
                 }

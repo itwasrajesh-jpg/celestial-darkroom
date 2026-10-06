@@ -74,6 +74,8 @@ data class RaysLook(
     val ox0: Float = Float.NaN, val oy0: Float = Float.NaN, val ox1: Float = Float.NaN, val oy1: Float = Float.NaN,
     /** How far below the camera the floor is, where window sunlight lands and bounces: 0 … 1 (0.6 … 2.6 m). */
     val floor: Float = 0.4f,
+    /** The glow's shape in the air: 0 even (as the physics gives it) … 1 gathered towards the light. */
+    val gather: Float = 0f,
 ) {
     val hasOpening: Boolean get() = !ox0.isNaN() && !oy0.isNaN() && !ox1.isNaN() && !oy1.isNaN()
     val placed: Boolean get() = u in 0f..1f && v in 0f..1f
@@ -99,9 +101,9 @@ data class RaysLook(
         LIGHT_SATURATION_MAX)
 
     /** Saved as "v3|…" with every field; older saves were all made in "through gaps". */
-    fun key(): String = listOf("v7", type, mode).joinToString("|") + "|" +
+    fun key(): String = listOf("v8", type, mode).joinToString("|") + "|" +
         listOf(u, v, u2, v2, cone, amount, length, warmth, if (coloured) 1f else 0f, hue, tint, dust, fogOnly, surface, front, scale, nudge, reach, reveal, aw, ah, bounce,
-            ox0, oy0, ox1, oy1, floor)
+            ox0, oy0, ox1, oy1, floor, gather)
             .joinToString("|") { "%.4f".format(Locale.US, it) }
 
     companion object {
@@ -111,6 +113,11 @@ data class RaysLook(
             if (s.isNullOrEmpty()) return RaysLook()
             return runCatching {
                 when {
+                    s.startsWith("v8|") -> {
+                        val p = s.split("|"); val f = p.drop(3).map { it.toFloat() }
+                        RaysLook(p[1], f[0], f[1], f[2], f[3], f[4], f[5], f[6], p[2], f[7], f[8] > 0.5f, f[9], f[10], f[11], f[12], f[13], f[14], f[15], f[16], f[17], f[18], f[19], f[20], f[21],
+                            f[22], f[23], f[24], f[25], f[26], f[27])
+                    }
                     s.startsWith("v7|") -> {
                         val p = s.split("|"); val f = p.drop(3).map { it.toFloat() }
                         RaysLook(p[1], f[0], f[1], f[2], f[3], f[4], f[5], f[6], p[2], f[7], f[8] > 0.5f, f[9], f[10], f[11], f[12], f[13], f[14], f[15], f[16], f[17], f[18], f[19], f[20], f[21],
