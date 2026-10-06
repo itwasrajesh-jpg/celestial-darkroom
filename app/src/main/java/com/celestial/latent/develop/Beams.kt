@@ -175,7 +175,8 @@ object Beams {
      * at full "in the air" a light's brightest beams reach half the photo's bright level, in its
      * own colour; the scene behind is veiled very slightly by the haze. The brush says where.
      */
-    fun apply(src: Develop.Source, airs: List<Pair<RaysLook, FloatArray>>, mask: ExposureMap?, input: Sun.Input, log: (String) -> Unit = {}) {
+    fun apply(src: Develop.Source, airs: List<Pair<RaysLook, FloatArray>>, mask: ExposureMap?, input: Sun.Input, log: (String) -> Unit = {},
+              split: ExposureMap? = null) {
         if (airs.isEmpty()) return
         log("light in the air (${airs.size})")
         val w = src.width; val h = src.height; val gw = input.gw; val gh = input.gh
@@ -195,7 +196,7 @@ object Beams {
                     // (a hand-made edit that read as real sunlight used about 1.6)
                     var g = sample(pair.second, gw, gh, u, v)
                     if (pair.first.gather > 0f && g > 0f) g = Math.pow(g.toDouble(), 1.0 + 1.2 * pair.first.gather).toFloat()
-                    val a = g * pair.first.amount * bright * cover
+                    val a = g * pair.first.amount * bright * cover * Sun.sideWeight(pair.first.side, split, u, v)
                     if (a <= 0f) continue
                     ar += a * chroma[k][0]; ag += a * chroma[k][1]; ab += a * chroma[k][2]
                 }

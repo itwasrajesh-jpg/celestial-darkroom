@@ -664,7 +664,7 @@ object Sun {
      * The brush ([mask]) says where light may fall, for every light alike.
      */
     fun apply(src: Develop.Source, lights: List<Pair<RaysLook, LightMap>>, mask: ExposureMap?, input: Input, log: (String) -> Unit = {},
-              bounce: FloatArray? = null, bounceAmount: Float = 0f) {
+              bounce: FloatArray? = null, bounceAmount: Float = 0f, cleanKey: String? = null, split: ExposureMap? = null) {
         val active = lights.filter { it.first.surface > 0f }
         if (active.isEmpty()) return
         log("light on surfaces (${active.size})")
@@ -674,7 +674,7 @@ object Sun {
         val gw = input.gw; val gh = input.gh
         // The light lands on a cleaned copy of the photo: real added light brings clean signal, so
         // the photo's own noise must never be multiplied (it made lit areas 1.5–1.8× grainier).
-        val clean = GuidedClean.factors(f, w, h, 1f)
+        val clean = cleanFor(cleanKey, w, h) { GuidedClean.factors(f, w, h, 1f) }
         for (y in 0 until h) {
             val v = (y + 0.5f) / h
             for (x in 0 until w) {
@@ -687,11 +687,13 @@ object Sun {
                 var ar = 0f; var ag = 0f; var ab = 0f
                 for ((li, pair) in active.withIndex()) {
                     val (look, map) = pair
-                    val d = map.sample(u, v) * cover
+                    val sw = sideWeight(look.side, split, u, v)                 // only on the light's side of the depth
+                    if (sw <= 0f) continue
+                    val d = map.sample(u, v) * cover * sw
                     // Painted "more light": also a soft fill there, in the light's colour, on what is painted
                     // even where the light itself does not land — a reflector bouncing it back (half the
                     // light's strength per step above normal).
-                    val fill = (cover - 1f).coerceAtLeast(0f) * 0.5f * look.surface
+                    val fill = (cover - 1f).coerceAtLeast(0f) * 0.5f * look.surface * sw
                     if (fill > 0f) { val c = chroma[li]; ar += fill * c[0] * cr; ag += fill * c[1] * cg; ab += fill * c[2] * cb }
                     if (d <= 0f) continue
                     var fr = cr; var fg = cg; var fb = cb
@@ -719,7 +721,7 @@ object Sun {
                 for ((li, pair) in active.withIndex()) {
                     val (look, map) = pair
                     val fm = map.floor ?: continue
-                    val e = bounceStrength(bounceAmount) * look.surface * cover * bilinear(fm, gw, gh, u, v)
+                    val e = bounceStrength(bounceAmount) * look.surface * cover * sideWeight(look.side, split, u, v) * bilinear(fm, gw, gh, u, v)
                     if (e <= 0f) continue
                     val l = LUM[0] * cr + LUM[1] * cg + LUM[2] * cb
                     val tex = ((l + 1e-4f) / (bilinear(input.lumBig, gw, gh, u, v) + 1e-4f)).coerceIn(0.3f, 3f)
@@ -736,6 +738,23 @@ object Sun {
                 if (ar != 0f || ag != 0f || ab != 0f) { f.put(o, r + ar); f.put(o + 1, g + ag); f.put(o + 2, b + ab) }
             }
         }
+    }
+
+    // The noise-free copy is a full-size filter (a second or two on a phone) and depends only on
+    // what lies under the lights, so painting a light's mask reuses it. One kept; keyed by the caller.
+    private var cleanKeyNow: String? = null
+    private var cleanNow: FloatArray? = null
+    @Synchronized private fun cleanFor(key: String?, w: Int, h: Int, make: () -> FloatArray): FloatArray {
+        val have = cleanNow
+        if (key != null && key == cleanKeyNow && have != null && have.size == w * h) return have
+        return make().also { if (key != null) { cleanKeyNow = key; cleanNow = it } }
+    }
+
+    /** How much of a light reaches a spot given its side: everywhere 1; foreground the split's weight; background the rest. */
+    fun sideWeight(side: Float, split: ExposureMap?, u: Float, v: Float): Float = when {
+        side < 0.5f || split == null -> 1f
+        side < 1.5f -> split.sample(u, v).coerceIn(0f, 1f)
+        else -> 1f - split.sample(u, v).coerceIn(0f, 1f)
     }
 
     /** The bounce slider: 0 none … 0.5 real (physical) … 1 dramatic (4× real). */

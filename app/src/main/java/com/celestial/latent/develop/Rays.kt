@@ -76,6 +76,8 @@ data class RaysLook(
     val floor: Float = 0.4f,
     /** The glow's shape in the air: 0 even (as the physics gives it) … 1 gathered towards the light. */
     val gather: Float = 0f,
+    /** Where this light may land: 0 everywhere, 1 only the foreground, 2 only the background (the photo's depth split). */
+    val side: Float = 0f,
 ) {
     val hasOpening: Boolean get() = !ox0.isNaN() && !oy0.isNaN() && !ox1.isNaN() && !oy1.isNaN()
     val placed: Boolean get() = u in 0f..1f && v in 0f..1f
@@ -101,9 +103,9 @@ data class RaysLook(
         LIGHT_SATURATION_MAX)
 
     /** Saved as "v3|…" with every field; older saves were all made in "through gaps". */
-    fun key(): String = listOf("v8", type, mode).joinToString("|") + "|" +
+    fun key(): String = listOf("v9", type, mode).joinToString("|") + "|" +
         listOf(u, v, u2, v2, cone, amount, length, warmth, if (coloured) 1f else 0f, hue, tint, dust, fogOnly, surface, front, scale, nudge, reach, reveal, aw, ah, bounce,
-            ox0, oy0, ox1, oy1, floor, gather)
+            ox0, oy0, ox1, oy1, floor, gather, side)
             .joinToString("|") { "%.4f".format(Locale.US, it) }
 
     companion object {
@@ -113,6 +115,11 @@ data class RaysLook(
             if (s.isNullOrEmpty()) return RaysLook()
             return runCatching {
                 when {
+                    s.startsWith("v9|") -> {
+                        val p = s.split("|"); val f = p.drop(3).map { it.toFloat() }
+                        RaysLook(p[1], f[0], f[1], f[2], f[3], f[4], f[5], f[6], p[2], f[7], f[8] > 0.5f, f[9], f[10], f[11], f[12], f[13], f[14], f[15], f[16], f[17], f[18], f[19], f[20], f[21],
+                            f[22], f[23], f[24], f[25], f[26], f[27], f[28])
+                    }
                     s.startsWith("v8|") -> {
                         val p = s.split("|"); val f = p.drop(3).map { it.toFloat() }
                         RaysLook(p[1], f[0], f[1], f[2], f[3], f[4], f[5], f[6], p[2], f[7], f[8] > 0.5f, f[9], f[10], f[11], f[12], f[13], f[14], f[15], f[16], f[17], f[18], f[19], f[20], f[21],
@@ -177,7 +184,7 @@ object Rays {
     private const val AREA_STEPS = 40
 
     fun apply(src: Develop.Source, look: RaysLook, mask: ExposureMap?, fogMask: ExposureMap? = null, fogAmount: Float = 1f,
-              log: (String) -> Unit = {}) {
+              log: (String) -> Unit = {}, split: ExposureMap? = null) {
         if (!look.placed || look.amount <= 0f) return
         if (mask != null && mask.stops.all { it <= 0f }) return
         log(if (look.mode == "gaps") "god rays, through gaps" else "god rays, added light")
@@ -219,7 +226,7 @@ object Rays {
             val y0 = gyf.toInt(); val y1 = minOf(y0 + 1, gh - 1); val fy = gyf - y0
             for (x in 0 until w) {
                 val u = (x + 0.5f) / w
-                var cover = mask?.sample(u, v)?.coerceIn(0f, 3f) ?: 1f
+                var cover = (mask?.sample(u, v)?.coerceIn(0f, 3f) ?: 1f) * Sun.sideWeight(look.side, split, u, v)
                 // real beams show in hazy air: "only in fog" leans the beam on the painted fog's veil
                 if (look.fogOnly > 0f) {
                     val veil = fogMask?.let { 1f - exp(-it.sample(u, v) * fogAmount) } ?: 0f

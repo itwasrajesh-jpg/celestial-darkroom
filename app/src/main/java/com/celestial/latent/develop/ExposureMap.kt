@@ -101,6 +101,10 @@ object ExposureMaps {
     const val SOFTEN = "soften"
     const val FOG = "fog"
     const val RAYS = "rays"
+    /** The photo's foreground, as a weight per cell (0 background … 1 foreground): the depth's own split with the user's fixes. */
+    const val DEPTH_SPLIT = "depthsplit"
+    /** The user's fixes to that split: +1 make foreground, −1 make background, 0 as the depth says. */
+    const val DEPTH_FIX = "depthfix"
 
     private fun file(context: Context, photo: Uri, kind: String): File {
         val digest = MessageDigest.getInstance("SHA-1").digest(photo.toString().toByteArray())

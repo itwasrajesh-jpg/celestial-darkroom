@@ -392,6 +392,9 @@ fun PrintPanel(
     raysLook: RaysLook,
     onRaysLook: (RaysLook) -> Unit,
     extraLights: List<RaysLook> = emptyList(),
+    /** The photo's foreground split (with the fixes) and the fixes themselves, for the depth bar. */
+    depthSplit: ExposureMap? = null, onDepthSplit: (ExposureMap?) -> Unit = {},
+    depthFix: ExposureMap? = null, onDepthFix: (ExposureMap?) -> Unit = {},
     onExtraLights: (List<RaysLook>) -> Unit = {},
     renderWithMasks: (Recipe, Int, Masks) -> Bitmap?,
     renderRegionWithMasks: ((Recipe, Int, Masks, Region) -> Bitmap?)? = null,
@@ -420,6 +423,10 @@ fun PrintPanel(
     val all = Masks(exposureMap, softenMap, fogMap, raysMap, raysOn = true)
     // the photo's depth, for painting by distance in every step — worked out once, when first wanted
     val depthRanks = remember { if (com.celestial.latent.develop.Depth.isReady(context)) DepthRanks() else null }
+    // each painting step's side of the depth (0 all, 1 foreground, 2 background); LIGHT's is its light's own
+    var sideDodge by remember { mutableStateOf(0) }
+    var sideSoften by remember { mutableStateOf(0) }
+    var sideFog by remember { mutableStateOf(0) }
     val pickScope = rememberCoroutineScope()
     var note by remember { mutableStateOf("") }
     val render: (Recipe, Int) -> Bitmap? = { r, e -> cache.peek(r, e) ?: renderAt(r, e)?.also { cache.put(r, it) } }
@@ -450,11 +457,13 @@ fun PrintPanel(
                 1 -> RingAroundStep(recipe, render, { r, e -> cache.peek(r, e) }, onFilters, Modifier.fillMaxSize())
                 // each painting step shows the print with BOTH masks: it is one print
                 2 -> PaintStep(DODGE_BURN_SPEC, recipe, exposureMap, onExposureMap, depthRanks = depthRanks,
+                    depthSide = sideDodge, onDepthSide = { sideDodge = it }, depthSplit = depthSplit, onDepthSplit = onDepthSplit, depthFix = depthFix, onDepthFix = onDepthFix,
                     renderWith = { r, e, m -> renderWithMasks(r, e, all.copy(dodge = m)) },
                     startMap = { a -> ExposureMap.blank(a) },
                     modifier = Modifier.fillMaxSize(),
                     renderRegion = renderRegionWithMasks?.let { f -> { r, e, m, reg -> f(r, e, all.copy(dodge = m), reg) } })
                 3 -> PaintStep(SOFTEN_SPEC, recipe, softenMap, onSoftenMap, depthRanks = depthRanks,
+                    depthSide = sideSoften, onDepthSide = { sideSoften = it }, depthSplit = depthSplit, onDepthSplit = onDepthSplit, depthFix = depthFix, onDepthFix = onDepthFix,
                     renderWith = { r, e, m -> renderWithMasks(r, e, all.copy(soften = m)) },
                     // begin from what is on screen: softened everywhere if diffusion is on, else sharp
                     startMap = { a -> ExposureMap.blank(a).also { if (recipe.diffusion) it.stops.fill(1f) } },
@@ -462,6 +471,7 @@ fun PrintPanel(
                     onPaintPlus = onDiffusionOn,
                     renderRegion = renderRegionWithMasks?.let { f -> { r, e, m, reg -> f(r, e, all.copy(soften = m), reg) } })
                 4 -> PaintStep(FOG_SPEC, recipe, fogMap, onFogMap, depthRanks = depthRanks,
+                    depthSide = sideFog, onDepthSide = { sideFog = it }, depthSplit = depthSplit, onDepthSplit = onDepthSplit, depthFix = depthFix, onDepthFix = onDepthFix,
                     renderWith = { r, e, m -> renderWithMasks(r, e, all.copy(fog = m)) },
                     startMap = { a -> ExposureMap.blank(a) },
                     modifier = Modifier.fillMaxSize(),
@@ -480,6 +490,8 @@ fun PrintPanel(
                     // a new colour or amount re-develops the print — it used to wait for the next stroke
                     refreshKey = fogLook)
                 else -> PaintStep(RAYS_SPEC, recipe, raysMap, onRaysMap, depthRanks = depthRanks,
+                    // the light itself lands only on its chosen side; the bar sets the selected light's
+                    depthSide = sel.side.roundToInt(), onDepthSide = { setSel(sel.copy(side = it.toFloat())) }, depthSplit = depthSplit, onDepthSplit = onDepthSplit, depthFix = depthFix, onDepthFix = onDepthFix,
                     renderWith = { r, e, m -> renderWithMasks(r, e, all.copy(rays = m)) },
                     // where rays may fall: unpainted is everywhere, so the first stroke starts from full
                     startMap = { a -> ExposureMap.blank(a).also { it.stops.fill(1f) } },
@@ -544,7 +556,7 @@ fun PrintPanel(
                         "BEAM" to @Composable { RaysBeamTab(sel, onLook = { setSel(it) }) },
                     ),
                     // any light changing re-develops the print — and the depth model arriving
-                    refreshKey = lights to depthTick)
+                    refreshKey = Triple(lights, depthTick, depthSplit?.stops?.contentHashCode()))
             }
         }
     }
@@ -1308,6 +1320,11 @@ private fun PaintStep(
     renderBefore: ((Recipe, Int) -> Bitmap?)? = null,
     /** The photo's depth, shared by the steps, for painting by distance (null: no depth model). */
     depthRanks: DepthRanks? = null,
+    /** This step's side of the depth: 0 all, 1 foreground, 2 background (for LIGHT, the selected light's own). */
+    depthSide: Int = 0, onDepthSide: (Int) -> Unit = {},
+    /** The photo's foreground split (depth plus fixes), and the fixes, painted with "fix". */
+    depthSplit: ExposureMap? = null, onDepthSplit: (ExposureMap?) -> Unit = {},
+    depthFix: ExposureMap? = null, onDepthFix: (ExposureMap?) -> Unit = {},
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -1332,9 +1349,13 @@ private fun PaintStep(
     // Painting by depth: the panel (a selection by distance, shown before it is painted), its
     // range as ranks (0 nearest … 1 farthest), a soft or sharp edge, an even fill or one that
     // thickens with distance; and a brush that stays on the depth where a stroke begins.
-    var depthOpen by remember { mutableStateOf(false) }
-    // where the brush (and fill) may paint: 0 everywhere, 1 the foreground, 2 the background
-    var depthSide by remember { mutableStateOf(0) }
+    // the depth bar: see the split (show), correct it by painting (fix); the side is a parameter
+    var showDepth by remember { mutableStateOf(false) }
+    var fixMode by remember { mutableStateOf(false) }
+    var fixPlus by remember { mutableStateOf(true) }
+    val fixNow by rememberUpdatedState(fixMode)
+    var fixStroke by remember { mutableStateOf<FloatArray?>(null) }
+    var fixTick by remember { mutableStateOf(0) }
     var depthRamp by remember { mutableStateOf(false) }
     var depthReady by remember { mutableStateOf(depthRanks?.raw != null) }
     var line by remember { mutableStateOf<Pair<Pair<Float, Float>, Pair<Float, Float>>?>(null) }
@@ -1342,8 +1363,6 @@ private fun PaintStep(
     var strength by remember { mutableStateOf(1) }
     var showMask by remember { mutableStateOf(false) }
     var stroke by remember { mutableStateOf<FloatArray?>(null) }
-    // true while the stroke shown is the depth panel's selection (not a brush stroke being painted)
-    var selectionShown by remember { mutableStateOf(false) }
     var strokeTick by remember { mutableStateOf(0) }
     val overlay = remember { Animatable(0f) }
     // one history for the mask and the step's own settings: (mask, settings) before each change
@@ -1461,7 +1480,7 @@ private fun PaintStep(
     /** Where painting may land, per mask cell: the chosen side (thicker far, for the background, if asked). */
     fun sideWeights(w: Int, h: Int): FloatArray? {
         if (depthSide == 0) return null
-        val fg = depthRanks?.foreground(w, h) ?: return null
+        val fg = depthSplit?.takeIf { it.width == w && it.height == h }?.stops ?: depthRanks?.foreground(w, h) ?: return null
         val rk = if (depthRamp && depthSide == 2) depthRanks?.ranks(w, h) else null
         return FloatArray(w * h) { k ->
             val side = if (depthSide == 1) fg[k] else 1f - fg[k]
@@ -1472,28 +1491,70 @@ private fun PaintStep(
     fun fillByDistance() {
         val m = working ?: startMap(aspect).also { working = it }
         stroke = sideWeights(m.width, m.height) ?: return
-        selectionShown = true
         strokeTick++
     }
     // the depth, worked out once for every step, the first time it is wanted
-    LaunchedEffect(depthOpen, depthSide, print) {
+    LaunchedEffect(depthSide, showDepth, fixMode, print) {
         val dr = depthRanks ?: return@LaunchedEffect
         val pic = print ?: return@LaunchedEffect
-        if (!(depthOpen || depthSide != 0) || dr.raw != null || dr.busy) { depthReady = dr.raw != null; return@LaunchedEffect }
+        if (!(depthSide != 0 || showDepth || fixMode) || dr.raw != null || dr.busy) { depthReady = dr.raw != null; return@LaunchedEffect }
         dr.busy = true
         val d = withContext(Dispatchers.Default) { runCatching { com.celestial.latent.develop.Depth.estimate(context, pic) }.getOrNull() }
         dr.raw = d; dr.busy = false; depthReady = d != null
     }
     // the selection follows the controls while the panel is open, and goes when it closes
-    // choosing a side shows it in amber until you paint; only ever clears that preview, never a brush stroke
-    LaunchedEffect(depthOpen, depthSide, depthRamp, depthReady) {
-        if (depthOpen && depthSide != 0 && depthReady) fillByDistance()
-        else if (selectionShown) { stroke = null; selectionShown = false; strokeTick++ }
+    // The split, kept up to date: the depth's own foreground plus the fixes, saved with the photo (so
+    // a light limited to a side lands right everywhere, from the preview to the roll).
+    LaunchedEffect(depthReady, depthFix, aspect) {
+        if (!depthReady) return@LaunchedEffect
+        val dims = ExposureMap.blank(aspect); val w = dims.width; val h = dims.height
+        val auto = depthRanks?.foreground(w, h) ?: return@LaunchedEffect
+        val fx = depthFix?.takeIf { it.width == w && it.height == h }?.stops
+        val next = FloatArray(w * h) { k -> (auto[k] + (fx?.get(k) ?: 0f)).coerceIn(0f, 1f) }
+        val have = depthSplit
+        if (have == null || have.width != w || have.height != h || !have.stops.contentEquals(next)) onDepthSplit(ExposureMap(w, h, next))
+    }
+    /** Fixing the split: a stroke of "make foreground" or "make background", gathered apart, then added to the fixes. */
+    fun stampFix(u: Float, v: Float) {
+        val dims = ExposureMap.blank(aspect)
+        val st = fixStroke ?: FloatArray(dims.width * dims.height).also { fixStroke = it }
+        val r = BRUSH[brush] / zoom.scale
+        val aw = if (aspect >= 1f) 1f else aspect; val ah = if (aspect >= 1f) 1f / aspect else 1f
+        val i0 = ((u - r / aw) * dims.width).toInt().coerceAtLeast(0); val i1 = ((u + r / aw) * dims.width).toInt().coerceAtMost(dims.width - 1)
+        val j0 = ((v - r / ah) * dims.height).toInt().coerceAtLeast(0); val j1 = ((v + r / ah) * dims.height).toInt().coerceAtMost(dims.height - 1)
+        for (j in j0..j1) for (i in i0..i1) {
+            val dx = ((i + 0.5f) / dims.width - u) * aw; val dy = ((j + 0.5f) / dims.height - v) * ah
+            val d = kotlin.math.sqrt(dx * dx + dy * dy) / r
+            if (d >= 1f) continue
+            val t = 1f - d; val fall = t * t * (3f - 2f * t); val k = j * dims.width + i
+            if (fall > st[k]) st[k] = fall
+        }
+        fixTick++
+    }
+    fun endFix() {
+        val st = fixStroke ?: return
+        fixStroke = null
+        val dims = ExposureMap.blank(aspect)
+        val next = depthFix?.takeIf { it.width == dims.width && it.height == dims.height }?.copy() ?: dims
+        val sign = if (fixPlus) 1f else -1f
+        for (k in next.stops.indices) if (st[k] > 0f) next.stops[k] = (next.stops[k] + sign * st[k]).coerceIn(-1f, 1f)
+        onDepthFix(next); fixTick++
+    }
+    /** The split, shown: the foreground warm, the background cool (with a fix being painted, live). */
+    val depthOverlay = remember(depthSplit, fixTick, showDepth, fixMode, fixPlus) {
+        if (!(showDepth || fixMode)) return@remember null
+        val sp = depthSplit ?: return@remember null
+        val st = fixStroke?.takeIf { it.size == sp.stops.size }; val sign = if (fixPlus) 1f else -1f
+        val px = IntArray(sp.width * sp.height) { k ->
+            val f = (sp.stops[k] + (st?.let { sign * it[k] } ?: 0f)).coerceIn(0f, 1f)
+            val r = (250 * f + 70 * (1 - f)).toInt(); val g = (190 * f + 125 * (1 - f)).toInt(); val b = (110 * f + 210 * (1 - f)).toInt()
+            (120 shl 24) or (r shl 16) or (g shl 8) or b
+        }
+        Bitmap.createBitmap(px, sp.width, sp.height, Bitmap.Config.ARGB_8888)
     }
 
     fun stamp(u: Float, v: Float) {
         val m = working ?: startMap(aspect).also { working = it }
-        if (selectionShown) { stroke = null; selectionShown = false }        // painting begins: the amber preview gives way
         val st = stroke ?: FloatArray(m.width * m.height).also { stroke = it }
         val r = BRUSH[brush] / zoom.scale      // the same size on screen at any zoom
         // foreground or background chosen: the brush paints only there
@@ -1586,30 +1647,15 @@ private fun PaintStep(
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 listOf("gentle", "medium", "strong").forEachIndexed { i, label -> Chip(label, on = strength == i) { strength = i } }
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                if (depthRanks != null) Chip("depth", on = depthOpen) { depthOpen = !depthOpen; if (depthOpen) gradientTool = false }
-                Chip("mask", on = showMask) { showMask = !showMask }
-            }
+            Chip("mask", on = showMask) { showMask = !showMask }
         }
-        // Painting by depth: everywhere, or only the foreground, or only the background — split
-        // automatically. The chosen side shows in amber; the brush and "fill" paint only there.
-        if (depthOpen && depthRanks != null) Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 6.dp)) {
-            if (!depthReady && depthSide != 0) Text("working out the depth…", color = LatentColors.Amber, fontSize = 11.sp, modifier = Modifier.padding(bottom = 4.dp))
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Chip("all", on = depthSide == 0) { depthSide = 0 }
-                    Chip("foreground", on = depthSide == 1) { depthSide = 1 }
-                    Chip("background", on = depthSide == 2) { depthSide = 2 }
-                }
-                if (depthSide != 0) Chip("fill", on = true, enabled = depthReady) { fillByDistance(); endStroke(); selectionShown = false; fillByDistance() }
-            }
-            Row(Modifier.fillMaxWidth().padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                if (depthSide == 2) Chip("thicker far", on = depthRamp) { depthRamp = !depthRamp }
-                Text(
-                    when (depthSide) { 1 -> "  amber: the foreground — the brush paints only there"; 2 -> "  amber: the background — the brush paints only there"; else -> "  the brush paints anywhere" },
-                    color = LatentColors.TextDim, fontSize = 11.sp, modifier = Modifier.weight(1f),
-                )
-            }
+        // A side chosen in the depth bar: the brush paints only there — or fill all of it at once
+        // (thicker far, for the background: building up with distance, as mist does).
+        if (depthSide != 0 && depthRanks != null) Row(
+            Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 6.dp), verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Chip("fill the " + (if (depthSide == 1) "foreground" else "background"), on = true, enabled = depthReady || depthSplit != null) { fillByDistance(); endStroke() }
+            if (depthSide == 2) Box(Modifier.padding(start = 4.dp)) { Chip("thicker far", on = depthRamp) { depthRamp = !depthRamp } }
         }
         // 3. where the mask stands, and the way back
         Row(
@@ -1647,6 +1693,21 @@ private fun PaintStep(
                         val fit = FitRect(pr.left, pr.top, pr.width, pr.height)
                         fun at(o: Offset) = zoom.toPicture(o.x, o.y, fit, vw, vh)
                         val (u0, v0) = at(down.position)
+                        // fixing the split: a stroke paints foreground or background into the fixes — on any
+                        // tab, before placing, picking or painting
+                        if (fixNow) {
+                            if (u0 in 0f..1f && v0 in 0f..1f) {
+                                Haptics.tick(context); stampFix(u0, v0)
+                                while (true) {
+                                    val ev = awaitPointerEvent(); val pr = ev.changes.filter { it.pressed }
+                                    if (pr.isEmpty() || pr.size >= 2) break
+                                    val (u, v) = at(pr[0].position); stampFix(u.coerceIn(0f, 1f), v.coerceIn(0f, 1f))
+                                    ev.changes.forEach { it.consume() }
+                                }
+                                endFix()
+                            }
+                            return@awaitEachGesture
+                        }
                         // eyedropper: this tap picks a colour from the picture instead of painting
                         val pick = pickNow
                         // only on its own tab (a brush stroke on BRUSH must never place a light)
@@ -1744,6 +1805,9 @@ private fun PaintStep(
                         drawImage(tile.second.asImageBitmap(), dstOffset = IntOffset(a.x.toInt(), a.y.toInt()),
                             dstSize = IntSize((c.x - a.x).toInt(), (c.y - a.y).toInt()))
                     }
+                    // the depth split: foreground warm, background cool (show, or while fixing)
+                    if (!comparing) depthOverlay?.let { drawImage(it.asImageBitmap(), dstOffset = IntOffset(r.left.toInt(), r.top.toInt()),
+                        dstSize = IntSize(r.width.toInt(), r.height.toInt())) }
                     // the light's shape, and its handles to drag (hidden while comparing: the photo alone)
                     if (!comparing) overlayDraw?.invoke(this, aspect) { mu, mv -> zoom.toScreen(mu, mv, fit, size.width, size.height) }
                     if (!comparing) handlesFor?.invoke(aspect)?.forEach { (hu, hv) ->
@@ -1779,6 +1843,38 @@ private fun PaintStep(
                 modifier = Modifier.align(Alignment.TopStart).padding(6.dp).clip(RoundedCornerShape(999.dp)).background(LatentColors.Amber)
                     .pointerInput(Unit) { detectTapGestures(onTap = { Haptics.tick(context); zoom.reset(); detail = null }) }
                     .padding(horizontal = 10.dp, vertical = 4.dp))
+        }
+        // The depth bar, on every tab: this step's side (tap it again for everywhere), the split shown
+        // (foreground warm, background cool), and fix — paint on the photo to correct it, on any tab.
+        if (depthRanks != null) Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 6.dp)) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text("depth", color = LatentColors.TextDim, fontSize = 10.sp, letterSpacing = 1.sp)
+                    Chip("foreground", on = depthSide == 1) { onDepthSide(if (depthSide == 1) 0 else 1) }
+                    Chip("background", on = depthSide == 2) { onDepthSide(if (depthSide == 2) 0 else 2) }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Chip("show", on = showDepth) { showDepth = !showDepth }
+                    Chip("fix", on = fixMode) { fixMode = !fixMode; if (fixMode) showDepth = true }
+                }
+            }
+            if (fixMode) Row(Modifier.fillMaxWidth().padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                Chip("make foreground", on = fixPlus) { fixPlus = true }
+                Chip("make background", on = !fixPlus) { fixPlus = false }
+                Chip("clear", on = false, enabled = depthFix != null) { onDepthFix(null) }
+            }
+            val wanted = depthSide != 0 || showDepth || fixMode
+            Text(
+                when {
+                    wanted && !depthReady && depthSplit == null -> "working out the depth…"
+                    fixMode -> "paint on the photo: " + (if (fixPlus) "warm = foreground" else "cool = background") + ", on any tab"
+                    depthSide == 1 -> if (tabs != null && spec === RAYS_SPEC) "this light lands only on the foreground" else "painting only on the foreground"
+                    depthSide == 2 -> if (tabs != null && spec === RAYS_SPEC) "this light lands only on the background" else "painting only on the background"
+                    else -> ""
+                },
+                color = if (wanted && !depthReady && depthSplit == null) LatentColors.Amber else LatentColors.TextDim, fontSize = 11.sp,
+                modifier = Modifier.padding(top = 2.dp),
+            )
         }
         if (tabs == null) brushRows() else {
             // Tabs: one group of controls at a time, in a space of fixed height, so the photo

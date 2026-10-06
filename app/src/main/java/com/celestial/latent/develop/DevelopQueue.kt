@@ -34,6 +34,7 @@ object DevelopQueue {
                    framing: Framing = Framing(), fogMask: ExposureMap? = null, fogLook: FogLook = FogLook(),
                    raysMask: ExposureMap? = null, raysLook: RaysLook = RaysLook(),
                    extraLights: List<RaysLook> = emptyList(),
+                   depthSplit: ExposureMap? = null,
                    onStatus: (String) -> Unit, onDone: (Uri?) -> Unit): Running {
         val handle = Running()
         pending.incrementAndGet(); onChanged()
@@ -51,7 +52,7 @@ object DevelopQueue {
                 holdsLane = acquireLane(120)
                 if (handle.cancelled) { Log.i("Latent", "full develop cancelled while waiting"); return@execute }
                 onStatus("starting")
-                out = Develop.developFull(app, source, isRaw, recipe, upscale = upscale, exposureMap = exposureMap, softenMask = softenMask, pairFirst = pairFirst, framing = framing, fogMask = fogMask, fogLook = fogLook, raysMask = raysMask, raysLook = raysLook, extraLights = extraLights) { m -> if (!handle.cancelled) onStatus(m) }
+                out = Develop.developFull(app, source, isRaw, recipe, upscale = upscale, exposureMap = exposureMap, softenMask = softenMask, pairFirst = pairFirst, framing = framing, fogMask = fogMask, fogLook = fogLook, raysMask = raysMask, raysLook = raysLook, extraLights = extraLights, depthSplit = depthSplit) { m -> if (!handle.cancelled) onStatus(m) }
                 if (handle.cancelled) { Log.i("Latent", "full develop finished after cancel; result discarded"); out = null }
             } catch (t: Throwable) {
                 Log.e("Latent", "full develop failed", t)

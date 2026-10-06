@@ -200,7 +200,23 @@ object Develop {
      * Every light on surfaces, together, before the film; a failure is logged and the photo
      * develops without it. The scene's size is light 1's setting: it describes the scene, not a light.
      */
-    private fun sunOnSurfaces(src: Source, lights: List<RaysLook>, mask: ExposureMap?, input: Sun.Input?, log: (String) -> Unit) {
+    /**
+     * The recipe settings the preparation reads (noise cleaning, the 85B filter, the two diffusion
+     * filters, the film format) — and nothing else, so a change made for the film stage reuses it.
+     */
+    private fun preparedKey(r: Recipe): String = listOf(
+        r.chromaDenoise, r.lumaDenoise, r.lens85b,
+        r.diffusion, r.diffusionFamily, r.diffusionStrength, r.diffusionScale, r.diffusionCore, r.diffusionCoreSize,
+        r.diffusionHalo, r.diffusionHaloSize, r.diffusionBloom, r.diffusionBloomSize, r.diffusionWarmth,
+        r.fastDiffusion, r.filmFormatMm, r.printDiffusion, r.printDiffusionFamily, r.printDiffusionStrength,
+    ).joinToString(",")
+
+    /** The foreground split for lights limited to a side: the one given, or the photo's saved split; null when no light needs it. */
+    private fun splitFor(context: Context, source: Uri, lights: List<RaysLook>, given: ExposureMap?): ExposureMap? =
+        if (lights.none { it.placed && it.side > 0.5f }) null else given ?: ExposureMaps.load(context, source, ExposureMaps.DEPTH_SPLIT)
+
+    private fun sunOnSurfaces(src: Source, lights: List<RaysLook>, mask: ExposureMap?, input: Sun.Input?, log: (String) -> Unit, cleanKey: String? = null,
+                              split: ExposureMap? = null) {
         if (input == null || lights.isEmpty()) return
         runCatching {
             val scale = lights.first().scale
@@ -210,17 +226,18 @@ object Develop {
             // a sun through a window bounces from where it lands on the floor (in its own map), not from the frame
             val byEye = maps.filter { it.second.measured <= 0f }
             val bounce = if (bounceAmount > 0f && byEye.any { it.first.surface > 0f }) Sun.bounce(input, byEye, scale, log) else null
-            Sun.apply(src, maps, mask, input, log, bounce, bounceAmount)
+            Sun.apply(src, maps, mask, input, log, bounce, bounceAmount, cleanKey, split)
         }.onFailure { t -> Log.e("Latent", "light: could not light the surfaces", t) }
     }
 
     /** The lights' glow in the air, in 3D, in front of everything; a failure is logged and the photo develops without it. */
-    private fun beamsInAir(src: Source, lights: List<RaysLook>, mask: ExposureMap?, fogMask: ExposureMap?, input: Sun.Input?, log: (String) -> Unit) {
+    private fun beamsInAir(src: Source, lights: List<RaysLook>, mask: ExposureMap?, fogMask: ExposureMap?, input: Sun.Input?, log: (String) -> Unit,
+                           split: ExposureMap? = null) {
         if (input == null || lights.none { Beams.wanted(it) }) return
         runCatching {
             val scale = lights.first().scale
             val airs = lights.mapNotNull { l -> Beams.air(input, l, scale, fogMask, log)?.let { l to it } }
-            Beams.apply(src, airs, mask, input, log)
+            Beams.apply(src, airs, mask, input, log, split)
         }.onFailure { t -> Log.e("Latent", "light: could not light the air", t) }
     }
 
@@ -229,6 +246,7 @@ object Develop {
                    fogMask: ExposureMap? = null, fogLook: FogLook = FogLook(),
                    raysMask: ExposureMap? = null, raysLook: RaysLook = RaysLook(),
                    extraLights: List<RaysLook> = emptyList(),
+                   depthSplit: ExposureMap? = null,
                    log: (String) -> Unit = {}): Source {
         // The pristine decode is cached on its own, so changing a pre-engine setting costs a
         // copy rather than a fresh decode of the file (which was over a second every time).
@@ -253,13 +271,18 @@ object Develop {
         // and the preview size are used only later, by the engine, so test strips and the
         // ring-around — which change nothing else — no longer clean and diffuse every print again.
         val isoUsed = if (pair) maxOf(iso, isoOf(context, pairFirst!!)) else iso
+        // a light limited to the foreground or background needs the photo's split (the darkroom's own, or saved)
+        val split = splitFor(context, source, listOf(raysLook) + extraLights, depthSplit)
         val prep = listOf(
             framing.key(), isoUsed,
-            recipe.copy(printExposure = 1f, yFilterShift = 0f, mFilterShift = 0f, previewMaxSize = 0).hashCode(),
+            // only the settings the preparation below reads — grain, halation, saturation, the film and
+            // the rest act later, in the film stage, and once forced every stage here to run again
+            preparedKey(recipe),
             softenMask?.let { "${it.width}x${it.height}:${it.stops.contentHashCode()}" } ?: "-",
             fogMask?.let { "${it.width}x${it.height}:${it.stops.contentHashCode()}:${fogLook.key()}" } ?: "-",
             if (raysLook.placed) "${raysLook.key()}:${raysMask?.let { "${it.width}x${it.height}:${it.stops.contentHashCode()}" } ?: "all"}" else "-",
             ExtraLights.key(extraLights),
+            split?.let { "${it.width}x${it.height}:${it.stops.contentHashCode()}" } ?: "-",
             // light on surfaces needs the depth model: once it is installed, prepare again
             if ((listOf(raysLook) + extraLights).any { Sun.wanted(it) || Beams.wanted(it) }) "sun:${Depth.isReady(context)}" else "-",
         ).joinToString("|")
@@ -273,9 +296,15 @@ object Develop {
         // the air first — it is in front of the lens — then the lens filter
         fogMask?.let { Fog.apply(working, it, fogLook, log) }
         // the flat 2D glow only for "through gaps", or when there is no depth to work in 3D
-        for (light in listOf(raysLook) + extraLights) if (sunIn == null || !Beams.wanted(light)) Rays.apply(working, light, raysMask, fogMask, fogLook.amount, log)
-        sunOnSurfaces(working, listOf(raysLook) + extraLights, raysMask, sunIn, log)    // the lights on what they meet
-        beamsInAir(working, listOf(raysLook) + extraLights, raysMask, fogMask, sunIn, log) // and in the air, in front of it all
+        for (light in listOf(raysLook) + extraLights) if (sunIn == null || !Beams.wanted(light)) Rays.apply(working, light, raysMask, fogMask, fogLook.amount, log, split)
+        // what lies under the lights: while it is unchanged, the noise-free copy they land on is reused
+        // (the photo — both frames of a pair — and its size, by the decode's own key, then everything applied before the lights)
+        val underLights = listOf(key, framing.key(), isoUsed, recipe.chromaDenoise, recipe.lumaDenoise,
+            fogMask?.let { "${it.width}x${it.height}:${it.stops.contentHashCode()}:${fogLook.key()}" } ?: "-",
+            (listOf(raysLook) + extraLights).filter { sunIn == null || !Beams.wanted(it) }.joinToString(";") { it.key() },
+            raysMask?.stops?.contentHashCode() ?: 0, split?.stops?.contentHashCode() ?: 0, working.width, working.height).joinToString("|")
+        sunOnSurfaces(working, listOf(raysLook) + extraLights, raysMask, sunIn, log, underLights, split)    // the lights on what they meet
+        beamsInAir(working, listOf(raysLook) + extraLights, raysMask, fogMask, sunIn, log, split) // and in the air, in front of it all
         lensFilterSource(working, recipe, log)
         fastDiffusionSource(working, recipe, preview = true, softenMask = softenMask, log = log)
         fastPrintDiffusionSource(working, recipe, preview = true, log = log)
@@ -835,6 +864,7 @@ object Develop {
                     framing: Framing = Framing(), fogMask: ExposureMap? = null, fogLook: FogLook = FogLook(),
                     raysMask: ExposureMap? = null, raysLook: RaysLook = RaysLook(),
                     extraLights: List<RaysLook> = emptyList(),
+                    depthSplit: ExposureMap? = null,
                     log: (String) -> Unit = {}): Uri {
         log(if (maxEdge > 0) "decoding…" else "decoding at full size…")
         val pair = pairFirst != null && isRaw
@@ -853,9 +883,10 @@ object Develop {
             denoiseSource(s, recipe, iso, log)
             sensorNoiseSource(s, recipe, iso, log)
             fogMask?.let { Fog.apply(s, it, fogLook, log) }
-            for (light in listOf(raysLook) + extraLights) if (sunIn == null || !Beams.wanted(light)) Rays.apply(s, light, raysMask, fogMask, fogLook.amount, log)
-            sunOnSurfaces(s, listOf(raysLook) + extraLights, raysMask, sunIn, log)
-            beamsInAir(s, listOf(raysLook) + extraLights, raysMask, fogMask, sunIn, log)
+            val split = splitFor(context, source, listOf(raysLook) + extraLights, depthSplit)
+            for (light in listOf(raysLook) + extraLights) if (sunIn == null || !Beams.wanted(light)) Rays.apply(s, light, raysMask, fogMask, fogLook.amount, log, split)
+            sunOnSurfaces(s, listOf(raysLook) + extraLights, raysMask, sunIn, log, null, split)
+            beamsInAir(s, listOf(raysLook) + extraLights, raysMask, fogMask, sunIn, log, split)
             lensFilterSource(s, recipe, log)
             fastDiffusionSource(s, recipe, preview = false, softenMask = softenMask, log = log)
             fastPrintDiffusionSource(s, recipe, preview = false, log = log)
