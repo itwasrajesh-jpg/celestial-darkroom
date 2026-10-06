@@ -1494,15 +1494,18 @@ private fun PaintStep(
         strokeTick++
     }
     // the depth, worked out once for every step, the first time it is wanted
-    LaunchedEffect(depthSide, showDepth, fixMode, print) {
+    // the depth, the first time the bar wants it: started once on its own thread, then waited for —
+    // a new print restarting this only means waiting again, never starting over or getting stuck
+    var depthFailed by remember { mutableStateOf(false) }
+    LaunchedEffect(depthSide, showDepth, fixMode, print != null) {
         val dr = depthRanks ?: return@LaunchedEffect
+        if (dr.raw != null) { depthReady = true; return@LaunchedEffect }
+        if (!(depthSide != 0 || showDepth || fixMode)) return@LaunchedEffect
         val pic = print ?: return@LaunchedEffect
-        if (!(depthSide != 0 || showDepth || fixMode) || dr.raw != null || dr.busy) { depthReady = dr.raw != null; return@LaunchedEffect }
-        dr.busy = true
-        val d = withContext(Dispatchers.Default) { runCatching { com.celestial.latent.develop.Depth.estimate(context, pic) }.getOrNull() }
-        dr.raw = d; dr.busy = false; depthReady = d != null
+        dr.ensure(context, pic)
+        while (dr.busy) delay(150)
+        depthReady = dr.raw != null; depthFailed = dr.failed
     }
-    // the selection follows the controls while the panel is open, and goes when it closes
     // The split, kept up to date: the depth's own foreground plus the fixes, saved with the photo (so
     // a light limited to a side lands right everywhere, from the preview to the roll).
     LaunchedEffect(depthReady, depthFix, aspect) {
@@ -1866,6 +1869,7 @@ private fun PaintStep(
             val wanted = depthSide != 0 || showDepth || fixMode
             Text(
                 when {
+                    wanted && depthFailed && depthSplit == null -> "the depth could not be worked out — is the model installed?"
                     wanted && !depthReady && depthSplit == null -> "working out the depth…"
                     fixMode -> "paint on the photo: " + (if (fixPlus) "warm = foreground" else "cool = background") + ", on any tab"
                     depthSide == 1 -> if (tabs != null && spec === RAYS_SPEC) "this light lands only on the foreground" else "painting only on the foreground"
@@ -1917,6 +1921,21 @@ private fun PaintStep(
 private class DepthRanks {
     @Volatile var raw: FloatArray? = null            // the model's answer, SIZE x SIZE, 1 = near
     @Volatile var busy = false
+    @Volatile var failed = false
+    /**
+     * Works the depth out once, on its own thread: a re-develop of the print (choosing a side
+     * re-develops the light) cannot interrupt it. Busy is cleared whatever happens — interrupted, it
+     * once stayed set and the bar waited for ever.
+     */
+    @Synchronized fun ensure(context: android.content.Context, pic: Bitmap) {
+        if (raw != null || busy) return
+        busy = true; failed = false
+        val app = context.applicationContext
+        Thread {
+            try { raw = runCatching { com.celestial.latent.develop.Depth.estimate(app, pic) }.getOrNull(); failed = raw == null }
+            finally { busy = false }
+        }.start()
+    }
     private var cacheKey = ""; private var cache: FloatArray? = null
     /** The ranks on a mask's grid (cached for that size). */
     @Synchronized fun ranks(w: Int, h: Int): FloatArray? {
