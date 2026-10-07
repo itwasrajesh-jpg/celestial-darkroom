@@ -65,4 +65,14 @@ https://github.com/fabio-sim/Depth-Anything-ONNX — also Apache-2.0. For this a
 stored at half size (computed at full precision) and it is hosted as a release asset of this
 repository. Apache-2.0 is compatible with this app's GPLv3.
 
-It runs with **ONNX Runtime** (Microsoft, MIT License) — https://github.com/microsoft/onnxruntime
+## Tap-to-select model (downloaded on first use, not part of the app)
+
+Tap to select uses **MobileSAM** by Chaoning Zhang, Dongshen Han, Yu Qiao, Jung Uk Kim,
+Sung-Ho Bae, Seungkyu Lee and Choong Seon Hong — https://github.com/ChaoningZhang/MobileSAM —
+licensed under the Apache License 2.0. It builds on **Segment Anything** by Meta AI
+(https://github.com/facebookresearch/segment-anything), also Apache-2.0. For this app it was
+exported to ONNX from the published weights (encoder and decoder as two files), its weights stored
+at half size (computed at full precision), and it is hosted as a release asset of this repository.
+Apache-2.0 is compatible with this app's GPLv3.
+
+Both models run with **ONNX Runtime** (Microsoft, MIT License) — https://github.com/microsoft/onnxruntime
