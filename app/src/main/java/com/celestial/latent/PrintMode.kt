@@ -423,6 +423,10 @@ fun PrintPanel(
     val all = Masks(exposureMap, softenMap, fogMap, raysMap, raysOn = true)
     // the photo's depth, for painting by distance in every step — worked out once, when first wanted
     val depthRanks = remember { if (com.celestial.latent.develop.Depth.isReady(context)) DepthRanks() else null }
+    // tap to select: the picture read once by the model and shared by every painting step (59a);
+    // the models' memory is given back when PRINT closes
+    val selectPicture = remember { SelectPicture() }
+    androidx.compose.runtime.DisposableEffect(Unit) { onDispose { com.celestial.latent.develop.Select.release() } }
     // each painting step's side of the depth (0 all, 1 foreground, 2 background); LIGHT's is its light's own
     var sideDodge by remember { mutableStateOf(0) }
     var sideSoften by remember { mutableStateOf(0) }
@@ -456,13 +460,13 @@ fun PrintPanel(
                 0 -> TestStripStep(recipe, render, onExposure, Modifier.fillMaxSize())
                 1 -> RingAroundStep(recipe, render, { r, e -> cache.peek(r, e) }, onFilters, Modifier.fillMaxSize())
                 // each painting step shows the print with BOTH masks: it is one print
-                2 -> PaintStep(DODGE_BURN_SPEC, recipe, exposureMap, onExposureMap, depthRanks = depthRanks,
+                2 -> PaintStep(DODGE_BURN_SPEC, recipe, exposureMap, onExposureMap, depthRanks = depthRanks, selectPicture = selectPicture,
                     depthSide = sideDodge, onDepthSide = { sideDodge = it }, depthSplit = depthSplit, onDepthSplit = onDepthSplit, depthFix = depthFix, onDepthFix = onDepthFix,
                     renderWith = { r, e, m -> renderWithMasks(r, e, all.copy(dodge = m)) },
                     startMap = { a -> ExposureMap.blank(a) },
                     modifier = Modifier.fillMaxSize(),
                     renderRegion = renderRegionWithMasks?.let { f -> { r, e, m, reg -> f(r, e, all.copy(dodge = m), reg) } })
-                3 -> PaintStep(SOFTEN_SPEC, recipe, softenMap, onSoftenMap, depthRanks = depthRanks,
+                3 -> PaintStep(SOFTEN_SPEC, recipe, softenMap, onSoftenMap, depthRanks = depthRanks, selectPicture = selectPicture,
                     depthSide = sideSoften, onDepthSide = { sideSoften = it }, depthSplit = depthSplit, onDepthSplit = onDepthSplit, depthFix = depthFix, onDepthFix = onDepthFix,
                     renderWith = { r, e, m -> renderWithMasks(r, e, all.copy(soften = m)) },
                     // begin from what is on screen: softened everywhere if diffusion is on, else sharp
@@ -470,7 +474,7 @@ fun PrintPanel(
                     modifier = Modifier.fillMaxSize(),
                     onPaintPlus = onDiffusionOn,
                     renderRegion = renderRegionWithMasks?.let { f -> { r, e, m, reg -> f(r, e, all.copy(soften = m), reg) } })
-                4 -> PaintStep(FOG_SPEC, recipe, fogMap, onFogMap, depthRanks = depthRanks,
+                4 -> PaintStep(FOG_SPEC, recipe, fogMap, onFogMap, depthRanks = depthRanks, selectPicture = selectPicture,
                     depthSide = sideFog, onDepthSide = { sideFog = it }, depthSplit = depthSplit, onDepthSplit = onDepthSplit, depthFix = depthFix, onDepthFix = onDepthFix,
                     renderWith = { r, e, m -> renderWithMasks(r, e, all.copy(fog = m)) },
                     startMap = { a -> ExposureMap.blank(a) },
@@ -489,7 +493,7 @@ fun PrintPanel(
                     lookState = fogLook, onRestoreLook = { onFogLook(it as FogLook) }, pickOnTab = 0,
                     // a new colour or amount re-develops the print — it used to wait for the next stroke
                     refreshKey = fogLook)
-                else -> PaintStep(RAYS_SPEC, recipe, raysMap, onRaysMap, depthRanks = depthRanks,
+                else -> PaintStep(RAYS_SPEC, recipe, raysMap, onRaysMap, depthRanks = depthRanks, selectPicture = selectPicture,
                     // the light itself lands only on its chosen side; the bar sets the selected light's
                     depthSide = sel.side.roundToInt(), onDepthSide = { setSel(sel.copy(side = it.toFloat())) }, depthSplit = depthSplit, onDepthSplit = onDepthSplit, depthFix = depthFix, onDepthFix = onDepthFix,
                     renderWith = { r, e, m -> renderWithMasks(r, e, all.copy(rays = m)) },
@@ -1325,6 +1329,8 @@ private fun PaintStep(
     /** The photo's foreground split (depth plus fixes), and the fixes, painted with "fix". */
     depthSplit: ExposureMap? = null, onDepthSplit: (ExposureMap?) -> Unit = {},
     depthFix: ExposureMap? = null, onDepthFix: (ExposureMap?) -> Unit = {},
+    /** The picture as read by the tap-to-select model, shared by the steps (59a). */
+    selectPicture: SelectPicture? = null,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -1493,6 +1499,90 @@ private fun PaintStep(
         stroke = sideWeights(m.width, m.height) ?: return
         strokeTick++
     }
+
+    // Tap to select (59a): a tap outlines the object under it; the same spot again grows the outline
+    // (three sizes), other spots add to it (or, with "take away", remove). The outline shows in amber
+    // as the stroke being painted and "fill" commits it like a stroke — plus or minus, gentle to
+    // strong, the depth bar's side, undo, all as for the brush.
+    var selectMode by remember { mutableStateOf(false) }
+    val selectNow by rememberUpdatedState(selectMode)
+    var selInstalled by remember { mutableStateOf(com.celestial.latent.develop.Select.isReady(context)) }
+    var selReady by remember { mutableStateOf(selectPicture?.embedding != null) }
+    var selFailed by remember { mutableStateOf(false) }
+    var selTakeAway by remember { mutableStateOf(false) }
+    val selTaps = remember { mutableStateListOf<com.celestial.latent.develop.Select.Tap>() }
+    var selAnswer by remember { mutableStateOf<com.celestial.latent.develop.Select.Answer?>(null) }
+    var selLevel by remember { mutableStateOf(0) }
+    var selBusy by remember { mutableStateOf(false) }
+    var selStatus by remember { mutableStateOf("") }
+    /** The chosen outline (times the depth bar's side), shown as the stroke being painted. */
+    fun showSelection() {
+        val a = selAnswer ?: return
+        val m = working ?: startMap(aspect).also { working = it }
+        if (a.width != m.width || a.height != m.height) return
+        val mk = a.masks[selLevel.coerceIn(0, a.masks.size - 1)]
+        val sideW = sideWeights(m.width, m.height)
+        stroke = FloatArray(m.width * m.height) { k -> mk[k] * (sideW?.get(k) ?: 1f) }
+        strokeTick++
+        scope.launch { overlay.snapTo(1f) }
+    }
+    fun clearSelection() {
+        selTaps.clear(); selAnswer = null; selLevel = 0
+        if (stroke != null) { stroke = null; strokeTick++ }
+    }
+    /** A tap on the photo while selecting. Never suspends: the model runs on its own coroutine. */
+    fun selectTap(u: Float, v: Float) {
+        val e = selectPicture?.embedding
+        if (e == null) { selStatus = if (selFailed) "the picture could not be read — try select again" else "still reading the picture…"; return }
+        if (selBusy) return
+        val first = selTaps.singleOrNull()
+        val aw = if (aspect >= 1f) 1f else aspect; val ah = if (aspect >= 1f) 1f / aspect else 1f
+        // the same spot again, after one tap: the next size up (back to the smallest after the largest)
+        if (first != null && first.add && !selTakeAway && selAnswer?.masks?.size == 3 &&
+            kotlin.math.hypot((u - first.u) * aw, (v - first.v) * ah) < 0.04f) {
+            selLevel = (selLevel + 1) % 3; showSelection(); return
+        }
+        if (selTaps.isEmpty() && selTakeAway) { selStatus = "tap the object first, then take away"; return }
+        selTaps.add(com.celestial.latent.develop.Select.Tap(u, v, add = !selTakeAway))
+        val taps = selTaps.toList()
+        val dims = working ?: startMap(aspect).also { working = it }
+        selBusy = true; selStatus = ""
+        scope.launch {
+            val a = withContext(Dispatchers.Default) {
+                runCatching { com.celestial.latent.develop.Select.outlines(context, e, taps, dims.width, dims.height) }
+                    .onFailure { android.util.Log.e("Latent", "select failed", it) }.getOrNull()
+            }
+            selBusy = false
+            if (a == null) { selTaps.removeAt(selTaps.size - 1); selStatus = "could not select there"; return@launch }
+            selAnswer = a
+            // one tap: start from the model's most confident size; more taps give a single answer
+            selLevel = if (a.masks.size == 3) a.scores.indices.maxByOrNull { a.scores[it] } ?: 0 else 0
+            showSelection()
+        }
+    }
+    val selectTapNow by rememberUpdatedState<(Float, Float) -> Unit>({ u, v -> selectTap(u, v) })
+    // the two model files, picked from the phone instead of downloaded (checked the same way)
+    val selPicker = androidx.activity.compose.rememberLauncherForActivityResult(androidx.activity.result.contract.ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        if (uris.isNotEmpty()) {
+            selStatus = "importing…"
+            Thread {
+                com.celestial.latent.develop.Select.importFrom(context, uris) { got, total -> selStatus = "importing… ${got * 100 / total}%" }
+                    .onSuccess { selInstalled = true; selStatus = "" }
+                    .onFailure { t -> selStatus = "not imported: ${t.message}"; android.util.Log.e("Latent", "select import failed", t) }
+            }.start()
+        }
+    }
+    // the picture is read once, the first time select is on — on its own thread, waited for here
+    LaunchedEffect(selectMode, selInstalled, print != null, before != null) {
+        val sp = selectPicture ?: return@LaunchedEffect
+        if (sp.embedding != null) { selReady = true; return@LaunchedEffect }
+        if (!selectMode || !selInstalled) return@LaunchedEffect
+        // the print without this step's effect when it is ready (a heavy fog would hide edges), else the print
+        val pic = before ?: print ?: return@LaunchedEffect
+        sp.ensure(context, pic)
+        while (sp.busy) delay(150)
+        selReady = sp.embedding != null; selFailed = sp.failed
+    }
     // the depth, worked out once for every step, the first time it is wanted
     // the depth, the first time the bar wants it: started once on its own thread, then waited for —
     // a new print restarting this only means waiting again, never starting over or getting stuck
@@ -1660,6 +1750,31 @@ private fun PaintStep(
             Chip("fill the " + (if (depthSide == 1) "foreground" else "background"), on = true, enabled = depthReady || depthSplit != null) { fillByDistance(); endStroke() }
             if (depthSide == 2) Box(Modifier.padding(start = 4.dp)) { Chip("thicker far", on = depthRamp) { depthRamp = !depthRamp } }
         }
+        // Tap to select (59a). Widths: select 59 + take away 79 + fill 46 + start over 85 + gaps ≈ 281 dp.
+        if (selectPicture != null) Row(
+            Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 6.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Chip("select", on = selectMode) { selectMode = !selectMode; selTakeAway = false; selStatus = ""; clearSelection() }
+            if (selectMode && selInstalled) {
+                Chip("take away", on = selTakeAway, enabled = selTaps.isNotEmpty()) { selTakeAway = !selTakeAway }
+                Chip("fill", on = true, enabled = selAnswer != null && !selBusy) { endStroke(); clearSelection(); selTakeAway = false }
+                Chip("start over", on = false, enabled = selTaps.isNotEmpty()) { clearSelection(); selTakeAway = false }
+            }
+            if (selectMode && !selInstalled) {
+                Chip("download 25 MB", on = false) {
+                    selStatus = "downloading…"
+                    Thread {
+                        com.celestial.latent.develop.Select.download(context) { got, total -> selStatus = "downloading… ${got * 100 / total}%" }
+                            .onSuccess { selInstalled = true; selStatus = "" }
+                            .onFailure { t -> selStatus = "not downloaded: ${t.message}"; android.util.Log.e("Latent", "select download failed", t) }
+                    }.start()
+                }
+                Chip("import", on = false) { selPicker.launch(arrayOf("*/*")) }
+            }
+        }
+        if (selectPicture != null && selectMode && selStatus.isNotEmpty()) Text(selStatus, color = LatentColors.Amber, fontSize = 11.sp,
+            modifier = Modifier.padding(horizontal = 18.dp).padding(bottom = 6.dp))
         // 3. where the mask stands, and the way back
         Row(
             Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 6.dp),
@@ -1681,7 +1796,18 @@ private fun PaintStep(
     }
     Column(modifier) {
         Text(
-            if (gradientTool) spec.gradientHint else spec.hint,
+            when {
+                selectMode && paintNow && selectPicture != null -> when {
+                    !selInstalled -> "Tap to select needs its model (about 25 MB, once): download it, or import the two files."
+                    !selReady -> "Reading the picture… (once per print, about a second)"
+                    selBusy -> "Outlining…"
+                    selAnswer == null -> "Tap an object to select it."
+                    selTakeAway -> "Tap what should not be selected."
+                    else -> "Tap the same spot to grow it, other spots to add. Then fill."
+                }
+                gradientTool -> spec.gradientHint
+                else -> spec.hint
+            },
             color = LatentColors.TextDim, fontSize = 11.sp,
             modifier = Modifier.padding(horizontal = 18.dp).padding(top = 10.dp),
         )
@@ -1743,6 +1869,18 @@ private fun PaintStep(
                                 drag(hit, last.first.coerceIn(0f, 1f), last.second.coerceIn(0f, 1f), true, aspect)
                                 return@awaitEachGesture
                             }
+                        }
+                        // tap to select: a tap outlines; two fingers still zoom; a drag does nothing
+                        if (selectNow && paintNow && u0 in 0f..1f && v0 in 0f..1f) {
+                            var pinched = false
+                            while (true) {
+                                val ev = awaitPointerEvent(); val pr = ev.changes.filter { it.pressed }
+                                if (pr.isEmpty()) break
+                                if (pr.size >= 2) { pinched = true; zoom.pinch(ev.calculateCentroid(), ev.calculatePan(), ev.calculateZoom(), fit, vw, vh) }
+                                ev.changes.forEach { it.consume() }
+                            }
+                            if (!pinched) { Haptics.tick(context); selectTapNow(u0, v0) }
+                            return@awaitEachGesture
                         }
                         var painting = paintNow && u0 in 0f..1f && v0 in 0f..1f
                         var zooming = false
@@ -1983,6 +2121,33 @@ private class DepthRanks {
         val fg = FloatArray(w * h) { k -> val t = ((near[k] - (bestT - e)) / (2 * e)).coerceIn(0f, 1f); t * t * (3f - 2f * t) }
         splitKey = key; splitCache = fg
         return fg
+    }
+}
+
+/**
+ * The picture as read by the tap-to-select model (59a): read once per PRINT session, on its own
+ * thread, and shared by every painting step — like [DepthRanks]. Only a tap's outline is worked out
+ * afterwards, which takes a fraction of a second.
+ */
+private class SelectPicture {
+    @Volatile var embedding: com.celestial.latent.develop.Select.Embedding? = null
+    @Volatile var busy = false
+    @Volatile var failed = false
+    /** Starts reading the picture (its pixels copied first, so the bitmap may change meanwhile); busy is cleared whatever happens. */
+    @Synchronized fun ensure(context: android.content.Context, pic: Bitmap) {
+        if (embedding != null || busy) return
+        busy = true; failed = false
+        val app = context.applicationContext
+        val w = pic.width; val h = pic.height
+        val px = IntArray(w * h)
+        try { pic.getPixels(px, 0, w, 0, 0, w, h) } catch (t: Throwable) { busy = false; failed = true; return }
+        Thread {
+            try {
+                embedding = runCatching { com.celestial.latent.develop.Select.embed(app, px, w, h) }
+                    .onFailure { android.util.Log.e("Latent", "select: could not read the picture", it) }.getOrNull()
+                failed = embedding == null
+            } finally { busy = false }
+        }.start()
     }
 }
 
