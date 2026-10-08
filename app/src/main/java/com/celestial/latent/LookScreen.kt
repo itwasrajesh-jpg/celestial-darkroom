@@ -736,11 +736,17 @@ fun LookScreen(settings: AppSettings, onBack: () -> Unit) {
                         }
                         if (air != null) com.celestial.latent.develop.StockAirs.save(context, id, air)
                         else com.celestial.latent.develop.StockAirs.delete(context, id)
+                        // ...and its light 1 (60c), ADJUST's rays as its strength in the air; the
+                        // LIGHT tab then offers it, placed where it was in the frame
+                        val light = activeAtmosphere()?.takeIf { it.hasRays }?.scaled(1f, tweak.raysScale)?.rays
+                        if (light != null) com.celestial.latent.develop.StockAirs.saveLight(context, id, light)
+                        else com.celestial.latent.develop.StockAirs.deleteLight(context, id)
                         Haptics.click(context)
                         stockName = ""
                         stocksRevision++
                         "saved as $name — it is at the start of the film strip" +
-                            (air?.let { " · it carries its ${it.air} air: the fog step's AIR tab offers it" } ?: "")
+                            (air?.let { " · it carries its ${it.air} air: the fog step's AIR tab offers it" } ?: "") +
+                            (light?.let { " · and its light (${it.type}): the LIGHT tab offers it" } ?: "")
                     }
                     }
                 }

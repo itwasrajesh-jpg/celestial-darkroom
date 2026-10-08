@@ -395,6 +395,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                     renderAt = { r, edge -> renderStill(r, edge) },
                     onExposure = { e -> set { copy(printExposure = e) } },
                     onFilters = { y, m -> set { copy(yFilterShift = y, mFilterShift = m) } },
+                    onGrain = { on, size -> set { copy(grain = on, grainSizeUm2 = size) } },
                     exposureMap = exposureMap,
                     onExposureMap = { exposureMap = it },
                     softenMap = softenMap,

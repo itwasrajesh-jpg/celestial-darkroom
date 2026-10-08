@@ -360,6 +360,7 @@ data class Atmosphere(
  * The air a saved film carries (60b): when a stock is saved from the Film Builder while its
  * references' atmosphere is on, the atmosphere's recipe — kind, thickness, foreground, colour — is
  * kept under the film's id, and the darkroom's AIR tab offers it on any photo with that film.
+ * Its light too (60c): the reference's light 1, offered on the LIGHT tab.
  */
 object StockAirs {
     private const val FILE = "latent_stock_air"
@@ -370,7 +371,22 @@ object StockAirs {
     fun load(context: Context, film: String): FogLook? =
         prefs(context).getString(film, null)?.let { FogLook.parse(it) }?.takeIf { it.airKind() != null }
 
-    fun delete(context: Context, film: String) = prefs(context).edit().remove(film).apply()
+    fun delete(context: Context, film: String) = prefs(context).edit().remove(film).remove(film + LIGHT).apply()
+
+    /**
+     * The film's light (60c): everything about it but its window — an opening's corners belong to
+     * the one photo they were fitted on, so a sun through a window travels as a plain sun.
+     */
+    fun saveLight(context: Context, film: String, light: RaysLook) = prefs(context).edit()
+        .putString(film + LIGHT, light.copy(ox0 = Float.NaN, oy0 = Float.NaN, ox1 = Float.NaN, oy1 = Float.NaN).withDefaults().key()).apply()
+
+    /** The film's light, or null when it has none (or what was kept is not a placed light). */
+    fun loadLight(context: Context, film: String): RaysLook? =
+        prefs(context).getString(film + LIGHT, null)?.let { RaysLook.parse(it) }?.takeIf { it.placed }
+
+    fun deleteLight(context: Context, film: String) = prefs(context).edit().remove(film + LIGHT).apply()
+
+    private const val LIGHT = "|light"
 
     private fun prefs(context: Context) = context.getSharedPreferences(FILE, Context.MODE_PRIVATE)
 }

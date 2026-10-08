@@ -133,6 +133,7 @@ private fun TestStripStep(
     render: (Recipe, Int) -> Bitmap?,
     onExposure: (Float) -> Unit,
     modifier: Modifier = Modifier,
+    onGrain: (Boolean, Float) -> Unit = { _, _ -> },
 ) {
     val context = LocalContext.current
     val current by rememberUpdatedState(recipe)
@@ -146,8 +147,9 @@ private fun TestStripStep(
     var developed by remember { mutableStateOf(0) }
     val measurer = rememberTextMeasurer()
 
-    // Develop the strips left to right, each coming up out of the paper as it finishes.
-    LaunchedEffect(centre) {
+    // Develop the strips left to right, each coming up out of the paper as it finishes — again
+    // when the grain is changed below (60c), so the strips show it.
+    LaunchedEffect(centre, recipe.grain, recipe.grainSizeUm2) {
         developed = 0
         for (i in 0 until STRIPS) { images[i] = null; paperCover[i].snapTo(1f) }
         for (i in 0 until STRIPS) {
@@ -264,6 +266,23 @@ private fun TestStripStep(
                     .padding(horizontal = 12.dp, vertical = 6.dp),
             )
         }
+        // The film's grain within reach while printing (60c): FULL → GRAIN's own on/off and particle
+        // size, the strips developed again on release. Widths: grain 50 + finer 30 + coarser 44 dp,
+        // the slider takes the rest.
+        var grainLive by remember(recipe.grainSizeUm2) { mutableStateOf(recipe.grainSizeUm2) }
+        Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Chip("grain", on = recipe.grain) { onGrain(!recipe.grain, recipe.grainSizeUm2) }
+            Text("finer", color = LatentColors.TextDim, fontSize = 10.sp, modifier = Modifier.padding(start = 10.dp))
+            androidx.compose.material3.Slider(
+                value = grainLive, onValueChange = { grainLive = it },
+                onValueChangeFinished = { onGrain(true, grainLive) }, valueRange = 0.05f..1.2f,
+                enabled = recipe.grain,
+                colors = androidx.compose.material3.SliderDefaults.colors(thumbColor = LatentColors.Amber,
+                    activeTrackColor = LatentColors.Amber, inactiveTrackColor = LatentColors.Surface),
+                modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
+            )
+            Text("coarser", color = LatentColors.TextDim, fontSize = 10.sp)
+        }
     }
 }
 
@@ -377,6 +396,8 @@ fun PrintPanel(
     renderAt: (Recipe, Int) -> Bitmap?,
     onExposure: (Float) -> Unit,
     onFilters: (Float, Float) -> Unit,
+    /** The film's grain from the test strip (60c): on or off, and its particle size — FULL → GRAIN's own settings. */
+    onGrain: (Boolean, Float) -> Unit = { _, _ -> },
     exposureMap: ExposureMap?,
     onExposureMap: (ExposureMap?) -> Unit,
     softenMap: ExposureMap?,
@@ -437,6 +458,8 @@ fun PrintPanel(
     val airAsk = remember { AirAsk() }
     // the air this photo's film carries, when it was saved from the Film Builder with an atmosphere (60b)
     val filmAir = remember(recipe.film) { com.celestial.latent.develop.StockAirs.load(context, recipe.film) }
+    // ...and its light (60c), offered on the LIGHT tab
+    val filmLight = remember(recipe.film) { com.celestial.latent.develop.StockAirs.loadLight(context, recipe.film) }
     val pickScope = rememberCoroutineScope()
     var note by remember { mutableStateOf("") }
     val render: (Recipe, Int) -> Bitmap? = { r, e -> cache.peek(r, e) ?: renderAt(r, e)?.also { cache.put(r, it) } }
@@ -463,7 +486,7 @@ fun PrintPanel(
             label = "print step",
         ) { s ->
             when (s) {
-                0 -> TestStripStep(recipe, render, onExposure, Modifier.fillMaxSize())
+                0 -> TestStripStep(recipe, render, onExposure, Modifier.fillMaxSize(), onGrain = onGrain)
                 1 -> RingAroundStep(recipe, render, { r, e -> cache.peek(r, e) }, onFilters, Modifier.fillMaxSize())
                 // each painting step shows the print with BOTH masks: it is one print
                 2 -> PaintStep(DODGE_BURN_SPEC, recipe, exposureMap, onExposureMap, depthRanks = depthRanks, selectPicture = selectPicture,
@@ -547,6 +570,16 @@ fun PrintPanel(
                             RaysLightTab(sel, placing = raysPlacing || !sel.placed, onLook = { setSel(it) }, onPlace = { raysPlacing = !raysPlacing },
                                 count = lights.size, selected = selected.coerceIn(0, lights.size - 1),
                                 onSelect = { i -> selected = i; raysPlacing = false },
+                                filmLight = filmLight,
+                                filmLightRoom = !raysLook.placed || lights.size < 1 + com.celestial.latent.develop.ExtraLights.MAX,
+                                onFilmLight = { fl ->
+                                    // the film's light, placed where it was in its frame: light 1 if that is
+                                    // still empty, otherwise the next light; then dragged where it belongs
+                                    if (!raysLook.placed) { onRaysLook(fl); selected = 0 }
+                                    else if (lights.size < 1 + com.celestial.latent.develop.ExtraLights.MAX) { onExtraLights(extraLights + fl); selected = extraLights.size + 1 }
+                                    raysPlacing = false
+                                    android.util.Log.i("Latent", "light: the film's ${fl.type} added as light ${if (!raysLook.placed) 1 else extraLights.size + 2}")
+                                },
                                 onAdd = {
                                     // a new lamp: lights surfaces, no beams to start; tap the photo to place it
                                     onExtraLights(extraLights + RaysLook(type = "point", amount = 0f, surface = 1f, reach = 0.3f, reveal = 0.3f))
@@ -1033,8 +1066,16 @@ private fun SettleSlider(left: String, right: String, value: Float, range: Close
 private fun RaysLightTab(
     look: RaysLook, placing: Boolean, onLook: (RaysLook) -> Unit, onPlace: () -> Unit,
     count: Int = 1, selected: Int = 0, onSelect: (Int) -> Unit = {}, onAdd: () -> Unit = {}, onRemove: () -> Unit = {},
+    filmLight: RaysLook? = null, filmLightRoom: Boolean = true, onFilmLight: (RaysLook) -> Unit = {},
 ) {
     Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 6.dp)) {
+        // the film's own light (60c), when this photo's film was saved from the Film Builder with one;
+        // "this film's light: point" ≈ 170 dp, on its own row
+        if (filmLight != null) {
+            Row(Modifier.padding(bottom = 6.dp)) {
+                Chip("this film's light: ${filmLight.type}", on = false, enabled = filmLightRoom) { onFilmLight(filmLight) }
+            }
+        }
         // which light: a few lights per photo, chosen to enhance — not one on every lamp
         Row(Modifier.fillMaxWidth().padding(bottom = 6.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
