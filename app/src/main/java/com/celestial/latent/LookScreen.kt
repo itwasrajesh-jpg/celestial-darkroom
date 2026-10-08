@@ -728,10 +728,19 @@ fun LookScreen(settings: AppSettings, onBack: () -> Unit) {
                             id, best, paper, tweak, texture,
                         )
                         com.celestial.latent.develop.Recipes.save(context, name, recipe)
+                        // The references' atmosphere goes with the film (60b) when it is on and was
+                        // made on the AIR tab: the darkroom then offers it on any photo with this
+                        // film, rebuilt from that photo's depth. ADJUST's fog is its thickness.
+                        val air = activeAtmosphere()?.takeIf { it.hasFog }?.fog?.let { f ->
+                            f.airKind()?.let { k -> f.copy(air = k, airScale = (f.airScale * tweak.fogScale).coerceIn(0.3f, 2f)) }
+                        }
+                        if (air != null) com.celestial.latent.develop.StockAirs.save(context, id, air)
+                        else com.celestial.latent.develop.StockAirs.delete(context, id)
                         Haptics.click(context)
                         stockName = ""
                         stocksRevision++
-                        "saved as $name — it is at the start of the film strip"
+                        "saved as $name — it is at the start of the film strip" +
+                            (air?.let { " · it carries its ${it.air} air: the fog step's AIR tab offers it" } ?: "")
                     }
                     }
                 }

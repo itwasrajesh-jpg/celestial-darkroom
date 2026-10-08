@@ -435,6 +435,8 @@ fun PrintPanel(
     var sideFog by remember { mutableStateOf(0) }
     // the fog step's AIR tab: its wish (an atmosphere), carried out by the step itself (60a)
     val airAsk = remember { AirAsk() }
+    // the air this photo's film carries, when it was saved from the Film Builder with an atmosphere (60b)
+    val filmAir = remember(recipe.film) { com.celestial.latent.develop.StockAirs.load(context, recipe.film) }
     val pickScope = rememberCoroutineScope()
     var note by remember { mutableStateOf("") }
     val render: (Recipe, Int) -> Bitmap? = { r, e -> cache.peek(r, e) ?: renderAt(r, e)?.also { cache.put(r, it) } }
@@ -494,7 +496,7 @@ fun PrintPanel(
                         }
                     },
                     tabs = listOf("COLOUR" to @Composable { FogColourRow(fogLook, picking = fogPicking, onLook = onFogLook, onPick = { fogPicking = !fogPicking }) },
-                        "AIR" to @Composable { AirRow(fogLook, airAsk, hasDepth = depthRanks != null) }),
+                        "AIR" to @Composable { AirRow(fogLook, airAsk, hasDepth = depthRanks != null, filmAir = filmAir) }),
                     airAsk = airAsk, readAir = readAir,
                     lookState = fogLook, onRestoreLook = { onFogLook(it as FogLook) }, pickOnTab = 0,
                     // a new colour or amount re-develops the print — it used to wait for the next stroke
@@ -1469,20 +1471,22 @@ private fun PaintStep(
             if (reading == null) ask.status = "could not read the photo's air — its brightness is the plain fog's"
             val air = com.celestial.latent.develop.Air
             val fg = if (want.keepForeground) (depthSplit?.takeIf { it.width == w && it.height == h }?.stops ?: dr.foreground(w, h)) else null
-            val thick = air.thickness(want.kind, near, w, h).let { t ->
-                FloatArray(t.size) { k -> (t[k] * want.scale * (1f - (fg?.get(k) ?: 0f))).coerceIn(spec.min, spec.max) }
-            }
-            val base = lastLook as? FogLook ?: FogLook()
-            val look = base.copy(mode = want.kind,
+            val thick = air.built(want.kind, want.scale, near, w, h, fg, spec.max)
+            // a film's air (60b) brings its own colour; the same atmosphere made thicker or thinner
+            // keeps the colour it was given on COLOUR; a new atmosphere takes its own colour
+            val last = lastLook as? FogLook ?: FogLook()
+            val base = want.template ?: last
+            val look = base.copy(mode = if (want.template != null || last.airKind() == want.kind) base.mode else want.kind,
                 airLevel = (reading?.level ?: 1f) * (if (want.kind == "smog") air.SMOG_DARKER else 1f),
                 glow = if (want.kind == "dusk") 1f else 0f,
-                glowU = reading?.sunU ?: 0.5f, glowV = reading?.sunV ?: 0.3f)
+                glowU = reading?.sunU ?: 0.5f, glowV = reading?.sunV ?: 0.3f,
+                air = want.kind, airScale = want.scale, airKeep = want.keepForeground)
             undo.addLast(working?.copy() to lastLook); if (undo.size > 30) undo.removeFirst()
             redo.clear(); historyTick++
             val next = ExposureMap(w, h, thick)
             working = next; onMap(next); version++
             lastLook = look; onRestoreLook?.invoke(look)
-            android.util.Log.i("Latent", "air: ${want.kind} ×${"%.2f".format(java.util.Locale.US, want.scale)}, brightness ${"%.2f".format(java.util.Locale.US, look.airLevel)} of the brightest light, sun at ${"%.2f".format(java.util.Locale.US, look.glowU)},${"%.2f".format(java.util.Locale.US, look.glowV)}")
+            android.util.Log.i("Latent", "air: ${if (want.template != null) "the film's " else ""}${want.kind} ×${"%.2f".format(java.util.Locale.US, want.scale)}, brightness ${"%.2f".format(java.util.Locale.US, look.airLevel)} of the brightest light, sun at ${"%.2f".format(java.util.Locale.US, look.glowU)},${"%.2f".format(java.util.Locale.US, look.glowV)}")
         } finally { ask.busy = false }
     }
 
@@ -2216,36 +2220,16 @@ private class DepthRanks {
     }
 
     private var splitKey = ""; private var splitCache: FloatArray? = null
-    /**
-     * The foreground, as a weight per cell (1 near, 0 far, soft between): the photo's depths split
-     * at their natural gap — the split that keeps the near group and the far group each tightest
-     * (Otsu). Tested on a flower, a cat, a chandelier and a portrait: the subject each time.
-     */
     /** Nearness (1 nearest … 0 farthest) at the centre of each cell of a mask's grid. */
     @Synchronized fun near(w: Int, h: Int): FloatArray? {
         val d = raw ?: return null
-        val S = com.celestial.latent.develop.Depth.SIZE
-        return FloatArray(w * h) { k ->
-            val sx = (((k % w) + 0.5f) / w * S - 0.5f).coerceIn(0f, (S - 1).toFloat()); val sy = (((k / w) + 0.5f) / h * S - 0.5f).coerceIn(0f, (S - 1).toFloat())
-            val x0 = sx.toInt(); val y0 = sy.toInt(); val x1 = minOf(x0 + 1, S - 1); val y1 = minOf(y0 + 1, S - 1); val fx = sx - x0; val fy = sy - y0
-            (d[y0 * S + x0] * (1 - fx) + d[y0 * S + x1] * fx) * (1 - fy) + (d[y1 * S + x0] * (1 - fx) + d[y1 * S + x1] * fx) * fy
-        }
+        return com.celestial.latent.develop.Air.nearOn(d, com.celestial.latent.develop.Depth.SIZE, w, h)
     }
+    /** The foreground as a weight per cell, split at the depths' natural gap ([Air.foreground]); cached for a grid size. */
     @Synchronized fun foreground(w: Int, h: Int): FloatArray? {
         val key = "${w}x$h"; if (key == splitKey) return splitCache
         val near = near(w, h) ?: return null
-        val bins = 64; val hist = DoubleArray(bins)
-        for (v in near) hist[(v.coerceIn(0f, 0.9999f) * bins).toInt()] += 1.0
-        val total = near.size.toDouble(); var bestT = 0.5f; var best = -1.0; var w0 = 0.0; var s0 = 0.0
-        val sAll = (0 until bins).sumOf { hist[it] * (it + 0.5) / bins }
-        for (i in 0 until bins - 1) {
-            w0 += hist[i] / total; s0 += hist[i] * (i + 0.5) / bins / total
-            val w1 = 1 - w0; if (w0 <= 0 || w1 <= 0) continue
-            val m0 = s0 / w0; val m1 = (sAll / total - s0) / w1; val between = w0 * w1 * (m0 - m1) * (m0 - m1)
-            if (between > best) { best = between; bestT = (i + 1f) / bins }
-        }
-        val e = 0.04f
-        val fg = FloatArray(w * h) { k -> val t = ((near[k] - (bestT - e)) / (2 * e)).coerceIn(0f, 1f); t * t * (3f - 2f * t) }
+        val fg = com.celestial.latent.develop.Air.foreground(near)
         splitKey = key; splitCache = fg
         return fg
     }
@@ -2262,20 +2246,34 @@ private class AirAsk {
     /** The last wish carried out, so returning to the step never fills the air again. */
     var done = 0
     fun ask(kind: String) { want = AirWant(kind, scale, keepForeground, (want?.serial ?: 0) + 1) }
+    /** A film's own air (60b): its kind, thickness, foreground and colour, built on this photo's depth. */
+    fun askFilm(template: FogLook) {
+        val kind = template.airKind() ?: return
+        scale = template.airScale.coerceIn(0.3f, 2f); keepForeground = template.airKeep
+        want = AirWant(kind, scale, keepForeground, (want?.serial ?: 0) + 1, template)
+    }
 }
-private data class AirWant(val kind: String, val scale: Float, val keepForeground: Boolean, val serial: Int)
+private data class AirWant(val kind: String, val scale: Float, val keepForeground: Boolean, val serial: Int, val template: FogLook? = null)
 
 /**
  * The fog's AIR tab (60a): one tap fills the whole fog from the depth as a real atmosphere —
  * mist, morning, dusk or smog — then thicker or thinner, and the foreground kept clear or not.
- * Widths: mist 46 + morning 70 + dusk 50 + smog 54 + gaps ≈ 232 dp; keep the foreground clear ≈ 160 dp.
+ * Widths: mist 46 + morning 70 + dusk 50 + smog 54 + gaps ≈ 232 dp; keep the foreground clear ≈ 160 dp;
+ * "this film's air: morning ×1.0" ≈ 190 dp (60b), on its own row.
  */
 @Composable
-private fun AirRow(look: FogLook, ask: AirAsk, hasDepth: Boolean) {
+private fun AirRow(look: FogLook, ask: AirAsk, hasDepth: Boolean, filmAir: FogLook? = null) {
     val sliderColours = androidx.compose.material3.SliderDefaults.colors(thumbColor = LatentColors.Amber,
         activeTrackColor = LatentColors.Amber, inactiveTrackColor = LatentColors.Surface)
-    val current = if (look.airLevel > 0f) look.mode.takeIf { it in com.celestial.latent.develop.Air.KINDS } else null
+    val current = look.airKind()
     Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 6.dp)) {
+        // the film's own air (60b), when this photo's film was saved from the Film Builder with one
+        filmAir?.airKind()?.let { k ->
+            Row(Modifier.padding(bottom = 4.dp)) {
+                Chip("this film's air: $k ×${"%.1f".format(java.util.Locale.US, filmAir.airScale)}", on = false,
+                    enabled = hasDepth && !ask.busy) { ask.askFilm(filmAir) }
+            }
+        }
         Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
             com.celestial.latent.develop.Air.KINDS.forEach { k -> Chip(k, on = current == k, enabled = hasDepth && !ask.busy) { ask.ask(k) } }
         }

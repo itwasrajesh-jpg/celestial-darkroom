@@ -414,7 +414,7 @@ object Recipes {
     fun deleteStock(ctx: Context, name: String) {
         val r = load(ctx, name)
         delete(ctx, name)
-        r?.let { EngineAssets.profileFile(it.film)?.delete() }
+        r?.let { EngineAssets.profileFile(it.film)?.delete(); StockAirs.delete(ctx, it.film) }
     }
 
     /**

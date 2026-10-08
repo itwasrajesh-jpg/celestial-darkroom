@@ -31,7 +31,27 @@ data class FogLook(
     val glow: Float = 0f,
     val glowU: Float = 0.5f,
     val glowV: Float = 0.3f,
+    /**
+     * The atmosphere's recipe (60b), so it can be built again on another photo from that photo's
+     * own depth: its kind (one of [Air.KINDS], "" for painted fog), how thick against the proven
+     * atmosphere, and whether the foreground was kept clear. Its colour is [mode] and the rest, as
+     * for any fog — so a re-coloured atmosphere carries its new colour.
+     */
+    val air: String = "",
+    val airScale: Float = 1f,
+    val airKeep: Boolean = false,
 ) {
+    /**
+     * Which atmosphere this fog is, or null for painted fog. Saves from 60a, before the kind was
+     * kept, are known by their colour mode being an atmosphere's name while the air is set.
+     */
+    fun airKind(): String? = when {
+        airLevel <= 0f -> null
+        air in Air.KINDS -> air
+        mode in Air.KINDS -> mode
+        else -> null
+    }
+
     /**
      * Saved as "v2|mode|warmth|amount|hue|tint[|r|g|b]". The version mark matters: the older
      * comma forms were told apart by counting parts, and a fifth field would have made a new
@@ -40,6 +60,12 @@ data class FogLook(
     fun key(): String = (if (airLevel <= 0f && glow <= 0f)
         listOf("v2", mode, "%.3f".format(Locale.US, warmth), "%.3f".format(Locale.US, amount),
             "%.1f".format(Locale.US, hue), "%.3f".format(Locale.US, tint))
+    else if (air.isNotEmpty())
+        // an atmosphere with its recipe (60b): v4 adds air|airScale|airKeep after v3's fields
+        listOf("v4", mode, "%.3f".format(Locale.US, warmth), "%.3f".format(Locale.US, amount),
+            "%.1f".format(Locale.US, hue), "%.3f".format(Locale.US, tint), "%.4f".format(Locale.US, airLevel),
+            "%.3f".format(Locale.US, glow), "%.4f".format(Locale.US, glowU), "%.4f".format(Locale.US, glowV),
+            air, "%.3f".format(Locale.US, airScale), if (airKeep) "1" else "0")
     else
         // an atmosphere's air (60a): v3 adds airLevel|glow|glowU|glowV; plain fog stays v2, so its
         // saves and JPEG notes read as before
@@ -52,7 +78,14 @@ data class FogLook(
         fun parse(s: String?): FogLook {
             if (s.isNullOrEmpty()) return FogLook()
             return runCatching {
-                if (s.startsWith("v3|")) {
+                if (s.startsWith("v4|")) {
+                    val p = s.split("|")
+                    FogLook(p[1], p[2].toFloat(),
+                        if (p.size >= 16) listOf(p[13].toFloat(), p[14].toFloat(), p[15].toFloat()) else null,
+                        p[3].toFloat().coerceIn(0f, 1f), p[4].toFloat(), p[5].toFloat().coerceIn(0f, 1f),
+                        p[6].toFloat().coerceAtLeast(0f), p[7].toFloat().coerceIn(0f, 1f), p[8].toFloat(), p[9].toFloat(),
+                        p[10], p[11].toFloat().coerceIn(0.1f, 3f), p[12] == "1")
+                } else if (s.startsWith("v3|")) {
                     val p = s.split("|")
                     FogLook(p[1], p[2].toFloat(),
                         if (p.size >= 13) listOf(p[10].toFloat(), p[11].toFloat(), p[12].toFloat()) else null,

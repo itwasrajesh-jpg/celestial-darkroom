@@ -104,6 +104,45 @@ object Air {
         return FloatArray(w * h) { 0.55f + 0.45f * p[it] / mean }
     }
 
+    /**
+     * Nearness (1 nearest … 0 farthest) at the centre of each cell of a [w] × [h] mask grid, from
+     * the depth model's [size] × [size] answer, bilinearly.
+     */
+    fun nearOn(depth: FloatArray, size: Int, w: Int, h: Int): FloatArray = FloatArray(w * h) { k ->
+        val sx = (((k % w) + 0.5f) / w * size - 0.5f).coerceIn(0f, (size - 1).toFloat()); val sy = (((k / w) + 0.5f) / h * size - 0.5f).coerceIn(0f, (size - 1).toFloat())
+        val x0 = sx.toInt(); val y0 = sy.toInt(); val x1 = minOf(x0 + 1, size - 1); val y1 = minOf(y0 + 1, size - 1); val fx = sx - x0; val fy = sy - y0
+        (depth[y0 * size + x0] * (1 - fx) + depth[y0 * size + x1] * fx) * (1 - fy) + (depth[y1 * size + x0] * (1 - fx) + depth[y1 * size + x1] * fx) * fy
+    }
+
+    /**
+     * The foreground, as a weight per cell (1 near, 0 far, soft between): the photo's depths split
+     * at their natural gap — the split that keeps the near group and the far group each tightest
+     * (Otsu). Tested on a flower, a cat, a chandelier and a portrait: the subject each time.
+     * (Moved here from the darkroom in 60b, unchanged, so a carried atmosphere keeps the same
+     * foreground clear on the Film Builder's test shot.)
+     */
+    fun foreground(near: FloatArray): FloatArray {
+        val bins = 64; val hist = DoubleArray(bins)
+        for (v in near) hist[(v.coerceIn(0f, 0.9999f) * bins).toInt()] += 1.0
+        val total = near.size.toDouble(); var bestT = 0.5f; var best = -1.0; var w0 = 0.0; var s0 = 0.0
+        val sAll = (0 until bins).sumOf { hist[it] * (it + 0.5) / bins }
+        for (i in 0 until bins - 1) {
+            w0 += hist[i] / total; s0 += hist[i] * (i + 0.5) / bins / total
+            val w1 = 1 - w0; if (w0 <= 0 || w1 <= 0) continue
+            val m0 = s0 / w0; val m1 = (sAll / total - s0) / w1; val between = w0 * w1 * (m0 - m1) * (m0 - m1)
+            if (between > best) { best = between; bestT = (i + 1f) / bins }
+        }
+        val e = 0.04f
+        return FloatArray(near.size) { k -> val t = ((near[k] - (bestT - e)) / (2 * e)).coerceIn(0f, 1f); t * t * (3f - 2f * t) }
+    }
+
+    /**
+     * An atmosphere's thickness on a mask grid, as the AIR tab builds it: [kind]'s thickness times
+     * [scale], cleared where [foreground] is (1 = fully clear), within the fog's 0…3.
+     */
+    fun built(kind: String, scale: Float, near: FloatArray, w: Int, h: Int, foreground: FloatArray?, max: Float = 3f): FloatArray =
+        thickness(kind, near, w, h).let { t -> FloatArray(t.size) { k -> (t[k] * scale * (1f - (foreground?.get(k) ?: 0f))).coerceIn(0f, max) } }
+
     /** The value below which [share] of [a] lies (linear between ranks, as numpy's default). */
     fun quantile(a: FloatArray, share: Float): Float {
         if (a.isEmpty()) return 0f

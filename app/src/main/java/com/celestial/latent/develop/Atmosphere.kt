@@ -47,8 +47,10 @@ data class Atmosphere(
 
     /** A short description for the screen. */
     fun describe(): String = listOfNotNull(
+        // an atmosphere from the AIR tab (60b): rebuilt from each photo's own depth
+        if (hasFog && fog.airKind() != null) "${fog.airKind()} air ×${"%.1f".format(Locale.US, fog.airScale)}, from each photo's depth"
         // how much of the scene the average veil hides — the fog's own e^-thickness, times its amount
-        if (hasFog) "fog veil ${(100f * fog.amount * (1f - kotlin.math.exp(-fogCover))).toInt().coerceIn(1, 100)}%" else null,
+        else if (hasFog) "fog veil ${(100f * fog.amount * (1f - kotlin.math.exp(-fogCover))).toInt().coerceIn(1, 100)}%" else null,
         if (hasRays) "rays (${rays.type}, ${if (rays.mode == "gaps") "through gaps" else "added light"})" else null,
     ).joinToString(" · ").ifEmpty { "none" }
 
@@ -256,8 +258,58 @@ data class Atmosphere(
                     ExposureMaps.load(context, photo, ExposureMaps.RAYS), atmo.rays,
                 )
             }
+            // an atmosphere: the one the preview rebuilt from this photo's depth (60b)
+            if (atmo.hasFog) carriedAlready(testShot, atmo.fog)?.let { c ->
+                return Parts(Framing(), c.mask, c.look(atmo.fog), null, if (atmo.hasRays) atmo.rays else RaysLook())
+            }
             val veil = if (atmo.hasFog) ExposureMap.blank(1.5f).also { m -> java.util.Arrays.fill(m.stops, atmo.fogCover) } else null
             return Parts(Framing(), veil, atmo.fog, null, if (atmo.hasRays) atmo.rays else RaysLook())
+        }
+
+        // ---- an atmosphere carried to another photo (60b) ----
+
+        /**
+         * An atmosphere rebuilt on another photo: its thickness on the fog's grid, from that photo's
+         * depth, and that photo's own air (its brightness and sun), which [look] puts into the
+         * carried fog's colour.
+         */
+        class Carried(val mask: ExposureMap, val reading: Air.Reading) {
+            fun look(fog: FogLook): FogLook = fog.copy(
+                airLevel = reading.level * (if (fog.airKind() == "smog") Air.SMOG_DARKER else 1f),
+                glowU = reading.sunU, glowV = reading.sunV)
+        }
+
+        /** Rebuilt atmospheres, by photo and recipe: the preview builds one, the full develop takes the same. */
+        private val carriedMemory = object : LinkedHashMap<String, Carried>(4, 0.75f, true) {
+            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Carried>?) = size > 4
+        }
+        private fun carriedKey(photo: Uri, fog: FogLook) =
+            "$photo|${fog.airKind()}|${"%.3f".format(Locale.US, fog.airScale)}|${fog.airKeep}"
+
+        /** The atmosphere already rebuilt on [photo] for this fog, if the preview has built it. */
+        fun carriedAlready(photo: Uri, fog: FogLook): Carried? =
+            if (fog.airKind() == null) null else synchronized(carriedMemory) { carriedMemory[carriedKey(photo, fog)] }
+
+        /**
+         * [fog]'s atmosphere built on another photo, exactly as the AIR tab builds it: the kind's
+         * thickness from [src]'s depth, times its scale, the foreground cleared if it was, and the
+         * air's brightness read from [src]'s farthest part. [src] must be the unframed photo,
+         * before any fog. Null for painted fog, or without the depth model (an even veil then).
+         */
+        fun carried(context: Context, photo: Uri, src: Develop.Source, fog: FogLook, log: (String) -> Unit = {}): Carried? {
+            val kind = fog.airKind() ?: return null
+            carriedAlready(photo, fog)?.let { return it }
+            if (!Depth.isReady(context)) { log("atmosphere: the reference's $kind air needs the depth model to be rebuilt — an even veil instead"); return null }
+            return runCatching {
+                val input = Sun.prepare(context, photo, Framing(), src, log) ?: return null
+                val grid = ExposureMap.blank(src.width.toFloat() / src.height); val w = grid.width; val h = grid.height
+                val near = Air.nearOn(input.depth, Depth.SIZE, w, h)
+                val thick = Air.built(kind, fog.airScale, near, w, h, if (fog.airKeep) Air.foreground(near) else null)
+                val reading = Develop.readAirOf(src, Framing(), near, w, h)
+                Log.i("Latent", "atmosphere: carried $kind ×${"%.2f".format(Locale.US, fog.airScale)}${if (fog.airKeep) ", foreground clear" else ""} · " +
+                    "average thickness ${"%.3f".format(Locale.US, thick.average())} · brightness ${"%.2f".format(Locale.US, reading.level)} · sun at ${"%.2f".format(Locale.US, reading.sunU)},${"%.2f".format(Locale.US, reading.sunV)}")
+                Carried(ExposureMap(w, h, thick), reading).also { c -> synchronized(carriedMemory) { carriedMemory[carriedKey(photo, fog)] = c } }
+            }.getOrElse { t -> Log.e("Latent", "atmosphere: could not rebuild the air", t); null }
         }
 
         fun applyTo(context: Context, src: Develop.Source, testShot: Uri, atmo: Atmosphere?, log: (String) -> Unit = {}): Develop.Source {
@@ -280,12 +332,17 @@ data class Atmosphere(
                     if (framed !== src) src.close()
                     framed
                 } else {
-                    val veil = if (atmo.hasFog) ExposureMap.blank(src.width.toFloat() / src.height).also { m ->
+                    // an atmosphere from the AIR tab is built again from this photo's depth (60b);
+                    // painted fog, which has no recipe, stays an even veil of its average
+                    val carried = if (atmo.hasFog) carried(context, testShot, src, atmo.fog, log) else null
+                    val veil = carried?.mask ?: if (atmo.hasFog) ExposureMap.blank(src.width.toFloat() / src.height).also { m ->
                         java.util.Arrays.fill(m.stops, atmo.fogCover)
                     } else null
-                    veil?.let { Fog.apply(src, it, atmo.fog, log) }
+                    val look = carried?.look(atmo.fog) ?: atmo.fog
+                    veil?.let { Fog.apply(src, it, look, log) }
                     if (atmo.hasRays) Rays.apply(src, atmo.rays, null, veil, atmo.fog.amount, log)
-                    log("atmosphere: an even veil and the reference's light, on another photo")
+                    log(if (carried != null) "atmosphere: the reference's ${atmo.fog.airKind()} air, rebuilt from this photo's depth, and its light"
+                        else "atmosphere: an even veil and the reference's light, on another photo")
                     src
                 }
             }.getOrElse { t ->
@@ -297,4 +354,23 @@ data class Atmosphere(
             }
         }
     }
+}
+
+/**
+ * The air a saved film carries (60b): when a stock is saved from the Film Builder while its
+ * references' atmosphere is on, the atmosphere's recipe — kind, thickness, foreground, colour — is
+ * kept under the film's id, and the darkroom's AIR tab offers it on any photo with that film.
+ */
+object StockAirs {
+    private const val FILE = "latent_stock_air"
+
+    fun save(context: Context, film: String, fog: FogLook) = prefs(context).edit().putString(film, fog.key()).apply()
+
+    /** The film's air, or null when it has none (or what was kept is not an atmosphere). */
+    fun load(context: Context, film: String): FogLook? =
+        prefs(context).getString(film, null)?.let { FogLook.parse(it) }?.takeIf { it.airKind() != null }
+
+    fun delete(context: Context, film: String) = prefs(context).edit().remove(film).apply()
+
+    private fun prefs(context: Context) = context.getSharedPreferences(FILE, Context.MODE_PRIVATE)
 }

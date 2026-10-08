@@ -950,6 +950,11 @@ object Develop {
                 else if (isRaw) openRaw(context, source, maxEdge) else openImage(context, source, maxEdge)
             Cache.put(key, decoded); decoded
         }
+        return readAirOf(pristine, framing, near, w, h)
+    }
+
+    /** [readAir] on a picture already decoded: [pristine] as framed by [framing] (60b: also the Film Builder's test shot). */
+    fun readAirOf(pristine: Source, framing: Framing, near: FloatArray, w: Int, h: Int): Air.Reading {
         val (ow, oh) = framing.outputSize(pristine.width, pristine.height)
         val f = pristine.image.data.duplicate().order(ByteOrder.nativeOrder()).asFloatBuffer()
         // 6 × 6 samples in every cell: enough for its average, and for the brightest 5% overall
