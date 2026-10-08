@@ -22,21 +22,43 @@ data class FogLook(
     val hue: Float = 30f,
     /** …and how strongly tinted, 0 neutral … 1 the strongest believable fog tint. */
     val tint: Float = 0.5f,
+    /**
+     * An atmosphere's air (60a): its brightness as a share of the scene's brightest light, read
+     * from the farthest part of the photo ([Air.read]). 0: the plain fog's brightness.
+     */
+    val airLevel: Float = 0f,
+    /** Dusk's glow towards the sun: 0 none, 1 full ([Air.glow]), centred on the sun at (glowU, glowV). */
+    val glow: Float = 0f,
+    val glowU: Float = 0.5f,
+    val glowV: Float = 0.3f,
 ) {
     /**
      * Saved as "v2|mode|warmth|amount|hue|tint[|r|g|b]". The version mark matters: the older
      * comma forms were told apart by counting parts, and a fifth field would have made a new
      * colour indistinguishable from an old picked one.
      */
-    fun key(): String = listOf("v2", mode, "%.3f".format(Locale.US, warmth), "%.3f".format(Locale.US, amount),
-        "%.1f".format(Locale.US, hue), "%.3f".format(Locale.US, tint)).joinToString("|") +
-        (picked?.joinToString("|", prefix = "|") { "%.5f".format(Locale.US, it) } ?: "")
+    fun key(): String = (if (airLevel <= 0f && glow <= 0f)
+        listOf("v2", mode, "%.3f".format(Locale.US, warmth), "%.3f".format(Locale.US, amount),
+            "%.1f".format(Locale.US, hue), "%.3f".format(Locale.US, tint))
+    else
+        // an atmosphere's air (60a): v3 adds airLevel|glow|glowU|glowV; plain fog stays v2, so its
+        // saves and JPEG notes read as before
+        listOf("v3", mode, "%.3f".format(Locale.US, warmth), "%.3f".format(Locale.US, amount),
+            "%.1f".format(Locale.US, hue), "%.3f".format(Locale.US, tint), "%.4f".format(Locale.US, airLevel),
+            "%.3f".format(Locale.US, glow), "%.4f".format(Locale.US, glowU), "%.4f".format(Locale.US, glowV))
+    ).joinToString("|") + (picked?.joinToString("|", prefix = "|") { "%.5f".format(Locale.US, it) } ?: "")
 
     companion object {
         fun parse(s: String?): FogLook {
             if (s.isNullOrEmpty()) return FogLook()
             return runCatching {
-                if (s.startsWith("v2|")) {
+                if (s.startsWith("v3|")) {
+                    val p = s.split("|")
+                    FogLook(p[1], p[2].toFloat(),
+                        if (p.size >= 13) listOf(p[10].toFloat(), p[11].toFloat(), p[12].toFloat()) else null,
+                        p[3].toFloat().coerceIn(0f, 1f), p[4].toFloat(), p[5].toFloat().coerceIn(0f, 1f),
+                        p[6].toFloat().coerceAtLeast(0f), p[7].toFloat().coerceIn(0f, 1f), p[8].toFloat(), p[9].toFloat())
+                } else if (s.startsWith("v2|")) {
                     val p = s.split("|")
                     FogLook(p[1], p[2].toFloat(),
                         if (p.size >= 9) listOf(p[6].toFloat(), p[7].toFloat(), p[8].toFloat()) else null,
@@ -178,7 +200,7 @@ object Fog {
                 val p = look.picked.toFloatArray(); val y = maxOf(lum(p), 1e-6f); FloatArray(3) { p[it] / y }
             }
             look.mode == "auto" -> floatArrayOf(1f, 1f, 1f)
-            else -> tintFor(PRESETS.firstOrNull { it.first == look.mode }?.second ?: NEUTRAL_MIRED)
+            else -> presetChroma(look.mode)
         }
         val c = capped(withWarmth(base, look.warmth))
         val scr = mul(PROPHOTO_TO_SCREEN, FloatArray(3) { c[it] * 0.75f })
@@ -200,6 +222,23 @@ object Fog {
         val y = maxOf(lum(v), 1e-6f)
         return FloatArray(3) { v[it] / y }
     }
+
+    /**
+     * A preset's colour at luminance 1: its colour temperature — and for smog, a pale brown (60a):
+     * warm light through smoke, whose yellow-brown particles take some blue. Kept pale by the ceiling.
+     */
+    fun presetChroma(mode: String): FloatArray {
+        val base = tintFor(PRESETS.firstOrNull { it.first == mode }?.second ?: NEUTRAL_MIRED)
+        if (mode != "smog") return base
+        val v = tintFor(SMOG_MIRED).let { t -> FloatArray(3) { t[it] * SMOG_FILTER[it] } }
+        val y = maxOf(lum(v), 1e-6f)
+        return FloatArray(3) { v[it] / y }
+    }
+    private const val SMOG_MIRED = 260f
+    private val SMOG_FILTER = floatArrayOf(1f, 0.97f, 0.80f)
+
+    /** Luminance of linear ProPhoto RGB. */
+    fun luminance(r: Float, g: Float, b: Float) = LUM[0] * r + LUM[1] * g + LUM[2] * b
 
     /** The colour of light at [mired], interpolated from the table. */
     fun tintFor(mired: Float): FloatArray {
@@ -274,14 +313,13 @@ object Fog {
                 FloatArray(3) { 1f + (auto[it] / y - 1f) * AUTO_TINT } to y
             }
             look.mode == "colour" -> hueChroma(look.hue, look.tint) to lum(auto)
-            else -> {
-                val base = PRESETS.firstOrNull { it.first == look.mode }?.second ?: PRESETS[0].second
-                tintFor(base) to lum(auto)
-            }
+            else -> presetChroma(if (PRESETS.any { it.first == look.mode }) look.mode else PRESETS[0].first) to lum(auto)
         }
+        // an atmosphere's air: as bright as the distance, not the brightest light (picked keeps its own)
+        val lit = if (look.airLevel > 0f && look.mode != "picked") lum(auto) * look.airLevel else level
         // cool–warm works on every colour, then the ceiling keeps the result pale
         val c = capped(withWarmth(chroma, look.warmth))
-        return FloatArray(3) { c[it] * level }
+        return FloatArray(3) { c[it] * lit }
     }
 
     /** Fogs [src] in place by the painted thickness [mask] and the colour [look]. */
@@ -292,15 +330,20 @@ object Fog {
         log("fog")
         val a = light(src, look)
         val w = src.width; val h = src.height
+        // dusk's glow towards the sun, on the mask's own grid and laid over like the mask
+        val glow = if (look.glow > 0f) ExposureMap(mask.width, mask.height,
+            Air.glow(look.glowU, look.glowV, mask.width, mask.height).let { gl -> FloatArray(gl.size) { 1f + (gl[it] - 1f) * look.glow } }) else null
         val f = src.image.data.order(ByteOrder.nativeOrder()).asFloatBuffer()
         for (y in 0 until h) {
             val v = (y + 0.5f) / h
             for (x in 0 until w) {
-                val d = mask.sample((x + 0.5f) / w, v) * amount
+                val u = (x + 0.5f) / w
+                val d = mask.sample(u, v) * amount
                 if (d <= 0.0005f) continue
                 val t = exp(-d)
+                val gl = glow?.sample(u, v) ?: 1f
                 val o = (y * w + x) * 3
-                for (c in 0 until 3) f.put(o + c, f.get(o + c) * t + a[c] * (1f - t))
+                for (c in 0 until 3) f.put(o + c, f.get(o + c) * t + a[c] * gl * (1f - t))
             }
         }
     }

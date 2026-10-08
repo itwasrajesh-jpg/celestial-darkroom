@@ -937,6 +937,46 @@ object Develop {
     }
 
     /**
+     * The photo's air, for an atmosphere (60a): the framed picture's brightness averaged over
+     * each cell of a [w] × [h] mask grid, read against the scene's brightest light as
+     * [Fog.autoLight] measures it, then [Air.read] with the depth's [near] (one value per cell).
+     */
+    fun readAir(context: Context, source: Uri, isRaw: Boolean, maxEdge: Int, pairFirst: Uri?,
+                framing: Framing, near: FloatArray, w: Int, h: Int): Air.Reading {
+        val pair = pairFirst != null && isRaw
+        val key = if (pair) "$pairFirst+$source@$maxEdge" else "$source@$maxEdge"
+        val pristine = Cache.get(key) ?: run {
+            val decoded = if (pair) openPair(context, pairFirst!!, source, maxEdge)
+                else if (isRaw) openRaw(context, source, maxEdge) else openImage(context, source, maxEdge)
+            Cache.put(key, decoded); decoded
+        }
+        val (ow, oh) = framing.outputSize(pristine.width, pristine.height)
+        val f = pristine.image.data.duplicate().order(ByteOrder.nativeOrder()).asFloatBuffer()
+        // 6 × 6 samples in every cell: enough for its average, and for the brightest 5% overall
+        val per = 6
+        val cells = FloatArray(w * h)
+        val all = FloatArray(w * h * per * per); var n = 0
+        for (j in 0 until h) for (i in 0 until w) {
+            var sum = 0.0
+            for (sj in 0 until per) for (si in 0 until per) {
+                val u = (i + (si + 0.5f) / per) / w; val v = (j + (sj + 0.5f) / per) / h
+                val (xs, ys) = framing.toSource((u * ow).toDouble(), (v * oh).toDouble(), pristine.width, pristine.height)
+                val x = xs.toInt().coerceIn(0, pristine.width - 1); val y = ys.toInt().coerceIn(0, pristine.height - 1)
+                val o = (y * pristine.width + x) * 3
+                val l = Fog.luminance(f.get(o), f.get(o + 1), f.get(o + 2))
+                sum += l; all[n++] = l
+            }
+            cells[j * w + i] = (sum / (per * per)).toFloat()
+        }
+        // the brightest 5%, averaged: as Fog.autoLight finds the plain fog's brightness
+        val cut = Air.quantile(all, 0.95f)
+        var s = 0.0; var m = 0
+        for (l in all) if (l >= cut) { s += l; m++ }
+        val auto = if (m == 0) cut else (s / m).toFloat()
+        return Air.read(cells, auto, near, w, h)
+    }
+
+    /**
      * A region of the picture (0..1 across and down), for the zoomed view. It shows less of the
      * film than the whole picture, so its film scale shrinks to match: grain, halation and glow
      * keep their true size instead of growing as you zoom.

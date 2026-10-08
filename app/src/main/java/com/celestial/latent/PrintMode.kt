@@ -387,6 +387,8 @@ fun PrintPanel(
     fogLook: FogLook,
     onFogLook: (FogLook) -> Unit,
     sampleScene: (Float, Float) -> FloatArray?,
+    /** The photo's air for an atmosphere (60a): brightness per mask cell against its brightest light, given the depth. */
+    readAir: ((FloatArray, Int, Int) -> com.celestial.latent.develop.Air.Reading?)? = null,
     raysMap: ExposureMap?,
     onRaysMap: (ExposureMap?) -> Unit,
     raysLook: RaysLook,
@@ -431,6 +433,8 @@ fun PrintPanel(
     var sideDodge by remember { mutableStateOf(0) }
     var sideSoften by remember { mutableStateOf(0) }
     var sideFog by remember { mutableStateOf(0) }
+    // the fog step's AIR tab: its wish (an atmosphere), carried out by the step itself (60a)
+    val airAsk = remember { AirAsk() }
     val pickScope = rememberCoroutineScope()
     var note by remember { mutableStateOf("") }
     val render: (Recipe, Int) -> Bitmap? = { r, e -> cache.peek(r, e) ?: renderAt(r, e)?.also { cache.put(r, it) } }
@@ -489,7 +493,9 @@ fun PrintPanel(
                             if (light != null) onFogLook(fogLook.copy(mode = "picked", picked = light.toList()))
                         }
                     },
-                    tabs = listOf("COLOUR" to @Composable { FogColourRow(fogLook, picking = fogPicking, onLook = onFogLook, onPick = { fogPicking = !fogPicking }) }),
+                    tabs = listOf("COLOUR" to @Composable { FogColourRow(fogLook, picking = fogPicking, onLook = onFogLook, onPick = { fogPicking = !fogPicking }) },
+                        "AIR" to @Composable { AirRow(fogLook, airAsk, hasDepth = depthRanks != null) }),
+                    airAsk = airAsk, readAir = readAir,
                     lookState = fogLook, onRestoreLook = { onFogLook(it as FogLook) }, pickOnTab = 0,
                     // a new colour or amount re-develops the print — it used to wait for the next stroke
                     refreshKey = fogLook)
@@ -1333,6 +1339,9 @@ private fun PaintStep(
     depthFix: ExposureMap? = null, onDepthFix: (ExposureMap?) -> Unit = {},
     /** The picture as read by the tap-to-select model, shared by the steps (59a). */
     selectPicture: SelectPicture? = null,
+    /** The fog's AIR tab: an atmosphere asked for, filled here from the depth (60a), and how to read the photo's air. */
+    airAsk: AirAsk? = null,
+    readAir: ((FloatArray, Int, Int) -> com.celestial.latent.develop.Air.Reading?)? = null,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -1439,6 +1448,42 @@ private fun PaintStep(
         undo.addLast(working?.copy() to lastLook); val (m, l) = redo.removeLast(); historyTick++
         working = m; onMap(m); version++
         if (l != lastLook) { lastLook = l; onRestoreLook?.invoke(l) }
+    }
+    // An atmosphere from the AIR tab (60a): the whole fog filled from the depth, its colour and its
+    // air's brightness set, kept as ONE step in the history (undo takes both back together).
+    LaunchedEffect(airAsk?.want?.serial) {
+        val ask = airAsk ?: return@LaunchedEffect
+        val want = ask.want ?: return@LaunchedEffect
+        if (want.serial <= ask.done) return@LaunchedEffect
+        ask.done = want.serial
+        ask.busy = true; ask.status = ""
+        try {
+            val dr = depthRanks ?: run { ask.status = "needs the depth model"; return@LaunchedEffect }
+            while (print == null) delay(150)
+            val pic = print ?: return@LaunchedEffect
+            if (dr.raw == null) { dr.ensure(context, pic); while (dr.busy) delay(150) }
+            val dims = ExposureMap.blank(aspect); val w = dims.width; val h = dims.height
+            val near = withContext(Dispatchers.Default) { dr.near(w, h) }
+                ?: run { ask.status = "the depth could not be worked out"; return@LaunchedEffect }
+            val reading = withContext(Dispatchers.Default) { runCatching { readAir?.invoke(near, w, h) }.getOrNull() }
+            if (reading == null) ask.status = "could not read the photo's air — its brightness is the plain fog's"
+            val air = com.celestial.latent.develop.Air
+            val fg = if (want.keepForeground) (depthSplit?.takeIf { it.width == w && it.height == h }?.stops ?: dr.foreground(w, h)) else null
+            val thick = air.thickness(want.kind, near, w, h).let { t ->
+                FloatArray(t.size) { k -> (t[k] * want.scale * (1f - (fg?.get(k) ?: 0f))).coerceIn(spec.min, spec.max) }
+            }
+            val base = lastLook as? FogLook ?: FogLook()
+            val look = base.copy(mode = want.kind,
+                airLevel = (reading?.level ?: 1f) * (if (want.kind == "smog") air.SMOG_DARKER else 1f),
+                glow = if (want.kind == "dusk") 1f else 0f,
+                glowU = reading?.sunU ?: 0.5f, glowV = reading?.sunV ?: 0.3f)
+            undo.addLast(working?.copy() to lastLook); if (undo.size > 30) undo.removeFirst()
+            redo.clear(); historyTick++
+            val next = ExposureMap(w, h, thick)
+            working = next; onMap(next); version++
+            lastLook = look; onRestoreLook?.invoke(look)
+            android.util.Log.i("Latent", "air: ${want.kind} ×${"%.2f".format(java.util.Locale.US, want.scale)}, brightness ${"%.2f".format(java.util.Locale.US, look.airLevel)} of the brightest light, sun at ${"%.2f".format(java.util.Locale.US, look.glowU)},${"%.2f".format(java.util.Locale.US, look.glowV)}")
+        } finally { ask.busy = false }
     }
 
     // compare: the print without this step's effect, prepared once the print is ready (and again if the recipe changes)
@@ -2176,15 +2221,19 @@ private class DepthRanks {
      * at their natural gap — the split that keeps the near group and the far group each tightest
      * (Otsu). Tested on a flower, a cat, a chandelier and a portrait: the subject each time.
      */
-    @Synchronized fun foreground(w: Int, h: Int): FloatArray? {
+    /** Nearness (1 nearest … 0 farthest) at the centre of each cell of a mask's grid. */
+    @Synchronized fun near(w: Int, h: Int): FloatArray? {
         val d = raw ?: return null
-        val key = "${w}x$h"; if (key == splitKey) return splitCache
         val S = com.celestial.latent.develop.Depth.SIZE
-        val near = FloatArray(w * h) { k ->
+        return FloatArray(w * h) { k ->
             val sx = (((k % w) + 0.5f) / w * S - 0.5f).coerceIn(0f, (S - 1).toFloat()); val sy = (((k / w) + 0.5f) / h * S - 0.5f).coerceIn(0f, (S - 1).toFloat())
             val x0 = sx.toInt(); val y0 = sy.toInt(); val x1 = minOf(x0 + 1, S - 1); val y1 = minOf(y0 + 1, S - 1); val fx = sx - x0; val fy = sy - y0
             (d[y0 * S + x0] * (1 - fx) + d[y0 * S + x1] * fx) * (1 - fy) + (d[y1 * S + x0] * (1 - fx) + d[y1 * S + x1] * fx) * fy
         }
+    }
+    @Synchronized fun foreground(w: Int, h: Int): FloatArray? {
+        val key = "${w}x$h"; if (key == splitKey) return splitCache
+        val near = near(w, h) ?: return null
         val bins = 64; val hist = DoubleArray(bins)
         for (v in near) hist[(v.coerceIn(0f, 0.9999f) * bins).toInt()] += 1.0
         val total = near.size.toDouble(); var bestT = 0.5f; var best = -1.0; var w0 = 0.0; var s0 = 0.0
@@ -2199,6 +2248,63 @@ private class DepthRanks {
         val fg = FloatArray(w * h) { k -> val t = ((near[k] - (bestT - e)) / (2 * e)).coerceIn(0f, 1f); t * t * (3f - 2f * t) }
         splitKey = key; splitCache = fg
         return fg
+    }
+}
+
+/** The AIR tab's wish (60a), carried out by the fog step's PaintStep, which has the print, its shape and the depth. */
+private class AirAsk {
+    var want by mutableStateOf<AirWant?>(null)
+    var busy by mutableStateOf(false)
+    var status by mutableStateOf("")
+    /** How thick, against the proven atmosphere (1×), and whether the foreground is kept clear. */
+    var scale by mutableStateOf(1f)
+    var keepForeground by mutableStateOf(false)
+    /** The last wish carried out, so returning to the step never fills the air again. */
+    var done = 0
+    fun ask(kind: String) { want = AirWant(kind, scale, keepForeground, (want?.serial ?: 0) + 1) }
+}
+private data class AirWant(val kind: String, val scale: Float, val keepForeground: Boolean, val serial: Int)
+
+/**
+ * The fog's AIR tab (60a): one tap fills the whole fog from the depth as a real atmosphere —
+ * mist, morning, dusk or smog — then thicker or thinner, and the foreground kept clear or not.
+ * Widths: mist 46 + morning 70 + dusk 50 + smog 54 + gaps ≈ 232 dp; keep the foreground clear ≈ 160 dp.
+ */
+@Composable
+private fun AirRow(look: FogLook, ask: AirAsk, hasDepth: Boolean) {
+    val sliderColours = androidx.compose.material3.SliderDefaults.colors(thumbColor = LatentColors.Amber,
+        activeTrackColor = LatentColors.Amber, inactiveTrackColor = LatentColors.Surface)
+    val current = if (look.airLevel > 0f) look.mode.takeIf { it in com.celestial.latent.develop.Air.KINDS } else null
+    Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 6.dp)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            com.celestial.latent.develop.Air.KINDS.forEach { k -> Chip(k, on = current == k, enabled = hasDepth && !ask.busy) { ask.ask(k) } }
+        }
+        var scaleLive by remember(ask.scale) { mutableStateOf(ask.scale) }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("thinner", color = LatentColors.TextDim, fontSize = 10.sp)
+            androidx.compose.material3.Slider(
+                value = scaleLive, onValueChange = { scaleLive = it },
+                onValueChangeFinished = { ask.scale = scaleLive; if (current != null) ask.ask(current) }, valueRange = 0.3f..2f,
+                enabled = hasDepth, colors = sliderColours, modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
+            )
+            Text("thicker", color = LatentColors.TextDim, fontSize = 10.sp)
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Chip("keep the foreground clear", on = ask.keepForeground, enabled = hasDepth && !ask.busy) {
+                ask.keepForeground = !ask.keepForeground; if (current != null) ask.ask(current)
+            }
+        }
+        Text(
+            when {
+                !hasDepth -> "Atmospheres need the depth model: install it from LIGHT → SURFACE."
+                ask.busy -> "Filling the air from the depth…"
+                ask.status.isNotEmpty() -> ask.status
+                current != null -> "The whole fog, from the depth. A new choice replaces it; paint on top on BRUSH, colour on COLOUR."
+                else -> "One tap fills the whole fog from the depth: far things fade first. It replaces any painted fog."
+            },
+            color = if (ask.status.isNotEmpty() || !hasDepth) LatentColors.Amber else LatentColors.TextDim, fontSize = 11.sp,
+            modifier = Modifier.padding(top = 4.dp),
+        )
     }
 }
 

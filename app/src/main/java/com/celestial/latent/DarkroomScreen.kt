@@ -410,6 +410,13 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                         try { Develop.sampleScene(context, source, isRaw, DECODE_EDGE, pairFirst, framing, u, v) }
                         catch (t: Throwable) { null } finally { q.engineLane.release() }
                     },
+                    readAir = { near, w, h ->
+                        val q = com.celestial.latent.develop.DevelopQueue
+                        q.engineLane.acquire()
+                        try { Develop.readAir(context, source, isRaw, DECODE_EDGE, pairFirst, framing, near, w, h) }
+                        catch (t: Throwable) { android.util.Log.e("Latent", "air: could not read the photo", t); null }
+                        finally { q.engineLane.release() }
+                    },
                     raysMap = raysMap,
                     onRaysMap = { raysMap = it },
                     raysLook = raysLook,
