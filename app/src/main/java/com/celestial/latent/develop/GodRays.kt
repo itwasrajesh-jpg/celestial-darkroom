@@ -79,17 +79,26 @@ object GodRays {
         return maps
     }
 
-    /** From each place, the open sky gathered along the way towards the sun at (su, sv). */
-    private fun streaks(open: FloatArray, w: Int, h: Int, su: Float, sv: Float): FloatArray {
+    /**
+     * From each place, the open sky gathered along the way towards the sun at (su, sv). The sun
+     * may be outside the picture (61a): past the edge counts as nothing — we cannot see what is
+     * there, and repeating the edge greyed a whole bridge photo in the proof — and the walk is at
+     * most one diagonal long, so a far sun does not stretch the streaks.
+     */
+    internal fun streaks(open: FloatArray, w: Int, h: Int, su: Float, sv: Float): FloatArray {
         val out = FloatArray(w * h)
         val px = su * w; val py = sv * h
         val wt = FloatArray(STEPS) { DECAY.pow(it) }; val wsum = wt.sum()
+        val diag = sqrt((w * w + h * h).toFloat())
         for (j in 0 until h) for (i in 0 until w) {
             val dx = px - i; val dy = py - j
+            val reach = min(REACH, diag / max(sqrt(dx * dx + dy * dy), 1e-6f))
             var acc = 0f
             for (s in 0 until STEPS) {
-                val t = (s + 0.5f) / STEPS * REACH
-                acc += wt[s] * bilinear(open, w, h, i + dx * t, j + dy * t)
+                val t = (s + 0.5f) / STEPS * reach
+                val x = i + dx * t; val y = j + dy * t
+                if (x < -0.5f || x > w - 0.5f || y < -0.5f || y > h - 0.5f) continue
+                acc += wt[s] * bilinear(open, w, h, x, y)
             }
             out[j * w + i] = acc / wsum
         }
@@ -97,7 +106,7 @@ object GodRays {
     }
 
     /** [a] at pixel coordinates (x, y) — pixel centres at whole numbers — clamped at the edges. */
-    private fun bilinear(a: FloatArray, w: Int, h: Int, x: Float, y: Float): Float {
+    internal fun bilinear(a: FloatArray, w: Int, h: Int, x: Float, y: Float): Float {
         val xc = x.coerceIn(0f, (w - 1).toFloat()); val yc = y.coerceIn(0f, (h - 1).toFloat())
         val x0 = xc.toInt(); val y0 = yc.toInt(); val x1 = min(x0 + 1, w - 1); val y1 = min(y0 + 1, h - 1)
         val fx = xc - x0; val fy = yc - y0

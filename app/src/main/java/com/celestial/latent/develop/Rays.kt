@@ -16,7 +16,8 @@ import kotlin.math.sqrt
  *  - spot: a point light ([u], [v]) shining only within a cone of half-angle [cone] around its aim
  *    ([u2], [v2]) — a stage light, a torch, a shaded streetlamp;
  *  - area: a light with size, the line from ([u], [v]) to ([u2], [v2]) — a window, a doorway.
- * Positions are 0..1 across and down the framed picture; NaN until placed. [amount] is how
+ * Positions are 0..1 across and down the framed picture; NaN until placed. A sun may sit up to
+ * [OFF_FRAME] beyond the picture's edges (61a), as a real sun usually does. [amount] is how
  * bright, [length] how far the rays reach (a share of the picture's long edge).
  */
 data class RaysLook(
@@ -82,7 +83,9 @@ data class RaysLook(
     val godRays: Float = 0f,
 ) {
     val hasOpening: Boolean get() = !ox0.isNaN() && !oy0.isNaN() && !ox1.isNaN() && !oy1.isNaN()
-    val placed: Boolean get() = u in 0f..1f && v in 0f..1f
+    /** Placed on the picture — or, for a sun, up to [OFF_FRAME] beyond its edges. */
+    val placed: Boolean get() = if (type == "sun") u in -OFF_FRAME..1f + OFF_FRAME && v in -OFF_FRAME..1f + OFF_FRAME
+        else u in 0f..1f && v in 0f..1f
 
     /** The second point each kind needs, placed sensibly if it is not set yet. */
     fun withDefaults(): RaysLook {
@@ -112,6 +115,8 @@ data class RaysLook(
 
     companion object {
         const val LIGHT_SATURATION_MAX = 0.9f
+        /** How far beyond the picture's edges a sun may be placed, in picture widths and heights (61a). */
+        const val OFF_FRAME = 1f
 
         fun parse(s: String?): RaysLook {
             if (s.isNullOrEmpty()) return RaysLook()

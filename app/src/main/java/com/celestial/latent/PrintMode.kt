@@ -558,7 +558,8 @@ fun PrintPanel(
                         // the other lights: a small ring each, so you can see where they all are
                         lights.forEachIndexed { i, l ->
                             if (i != selected && l.placed) {
-                                val c = toScreen(l.u, l.v)
+                                val c = if (l.type == "sun") sunHandle(l.u, l.v).let { (hu, hv) -> inView(toScreen(hu, hv), hu, hv, size.width, size.height, SUN_INSET.dp.toPx()) }
+                                    else toScreen(l.u, l.v)
                                 drawCircle(LatentColors.Amber.copy(alpha = 0.55f), 7.dp.toPx(), c, style = Stroke(1.5.dp.toPx()))
                                 drawCircle(LatentColors.Amber.copy(alpha = 0.55f), 2.dp.toPx(), c)
                             }
@@ -933,6 +934,25 @@ private val RAYS_SPEC = PaintSpec(
 private fun keep(u: Float, v: Float) = u.coerceIn(0f, 1f) to v.coerceIn(0f, 1f)
 
 /**
+ * A sun beyond the picture's edge (61a): its handle travels [SUN_OUT] times less far than the sun,
+ * so the little room round the print reaches a sun well outside it. Inside the picture the
+ * handle is exactly the sun.
+ */
+private const val SUN_OUT = 4f
+/** How far in from the view's sides a handle off the picture is shown: room for its ring and the arrow out (dp). */
+private const val SUN_INSET = 32
+private fun past(x: Float) = if (x < 0f) x else if (x > 1f) x - 1f else 0f
+private fun sunHandle(u: Float, v: Float) = (u - past(u) + past(u) / SUN_OUT) to (v - past(v) + past(v) / SUN_OUT)
+private fun sunFromHandle(hu: Float, hv: Float): Pair<Float, Float> {
+    val o = RaysLook.OFF_FRAME
+    return (hu - past(hu) + past(hu) * SUN_OUT).coerceIn(-o, 1f + o) to (hv - past(hv) + past(hv) * SUN_OUT).coerceIn(-o, 1f + o)
+}
+
+/** A handle's place on screen: one off the picture (a sun beyond the edge) is kept in view, [inset] from the sides. */
+private fun inView(c: Offset, hu: Float, hv: Float, w: Float, h: Float, inset: Float): Offset =
+    if (hu in 0f..1f && hv in 0f..1f) c else Offset(c.x.coerceIn(inset, maxOf(inset, w - inset)), c.y.coerceIn(inset, maxOf(inset, h - inset)))
+
+/**
  * The spot's two cone-edge handles: its aim turned by ±cone about the light. Worked in true
  * proportions (across scaled by the picture's shape), so the cone's angle is the real angle.
  */
@@ -950,7 +970,7 @@ private fun raysHandles(l: RaysLook, aspect: Float): List<Pair<Float, Float>> {
     if (!l.placed) return emptyList()
     val d = l.withDefaults()
     return when (d.type) {
-        "sun" -> listOf(d.u to d.v, d.u2 to d.v2) + (if (d.hasOpening) listOf(d.ox0 to d.oy0, d.ox1 to d.oy1) else emptyList())
+        "sun" -> listOf(sunHandle(d.u, d.v), d.u2 to d.v2) + (if (d.hasOpening) listOf(d.ox0 to d.oy0, d.ox1 to d.oy1) else emptyList())
         "spot" -> { val (e1, e2) = coneEdges(d, aspect); listOf(d.u to d.v, d.u2 to d.v2, e1, e2) }
         // a panel: its middle, where it aims, and a corner for its size
         "area" -> listOf(d.u to d.v, d.u2 to d.v2, (d.u + d.aw / 2f) to (d.v + d.ah / 2f))
@@ -958,8 +978,11 @@ private fun raysHandles(l: RaysLook, aspect: Float): List<Pair<Float, Float>> {
     }
 }
 
-/** The light after handle [i] is dragged to (u, v). Shapes that move whole keep their size. */
-private fun raysDragged(l: RaysLook, i: Int, u: Float, v: Float, aspect: Float): RaysLook {
+/**
+ * The light after handle [i] is dragged to (hu, hv), which may be off the picture. Shapes that
+ * move whole keep their size; only a sun may leave the picture (61a), its aim staying on it.
+ */
+private fun raysDragged(l: RaysLook, i: Int, hu: Float, hv: Float, aspect: Float): RaysLook {
     val d = l.withDefaults()
     fun moved(du: Float, dv: Float): RaysLook {
         // move both points by the same amount, but no further than keeps both on the picture
@@ -967,6 +990,14 @@ private fun raysDragged(l: RaysLook, i: Int, u: Float, v: Float, aspect: Float):
         val mdv = dv.coerceIn(-minOf(d.v, d.v2), 1f - maxOf(d.v, d.v2))
         return d.copy(u = d.u + mdu, v = d.v + mdv, u2 = d.u2 + mdu, v2 = d.v2 + mdv)
     }
+    if (d.type == "sun" && i == 0) {
+        // on the picture the sun and its aim move together, as before; once the sun is beyond the
+        // edge (or comes back from there) it moves alone and the aim stays where it is on the picture
+        val (su, sv) = sunFromHandle(hu, hv)
+        fun inside(a: Float, b: Float) = a in 0f..1f && b in 0f..1f
+        return if (inside(su, sv) && inside(d.u, d.v)) moved(su - d.u, sv - d.v) else d.copy(u = su, v = sv)
+    }
+    val (u, v) = keep(hu, hv)
     return when (d.type) {
         "sun" -> when (i) {
             0 -> moved(u - d.u, v - d.v)
@@ -1000,7 +1031,7 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawRaysLight(l: Ra
     if (!l.placed) return
     val d = l.withDefaults()
     val a = LatentColors.Amber; val w = 2.dp.toPx()
-    val p = at(d.u, d.v)
+    val p = if (d.type == "sun") sunHandle(d.u, d.v).let { (hu, hv) -> inView(at(hu, hv), hu, hv, size.width, size.height, SUN_INSET.dp.toPx()) } else at(d.u, d.v)
     when (d.type) {
         "sun" -> {
             if (d.hasOpening) {
@@ -1010,6 +1041,19 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawRaysLight(l: Ra
             }
             val q = at(d.u2, d.v2)
             drawLine(a, p, q, w)
+            if (d.u !in 0f..1f || d.v !in 0f..1f) {
+                // the sun is beyond the edge: an arrow from its handle pointing out to where it is
+                val e = at(d.u.coerceIn(0f, 1f), d.v.coerceIn(0f, 1f)); val s = at(d.u, d.v)
+                val n = kotlin.math.hypot(s.x - e.x, s.y - e.y).coerceAtLeast(1e-3f)
+                val ox = (s.x - e.x) / n; val oy = (s.y - e.y) / n; val r0 = 12.dp.toPx(); val r1 = 24.dp.toPx()
+                val tip = Offset(p.x + ox * r1, p.y + oy * r1)
+                drawLine(a, Offset(p.x + ox * r0, p.y + oy * r0), tip, w)
+                val oa = kotlin.math.atan2(oy, ox)
+                for (side in listOf(-1f, 1f)) {
+                    val t = oa + PI.toFloat() + side * 0.5f
+                    drawLine(a, tip, Offset(tip.x + 7.dp.toPx() * kotlin.math.cos(t), tip.y + 7.dp.toPx() * kotlin.math.sin(t)), w)
+                }
+            }
             val ang = kotlin.math.atan2(q.y - p.y, q.x - p.x); val hl = 14.dp.toPx()
             for (side in listOf(-1f, 1f)) {
                 val t = ang + PI.toFloat() + side * 0.45f
@@ -1085,10 +1129,14 @@ private fun RaysLightTab(
             }
             if (selected >= 1 || look.placed) Chip("remove", on = false) { onRemove() }
         }
-        // the kind of light, as in 3D software; switching keeps where it is
+        // the kind of light, as in 3D software; switching keeps where it is (only a sun may be off the
+        // picture, so another kind comes back to the nearest edge)
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
             listOf("point", "sun", "spot", "area").forEach { t ->
-                Chip(t, on = look.type == t) { onLook(look.copy(type = t, u2 = Float.NaN, v2 = Float.NaN).withDefaults()) }
+                Chip(t, on = look.type == t) {
+                    val at = if (t == "sun") look.u to look.v else keep(look.u, look.v)
+                    onLook(look.copy(type = t, u = at.first, v = at.second, u2 = Float.NaN, v2 = Float.NaN).withDefaults())
+                }
             }
         }
         Row(Modifier.fillMaxWidth().padding(top = 6.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
@@ -2032,23 +2080,28 @@ private fun PaintStep(
                         val drag = dragNow
                         if (hs.isNotEmpty() && drag != null) {
                             val grab = 28.dp.toPx()
-                            val hit = hs.indices.minByOrNull { i ->
-                                val sp = zoom.toScreen(hs[i].first, hs[i].second, fit, vw, vh)
-                                (sp - down.position).getDistance()
-                            }?.takeIf { i -> (zoom.toScreen(hs[i].first, hs[i].second, fit, vw, vh) - down.position).getDistance() <= grab }
+                            // where each handle shows: one off the picture (a sun beyond the edge) is kept in view
+                            fun shown(i: Int) = inView(zoom.toScreen(hs[i].first, hs[i].second, fit, vw, vh), hs[i].first, hs[i].second, vw, vh, SUN_INSET.dp.toPx())
+                            val hit = hs.indices.minByOrNull { i -> (shown(i) - down.position).getDistance() }
+                                ?.takeIf { i -> (shown(i) - down.position).getDistance() <= grab }
                             if (hit != null) {
                                 Haptics.tick(context)
                                 down.consume()
-                                var last = at(down.position)
+                                // the handle follows the finger's movement from where it was grabbed, so a
+                                // handle shown at the edge does not jump to the finger; the light keeps
+                                // itself on the picture (a sun may go past the edge)
+                                val start = at(down.position); val h0 = hs[hit]
+                                var last = h0
                                 while (true) {
                                     val event = awaitPointerEvent()
                                     val pressed = event.changes.filter { it.pressed }
                                     if (pressed.isEmpty() || pressed.size >= 2) break
-                                    last = at(pressed.first().position)
-                                    drag(hit, last.first.coerceIn(0f, 1f), last.second.coerceIn(0f, 1f), false, aspect)
+                                    val now = at(pressed.first().position)
+                                    last = (h0.first + now.first - start.first) to (h0.second + now.second - start.second)
+                                    drag(hit, last.first, last.second, false, aspect)
                                     event.changes.forEach { it.consume() }
                                 }
-                                drag(hit, last.first.coerceIn(0f, 1f), last.second.coerceIn(0f, 1f), true, aspect)
+                                drag(hit, last.first, last.second, true, aspect)
                                 return@awaitEachGesture
                             }
                         }
@@ -2122,7 +2175,7 @@ private fun PaintStep(
                     // the light's shape, and its handles to drag (hidden while comparing: the photo alone)
                     if (!comparing && !selOpen) overlayDraw?.invoke(this, aspect) { mu, mv -> zoom.toScreen(mu, mv, fit, size.width, size.height) }
                     if (!comparing && !selOpen) handlesFor?.invoke(aspect)?.forEach { (hu, hv) ->
-                        val c = zoom.toScreen(hu, hv, fit, size.width, size.height)
+                        val c = inView(zoom.toScreen(hu, hv, fit, size.width, size.height), hu, hv, size.width, size.height, SUN_INSET.dp.toPx())
                         drawCircle(Color(0xCC161615), 10.dp.toPx(), c)
                         drawCircle(LatentColors.Amber, 10.dp.toPx(), c, style = Stroke(2.dp.toPx()))
                     }
