@@ -355,7 +355,7 @@ object Fog {
         return FloatArray(3) { c[it] * lit }
     }
 
-    /** Fogs [src] in place by the painted thickness [mask] and the colour [look]. */
+    /** Fogs [src] in place by the painted thickness [mask] and the colour [look]; an atmosphere's thickness follows fine edges ([FogEdges]). */
     fun apply(src: Develop.Source, mask: ExposureMap, look: FogLook, log: (String) -> Unit = {}) {
         if (mask.isBlank) return
         val amount = look.amount.coerceIn(0f, 1f)
@@ -367,17 +367,23 @@ object Fog {
         val glow = if (look.glow > 0f) ExposureMap(mask.width, mask.height,
             Air.glow(look.glowU, look.glowV, mask.width, mask.height).let { gl -> FloatArray(gl.size) { 1f + (gl[it] - 1f) * look.glow } }) else null
         val f = src.image.data.order(ByteOrder.nativeOrder()).asFloatBuffer()
+        fun fog(x: Int, y: Int, d: Float) {
+            if (d <= 0.0005f) return
+            val t = exp(-d)
+            val gl = glow?.sample((x + 0.5f) / w, (y + 0.5f) / h) ?: 1f
+            val o = (y * w + x) * 3
+            for (c in 0 until 3) f.put(o + c, f.get(o + c) * t + a[c] * gl * (1f - t))
+        }
+        if (look.airKind() != null) {
+            // an atmosphere: its thickness refined by the photo, so fine edges against the sky get no outline (60d)
+            FogEdges.refine(f, w, h, FogEdges.radius(w, h, mask), FogEdges.EPS,
+                thick = { y, dst -> val v = (y + 0.5f) / h; for (x in 0 until w) dst[x] = mask.sample((x + 0.5f) / w, v) * amount },
+                emit = { y, row -> for (x in 0 until w) fog(x, y, row[x]) })
+            return
+        }
         for (y in 0 until h) {
             val v = (y + 0.5f) / h
-            for (x in 0 until w) {
-                val u = (x + 0.5f) / w
-                val d = mask.sample(u, v) * amount
-                if (d <= 0.0005f) continue
-                val t = exp(-d)
-                val gl = glow?.sample(u, v) ?: 1f
-                val o = (y * w + x) * 3
-                for (c in 0 until 3) f.put(o + c, f.get(o + c) * t + a[c] * gl * (1f - t))
-            }
+            for (x in 0 until w) fog(x, y, mask.sample((x + 0.5f) / w, v) * amount)
         }
     }
 }
