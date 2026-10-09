@@ -1122,6 +1122,10 @@ private fun RaysLightTab(
                 SettleSlider("in the air", "${(look.amount * 100f).roundToInt()}%", look.amount, 0f..2f) { onLook(look.copy(amount = (it * 100f).roundToInt() / 100f)) }
             }
         }
+        // a placed sun's god rays (60f): streaks past leaves and trunks, lined up under "in the air"
+        if (look.type == "sun" && look.placed) Box(Modifier.padding(start = 20.dp)) {
+            SettleSlider("god rays", "${(look.godRays * 100f).roundToInt()}%", look.godRays, 0f..1.5f) { onLook(look.copy(godRays = (it * 20f).roundToInt() / 20f)) }
+        }
         // the light's colour, for the whole light (it used to sit in BEAM)
         LightColourRows(look, onLook)
     }

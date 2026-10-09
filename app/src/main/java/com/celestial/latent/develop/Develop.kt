@@ -193,7 +193,7 @@ object Develop {
      */
     /** The photo's depth, when any light lights surfaces; never stops a develop. */
     private fun sunInput(context: Context, source: Uri, framing: Framing, src: Source, lights: List<RaysLook>, log: (String) -> Unit): Sun.Input? =
-        if (lights.none { Sun.wanted(it) || Beams.wanted(it) }) null else runCatching { Sun.prepare(context, source, framing, src, log) }
+        if (lights.none { Sun.wanted(it) || Beams.wanted(it) || GodRays.wanted(it) }) null else runCatching { Sun.prepare(context, source, framing, src, log) }
             .getOrElse { t -> Log.e("Latent", "light: could not prepare the depth", t); null }
 
     /**
@@ -241,6 +241,19 @@ object Develop {
         }.onFailure { t -> Log.e("Latent", "light: could not light the air", t) }
     }
 
+    /** A sun's god rays, worked out on the lit picture before the fog (60f); a failure is logged and the photo develops without them. */
+    private fun godRaysFor(src: Source, lights: List<RaysLook>, input: Sun.Input?, log: (String) -> Unit): List<GodRays.Map> =
+        if (input == null || lights.none { GodRays.wanted(it) }) emptyList()
+        else runCatching { GodRays.prepare(src, lights, input, log) }
+            .getOrElse { t -> Log.e("Latent", "light: could not work out the god rays", t); emptyList() }
+
+    /** Lays the god rays over the picture, in front of the fog and the light in the air. */
+    private fun godRaysOver(src: Source, maps: List<GodRays.Map>, fogMask: ExposureMap?, fogAmount: Float, log: (String) -> Unit) {
+        if (maps.isEmpty()) return
+        runCatching { GodRays.apply(src, maps, fogMask, fogAmount, log) }
+            .onFailure { t -> Log.e("Latent", "light: could not lay the god rays", t) }
+    }
+
     fun openCached(context: Context, source: Uri, isRaw: Boolean, maxEdge: Int, recipe: Recipe, iso: Int,
                    softenMask: ExposureMap? = null, pairFirst: Uri? = null, framing: Framing = Framing(),
                    fogMask: ExposureMap? = null, fogLook: FogLook = FogLook(),
@@ -284,7 +297,7 @@ object Develop {
             ExtraLights.key(extraLights),
             split?.let { "${it.width}x${it.height}:${it.stops.contentHashCode()}" } ?: "-",
             // light on surfaces needs the depth model: once it is installed, prepare again
-            if ((listOf(raysLook) + extraLights).any { Sun.wanted(it) || Beams.wanted(it) }) "sun:${Depth.isReady(context)}" else "-",
+            if ((listOf(raysLook) + extraLights).any { Sun.wanted(it) || Beams.wanted(it) || GodRays.wanted(it) }) "sun:${Depth.isReady(context)}" else "-",
         ).joinToString("|")
         if (working.preparedFor == prep) return working
         working.frameFrom(pristine, framing)
@@ -293,18 +306,21 @@ object Develop {
         // the sensor's noise is cleaned first, so fog and light never work with it
         denoiseSource(working, recipe, isoUsed, log)
         sensorNoiseSource(working, recipe, isoUsed, log)
-        // the air first — it is in front of the lens — then the lens filter
-        fogMask?.let { Fog.apply(working, it, fogLook, log) }
-        // the flat 2D glow only for "through gaps", or when there is no depth to work in 3D
-        for (light in listOf(raysLook) + extraLights) if (sunIn == null || !Beams.wanted(light)) Rays.apply(working, light, raysMask, fogMask, fogLook.amount, log, split)
         // what lies under the lights: while it is unchanged, the noise-free copy they land on is reused
         // (the photo — both frames of a pair — and its size, by the decode's own key, then everything applied before the lights)
         val underLights = listOf(key, framing.key(), isoUsed, recipe.chromaDenoise, recipe.lumaDenoise,
-            fogMask?.let { "${it.width}x${it.height}:${it.stops.contentHashCode()}:${fogLook.key()}" } ?: "-",
-            (listOf(raysLook) + extraLights).filter { sunIn == null || !Beams.wanted(it) }.joinToString(";") { it.key() },
             raysMask?.stops?.contentHashCode() ?: 0, split?.stops?.contentHashCode() ?: 0, working.width, working.height).joinToString("|")
-        sunOnSurfaces(working, listOf(raysLook) + extraLights, raysMask, sunIn, log, underLights, split)    // the lights on what they meet
+        // the lights on what they meet first, then the air in front of them (60e): fog laid before the
+        // light was lit by it as if it were a wall, in patches where the depth said shadow or sun
+        sunOnSurfaces(working, listOf(raysLook) + extraLights, raysMask, sunIn, log, underLights, split)
+        // god rays read the sky's gaps from the lit picture, before the fog veils them (60f)
+        val godRays = godRaysFor(working, listOf(raysLook) + extraLights, sunIn, log)
+        // the air — it is in front of the lens — then the lens filter
+        fogMask?.let { Fog.apply(working, it, fogLook, log) }
+        // the flat 2D glow only for "through gaps", or when there is no depth to work in 3D
+        for (light in listOf(raysLook) + extraLights) if (sunIn == null || !Beams.wanted(light)) Rays.apply(working, light, raysMask, fogMask, fogLook.amount, log, split)
         beamsInAir(working, listOf(raysLook) + extraLights, raysMask, fogMask, sunIn, log, split) // and in the air, in front of it all
+        godRaysOver(working, godRays, fogMask, fogLook.amount, log)
         lensFilterSource(working, recipe, log)
         fastDiffusionSource(working, recipe, preview = true, softenMask = softenMask, log = log)
         fastPrintDiffusionSource(working, recipe, preview = true, log = log)
@@ -882,11 +898,14 @@ object Develop {
             val iso = if (pair) maxOf(isoOf(context, source), isoOf(context, pairFirst!!)) else isoOf(context, source)
             denoiseSource(s, recipe, iso, log)
             sensorNoiseSource(s, recipe, iso, log)
-            fogMask?.let { Fog.apply(s, it, fogLook, log) }
             val split = splitFor(context, source, listOf(raysLook) + extraLights, depthSplit)
-            for (light in listOf(raysLook) + extraLights) if (sunIn == null || !Beams.wanted(light)) Rays.apply(s, light, raysMask, fogMask, fogLook.amount, log, split)
+            // the lights on surfaces, then the air in front of them (60e), as in the preview
             sunOnSurfaces(s, listOf(raysLook) + extraLights, raysMask, sunIn, log, null, split)
+            val godRays = godRaysFor(s, listOf(raysLook) + extraLights, sunIn, log)
+            fogMask?.let { Fog.apply(s, it, fogLook, log) }
+            for (light in listOf(raysLook) + extraLights) if (sunIn == null || !Beams.wanted(light)) Rays.apply(s, light, raysMask, fogMask, fogLook.amount, log, split)
             beamsInAir(s, listOf(raysLook) + extraLights, raysMask, fogMask, sunIn, log, split)
+            godRaysOver(s, godRays, fogMask, fogLook.amount, log)
             lensFilterSource(s, recipe, log)
             fastDiffusionSource(s, recipe, preview = false, softenMask = softenMask, log = log)
             fastPrintDiffusionSource(s, recipe, preview = false, log = log)

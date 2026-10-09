@@ -78,6 +78,8 @@ data class RaysLook(
     val gather: Float = 0f,
     /** Where this light may land: 0 everywhere, 1 only the foreground, 2 only the background (the photo's depth split). */
     val side: Float = 0f,
+    /** A sun's god rays: streaks of sunlight in the air past leaves, trunks and rock, 0 none … 1.5 (60f). */
+    val godRays: Float = 0f,
 ) {
     val hasOpening: Boolean get() = !ox0.isNaN() && !oy0.isNaN() && !ox1.isNaN() && !oy1.isNaN()
     val placed: Boolean get() = u in 0f..1f && v in 0f..1f
@@ -103,9 +105,9 @@ data class RaysLook(
         LIGHT_SATURATION_MAX)
 
     /** Saved as "v3|…" with every field; older saves were all made in "through gaps". */
-    fun key(): String = listOf("v9", type, mode).joinToString("|") + "|" +
+    fun key(): String = listOf("v10", type, mode).joinToString("|") + "|" +
         listOf(u, v, u2, v2, cone, amount, length, warmth, if (coloured) 1f else 0f, hue, tint, dust, fogOnly, surface, front, scale, nudge, reach, reveal, aw, ah, bounce,
-            ox0, oy0, ox1, oy1, floor, gather, side)
+            ox0, oy0, ox1, oy1, floor, gather, side, godRays)
             .joinToString("|") { "%.4f".format(Locale.US, it) }
 
     companion object {
@@ -115,6 +117,11 @@ data class RaysLook(
             if (s.isNullOrEmpty()) return RaysLook()
             return runCatching {
                 when {
+                    s.startsWith("v10|") -> {
+                        val p = s.split("|"); val f = p.drop(3).map { it.toFloat() }
+                        RaysLook(p[1], f[0], f[1], f[2], f[3], f[4], f[5], f[6], p[2], f[7], f[8] > 0.5f, f[9], f[10], f[11], f[12], f[13], f[14], f[15], f[16], f[17], f[18], f[19], f[20], f[21],
+                            f[22], f[23], f[24], f[25], f[26], f[27], f[28], f[29])
+                    }
                     s.startsWith("v9|") -> {
                         val p = s.split("|"); val f = p.drop(3).map { it.toFloat() }
                         RaysLook(p[1], f[0], f[1], f[2], f[3], f[4], f[5], f[6], p[2], f[7], f[8] > 0.5f, f[9], f[10], f[11], f[12], f[13], f[14], f[15], f[16], f[17], f[18], f[19], f[20], f[21],
