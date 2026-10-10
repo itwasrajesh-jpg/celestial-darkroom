@@ -551,6 +551,8 @@ fun PrintPanel(
                         selected = selected.coerceIn(0, ls.size - 1)
                     },
                     renderBefore = { r, e -> renderWithMasks(r, e, all.copy(raysOn = false)) },
+                    // a selected sun: the print a little smaller, so the sun can be dragged out past its edge (61b)
+                    room = if (sel.type == "sun" && sel.placed) SUN_ROOM else 0f,
                     // while a handle is dragged only the outline moves; the print re-develops on release
                     handlesFor = { a -> raysHandles(raysLive, a) },
                     onHandleDrag = { i, u, v, final, a -> raysLive = raysDragged(raysLive, i, u, v, a); if (final) setSel(raysLive) },
@@ -939,8 +941,10 @@ private fun keep(u: Float, v: Float) = u.coerceIn(0f, 1f) to v.coerceIn(0f, 1f)
  * handle is exactly the sun.
  */
 private const val SUN_OUT = 4f
-/** How far in from the view's sides a handle off the picture is shown: room for its ring and the arrow out (dp). */
-private const val SUN_INSET = 32
+/** How far in from the view's sides a handle off the picture is kept, when even the room round the print is not enough (dp). */
+private const val SUN_INSET = 14
+/** While a sun is selected the print is shown smaller, with this much room round it (a share of its size), so the sun can be dragged out (61b). */
+private const val SUN_ROOM = 0.15f
 private fun past(x: Float) = if (x < 0f) x else if (x > 1f) x - 1f else 0f
 private fun sunHandle(u: Float, v: Float) = (u - past(u) + past(u) / SUN_OUT) to (v - past(v) + past(v) / SUN_OUT)
 private fun sunFromHandle(hu: Float, hv: Float): Pair<Float, Float> {
@@ -991,11 +995,12 @@ private fun raysDragged(l: RaysLook, i: Int, hu: Float, hv: Float, aspect: Float
         return d.copy(u = d.u + mdu, v = d.v + mdv, u2 = d.u2 + mdu, v2 = d.v2 + mdv)
     }
     if (d.type == "sun" && i == 0) {
-        // on the picture the sun and its aim move together, as before; once the sun is beyond the
-        // edge (or comes back from there) it moves alone and the aim stays where it is on the picture
+        // the sun always goes where the handle is (61b: it used to stop when its aim reached an edge);
+        // the aim moves with it while both stay on the picture, and otherwise stays where it is
         val (su, sv) = sunFromHandle(hu, hv)
         fun inside(a: Float, b: Float) = a in 0f..1f && b in 0f..1f
-        return if (inside(su, sv) && inside(d.u, d.v)) moved(su - d.u, sv - d.v) else d.copy(u = su, v = sv)
+        val au = d.u2 + su - d.u; val av = d.v2 + sv - d.v
+        return if (inside(su, sv) && inside(d.u, d.v) && inside(au, av)) d.copy(u = su, v = sv, u2 = au, v2 = av) else d.copy(u = su, v = sv)
     }
     val (u, v) = keep(hu, hv)
     return when (d.type) {
@@ -1173,6 +1178,10 @@ private fun RaysLightTab(
         // a placed sun's god rays (60f): streaks past leaves and trunks, lined up under "in the air"
         if (look.type == "sun" && look.placed) Box(Modifier.padding(start = 20.dp)) {
             SettleSlider("god rays", "${(look.godRays * 100f).roundToInt()}%", look.godRays, 0f..1.5f) { onLook(look.copy(godRays = (it * 20f).roundToInt() / 20f)) }
+        }
+        // how much the rays fall on things close to the camera (61b): 0 keeps a fence or a near trunk clear
+        if (look.type == "sun" && look.placed && look.godRays > 0f) Box(Modifier.padding(start = 20.dp)) {
+            SettleSlider("near things", "${(look.godNear * 100f).roundToInt()}%", look.godNear, 0f..1f) { onLook(look.copy(godNear = (it * 20f).roundToInt() / 20f)) }
         }
         // the light's colour, for the whole light (it used to sit in BEAM)
         LightColourRows(look, onLook)
@@ -1437,6 +1446,8 @@ private fun PaintStep(
     /** The fog's AIR tab: an atmosphere asked for, filled here from the depth (60a), and how to read the photo's air. */
     airAsk: AirAsk? = null,
     readAir: ((FloatArray, Int, Int) -> com.celestial.latent.develop.Air.Reading?)? = null,
+    /** Room round the print, a share of its size on each side (61b: a selected sun can be dragged out into it). */
+    room: Float = 0f,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -1446,6 +1457,7 @@ private fun PaintStep(
     val pickNow by rememberUpdatedState(onPick)
     val handlesNow by rememberUpdatedState(handlesFor)
     val dragNow by rememberUpdatedState(onHandleDrag)
+    val roomNow by rememberUpdatedState(room)
     // Zoom: two fingers; the brush keeps its size on screen; the zoomed part develops sharp.
     val zoom = remember { ZoomState() }
     var detail by remember { mutableStateOf<Pair<Region, Bitmap>?>(null) }
@@ -1505,14 +1517,21 @@ private fun PaintStep(
     LaunchedEffect(showMask) { if (!developing) overlay.animateTo(if (showMask) 0.55f else 0f, tween(260)) }
 
     val aspect = print?.let { it.width.toFloat() / it.height } ?: (3f / 4f)
+    /** The print's place in the view: fitted as on every step, then smaller by [room] on each side. */
+    fun printPlace(vw: Float, vh: Float): PrintRect {
+        val pr = printRect(vw, vh, aspect)
+        if (roomNow <= 0f) return pr
+        val k = 1f / (1f + 2f * roomNow); val w = pr.width * k; val h = pr.height * k
+        return PrintRect(pr.left + (pr.width - w) / 2f, pr.top + (pr.height - h) / 2f, w, h)
+    }
     // The zoomed-in part, developed sharp once the zoom settles or the print changes.
     LaunchedEffect(print) { detail = null }
-    LaunchedEffect(zoom.scale, zoom.focusU, zoom.focusV, print) {
+    LaunchedEffect(zoom.scale, zoom.focusU, zoom.focusV, print, room) {
         val ask = renderRegion ?: return@LaunchedEffect
         if (!zoom.zoomed || print == null || canvasSize.width == 0) return@LaunchedEffect
         delay(320)
         val vw = canvasSize.width.toFloat(); val vh = canvasSize.height.toFloat()
-        val pr = printRect(vw, vh, aspect)
+        val pr = printPlace(vw, vh)
         val region = zoom.visible(FitRect(pr.left, pr.top, pr.width, pr.height), vw, vh)
         if (detail?.first == region) return@LaunchedEffect
         val edge = maxOf(canvasSize.width, canvasSize.height).coerceAtMost(1600)
@@ -2036,7 +2055,7 @@ private fun PaintStep(
                     awaitEachGesture {
                         val down = awaitFirstDown()
                         val vw = size.width.toFloat(); val vh = size.height.toFloat()
-                        val pr = printRect(vw, vh, aspect)
+                        val pr = printPlace(vw, vh)
                         val fit = FitRect(pr.left, pr.top, pr.width, pr.height)
                         fun at(o: Offset) = zoom.toPicture(o.x, o.y, fit, vw, vh)
                         val (u0, v0) = at(down.position)
@@ -2148,7 +2167,7 @@ private fun PaintStep(
                     }
                 },
             ) {
-                val pr = printRect(size.width, size.height, aspect)
+                val pr = printPlace(size.width, size.height)
                 val fit = FitRect(pr.left, pr.top, pr.width, pr.height)
                 // the whole print's place on screen, through the zoom (at 1× it is the fitted place)
                 val tl = zoom.toScreen(0f, 0f, fit, size.width, size.height)

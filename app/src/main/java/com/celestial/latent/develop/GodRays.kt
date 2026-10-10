@@ -25,6 +25,13 @@ import kotlin.math.sqrt
  *
  * Worked out once on a copy about 800 px on its long edge, before the fog, and laid over the
  * picture after the fog and the light in the air.
+ *
+ * 61b, proved on Celestial's fence photo (sun-off-frame/scripts/best.py): two walks — a long one
+ * (soft, far-reaching) and a short one that remembers only the last stretch, so a shaft is crisp
+ * just past its gap and softer further on — each starting a little later at every place, so the
+ * walk's steps no longer show as ripples; the lit mist warmer than the sun's own colour and the
+ * shadowed mist cooler; and the rays only as strong as the air in front of a place ("near
+ * things"), so a fence or a trunk close to the camera stays clear.
  */
 object GodRays {
     private val LUM = floatArrayOf(0.2880f, 0.7119f, 0.0001f)     // linear ProPhoto luminance
@@ -33,12 +40,22 @@ object GodRays {
     private const val DECAY = 0.985f
     private const val REACH = 0.9f
     private const val SHADE = 0.35f
+    private const val SHORT_STEPS = 48
+    private const val SHORT_DECAY = 0.93f
+    private const val SHORT_REACH = 0.25f
+    /** Sunlight seen through haze, a little warmer than the sun itself (sRGB 1, 0.88, 0.70 in linear ProPhoto, luminance 1). */
+    private val WARM = floatArrayOf(1.0250406f, 0.9898964f, 0.8107369f)
+    /** The shadowed mist: red dims most, blue least — a cooler shade. */
+    private val COOL = floatArrayOf(1.15f, 1f, 0.8f)
 
     /** Whether this light makes god rays: a placed sun with its slider up. */
     fun wanted(look: RaysLook): Boolean = look.placed && look.type == "sun" && look.godRays > 0f
 
-    /** One sun's streaks on the small copy, normalised so its brightest are ~1, and the levels it is laid with. */
-    class Map(val w: Int, val h: Int, val r: FloatArray, val top: Float, val level: Float, val look: RaysLook)
+    /**
+     * One sun's streaks on the small copy, normalised so its brightest are ~1, the levels it is laid
+     * with, and [air]: how much air lies in front of each place, 0 (close to the camera) … 1 (far).
+     */
+    class Map(val w: Int, val h: Int, val r: FloatArray, val top: Float, val level: Float, val look: RaysLook, val air: FloatArray)
 
     /** [src] as the lights have left it, before the fog; [input] its depth. Empty when no light wants rays. */
     fun prepare(src: Develop.Source, lights: List<RaysLook>, input: Sun.Input, log: (String) -> Unit = {}): List<Map> {
@@ -69,11 +86,16 @@ object GodRays {
         val open = FloatArray(sw * sh) { far[it] * ((y[it] / max(top, 1e-6f) - 0.45f) / 0.4f).coerceIn(0f, 1f) }
         val top995 = Air.quantile(y, 0.995f)
         val level = 0.5f * Air.quantile(input.lum, 0.95f).coerceAtLeast(0.02f)
+        // the air in front of each place (61b): the distance sharpened once more by the photo, finely,
+        // so the rays stop at a fence or a trunk close to the camera
+        val qc = FloatArray(sw * sh) { q[it].coerceIn(0f, 1f) }
+        val qf = guided(s, qc, sw, sh, max(1, (6f * max(sw, sh) / 1440f).roundToInt()), 1e-4f)
+        val air = FloatArray(sw * sh) { val t = ((qf[it].coerceIn(0f, 1f) - 0.05f) / 0.35f).coerceIn(0f, 1f); t * t * (3f - 2f * t) }
         val maps = suns.map { look ->
-            val r = streaks(open, sw, sh, look.u, look.v)
-            val n = max(Air.quantile(r, 0.995f), 1e-6f)
-            for (i in r.indices) r[i] = (r[i] / n).coerceIn(0f, 1.5f)
-            Map(sw, sh, r, top995, level, look)
+            val long = normalised(streaks(open, sw, sh, look.u, look.v, STEPS, DECAY, REACH))
+            val short = normalised(streaks(open, sw, sh, look.u, look.v, SHORT_STEPS, SHORT_DECAY, SHORT_REACH))
+            val r = FloatArray(sw * sh) { (0.75f * long[it] + 0.6f * short[it]).coerceIn(0f, 1.5f) }
+            Map(sw, sh, r, top995, level, look, air)
         }
         log("god rays worked out in ${System.currentTimeMillis() - t0} ms")
         return maps
@@ -85,17 +107,18 @@ object GodRays {
      * there, and repeating the edge greyed a whole bridge photo in the proof — and the walk is at
      * most one diagonal long, so a far sun does not stretch the streaks.
      */
-    internal fun streaks(open: FloatArray, w: Int, h: Int, su: Float, sv: Float): FloatArray {
+    internal fun streaks(open: FloatArray, w: Int, h: Int, su: Float, sv: Float, steps: Int, decay: Float, reachMax: Float): FloatArray {
         val out = FloatArray(w * h)
         val px = su * w; val py = sv * h
-        val wt = FloatArray(STEPS) { DECAY.pow(it) }; val wsum = wt.sum()
+        val wt = FloatArray(steps) { decay.pow(it) }; val wsum = wt.sum()
         val diag = sqrt((w * w + h * h).toFloat())
         for (j in 0 until h) for (i in 0 until w) {
             val dx = px - i; val dy = py - j
-            val reach = min(REACH, diag / max(sqrt(dx * dx + dy * dy), 1e-6f))
+            val reach = min(reachMax, diag / max(sqrt(dx * dx + dy * dy), 1e-6f))
+            val j0 = jitter(i, j)                                     // each place starts its walk a little later (61b)
             var acc = 0f
-            for (s in 0 until STEPS) {
-                val t = (s + 0.5f) / STEPS * reach
+            for (s in 0 until steps) {
+                val t = (s + j0) / steps * reach
                 val x = i + dx * t; val y = j + dy * t
                 if (x < -0.5f || x > w - 0.5f || y < -0.5f || y > h - 0.5f) continue
                 acc += wt[s] * bilinear(open, w, h, x, y)
@@ -103,6 +126,19 @@ object GodRays {
             out[j * w + i] = acc / wsum
         }
         return out
+    }
+
+    /** A fixed, even-looking number in 0..1 for each place: an integer hash, the same on every run. */
+    internal fun jitter(i: Int, j: Int): Float {
+        var x = (i * 73856093) xor (j * 19349663)
+        x = x xor (x ushr 13); x *= 0x5bd1e995; x = x xor (x ushr 15)
+        return (x ushr 8) / 16777216f
+    }
+
+    /** [r] divided by its 99.5th percentile, so its brightest are ~1. */
+    private fun normalised(r: FloatArray): FloatArray {
+        val n = max(Air.quantile(r, 0.995f), 1e-6f)
+        return FloatArray(r.size) { r[it] / n }
     }
 
     /** [a] at pixel coordinates (x, y) — pixel centres at whole numbers — clamped at the edges. */
@@ -138,7 +174,12 @@ object GodRays {
         log("god rays (${maps.size})")
         val w = src.width; val h = src.height
         val f = src.image.data.order(ByteOrder.nativeOrder()).asFloatBuffer()
-        val chroma = maps.map { it.look.chroma() }
+        // the rays' colour: the sun's own, warmed a little as sunlight in haze is, kept at luminance 1
+        val chroma = maps.map { m ->
+            val c = m.look.chroma(); val wr = c[0] * WARM[0]; val wg = c[1] * WARM[1]; val wb = c[2] * WARM[2]
+            val l = max(LUM[0] * wr + LUM[1] * wg + LUM[2] * wb, 1e-6f)
+            floatArrayOf(wr / l, wg / l, wb / l)
+        }
         val mist = fogMask?.takeIf { !it.isBlank }; val amount = fogAmount.coerceIn(0f, 1f)   // as the fog reads them
         for (y in 0 until h) {
             val v = (y + 0.5f) / h
@@ -151,12 +192,16 @@ object GodRays {
                 for ((m, map) in maps.withIndex()) {
                     val rn = bilinear(map.r, map.w, map.h, u * map.w - 0.5f, v * map.h - 0.5f)
                     val strength = map.look.godRays
-                    val dim = 1f - SHADE * min(strength, 1f) * haze * (1f - min(rn, 1f))
+                    // only as much as the air in front of this place: near things stay clear, as far as "near things" says
+                    val near = map.look.godNear.coerceIn(0f, 1f)
+                    val front = near + (1f - near) * bilinear(map.air, map.w, map.h, u * map.w - 0.5f, v * map.h - 0.5f)
+                    val hz = haze * front
+                    val shade = SHADE * min(strength, 1f) * hz * (1f - min(rn, 1f))
                     val now = LUM[0] * r + LUM[1] * g + LUM[2] * b
                     val room = (1f - now / (1.1f * map.top + 1e-6f)).coerceIn(0f, 1f).pow(1.5f)
-                    val add = strength * 2f * map.level * rn * haze * room
+                    val add = strength * 2f * map.level * rn * hz * room
                     val c = chroma[m]
-                    r = r * dim + add * c[0]; g = g * dim + add * c[1]; b = b * dim + add * c[2]
+                    r = r * (1f - shade * COOL[0]) + add * c[0]; g = g * (1f - shade * COOL[1]) + add * c[1]; b = b * (1f - shade * COOL[2]) + add * c[2]
                 }
                 f.put(o, r); f.put(o + 1, g); f.put(o + 2, b)
             }
