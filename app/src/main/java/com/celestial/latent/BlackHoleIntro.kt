@@ -72,7 +72,7 @@ import kotlinx.coroutines.launch
  * where light is held; a black hole is the darkroom of the universe.
  *
  * Made in the Celestial Light Puzzle chat (shaders and driver tested there as WebGL 2 on the
- * 15 Ultra); this is the native port of its driver. The three shaders are copied unchanged.
+ * 15 Ultra); this is the native port of its driver. The three shaders are copied unchanged except one line (the sky band, 61e).
  *
  * Shown over the camera, which opens behind it, so the camera never waits. Tap skips it. 3.6 s on
  * the very first launch, 2.2 s after. Safeguards kept from the original: adaptive resolution,
@@ -468,7 +468,7 @@ private class BlackHoleRenderer(
     }
 }
 
-// The three shaders, copied unchanged from the black hole intro's handoff (GLSL ES 3.00).
+// The three shaders, copied from the black hole intro's handoff (GLSL ES 3.00); one change: the sky band squares with x*x (61e).
 private const val VS = """#version 300 es
 in vec2 aPos;
 void main(){ gl_Position = vec4(aPos, 0.0, 1.0); }"""
@@ -529,7 +529,10 @@ vec3 stars(vec3 d){
     vec3 tint = mix(vec3(1.0, 0.74, 0.52), vec3(0.62, 0.78, 1.0), hash(id + 3.3));
     c += b * tint;
   }
-  float band = exp(-pow(dot(d, normalize(vec3(0.35, 1.0, 0.2))) * 2.6, 2.0));
+  // squared as x*x: GLSL pow() is undefined for a negative base, and this is negative on half the sky
+  // (Adreno returned junk there, cutting the haze off in a hard seam; Mali happened to square it)
+  float bx = dot(d, normalize(vec3(0.35, 1.0, 0.2))) * 2.6;
+  float band = exp(-bx * bx);
   float n = fbm(d * 2.4 + 11.0);
   float n2 = fbm(d * 7.0 + 3.0);
   c += band * (0.012 + 0.11 * n * n) * vec3(0.42, 0.5, 0.95);
