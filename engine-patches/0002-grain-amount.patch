@@ -1,0 +1,276 @@
+From da2c77e205fa6cf1bb1477fbfc5bfaff69470af8 Mon Sep 17 00:00:00 2001
+From: Latent <latent@users.noreply.github.com>
+Date: Sat, 10 Oct 2026 03:05:00 +0000
+Subject: [PATCH] Grain amount: blend the film's grain with the clean density
+ (Latent)
+
+Adds spk_params::grain_amount (+ grain_amount_set) and GrainParams.amount.
+After the grain model has run, the developed density becomes
+clean + amount * (grainy - clean): 0 no grain, 1 the model's own, more is
+stronger. Unset or 1 skips the blend entirely, so every render is
+byte-identical. The viewing glare that grain_active also turns on is not
+affected. The film memo is not involved (it is bypassed whenever grain is on)
+and the print memo hashes the film density's content.
+Test: tests/test_grain_amount.cpp (13 checks).
+---
+ .../spektra-core/src/main/cpp/model/grain.h   |   4 +
+ .../src/main/cpp/runtime/stages/filming.cpp   |  14 +-
+ engine/spektra-core/src/main/cpp/spektra.cpp  |   4 +
+ engine/spektra-core/src/main/cpp/spektra.h    |   6 +
+ .../spektra-core/src/main/cpp/spektra_jni.cpp |   8 ++
+ .../src/main/cpp/tests/test_grain_amount.cpp  | 131 ++++++++++++++++++
+ .../com/spectrafilm/engine/SpektraParams.kt   |   2 +
+ 7 files changed, 168 insertions(+), 1 deletion(-)
+ create mode 100644 engine/spektra-core/src/main/cpp/tests/test_grain_amount.cpp
+
+diff --git a/engine/spektra-core/src/main/cpp/model/grain.h b/engine/spektra-core/src/main/cpp/model/grain.h
+index ae84639..467272b 100644
+--- a/engine/spektra-core/src/main/cpp/model/grain.h
++++ b/engine/spektra-core/src/main/cpp/model/grain.h
+@@ -60,6 +60,10 @@ struct GrainParams {
+     // A single global offset is added so independent realisations can be drawn.
+     int seed_base[3] = {0, 1, 2};
+     int seed_offset = 0;
++    // Grain amount (Latent): the developed density is clean + amount * (grainy - clean).
++    // 1 (the default) is the model's own grain and skips the blend entirely (byte-identical);
++    // 0 is no grain at all; above 1 stronger. Not part of spektrafilm's schema.
++    double amount = 1.0;
+ };
+ 
+ // layer_particle_model(density, density_max, n_particles_per_pixel,
+diff --git a/engine/spektra-core/src/main/cpp/runtime/stages/filming.cpp b/engine/spektra-core/src/main/cpp/runtime/stages/filming.cpp
+index 29cd4e4..72631dc 100644
+--- a/engine/spektra-core/src/main/cpp/runtime/stages/filming.cpp
++++ b/engine/spektra-core/src/main/cpp/runtime/stages/filming.cpp
+@@ -633,7 +633,12 @@ void develop(const float* log_raw, int width, int height, const Profile& film,
+     // digest_grain_params when grain_active && stochastic effects are on). The
+     // model operates on the post-coupler density_cmy, mirroring emulsion.py::
+     // develop, which calls apply_grain after apply_density_correction_dir_couplers.
+-    if (params.grain.active) {
++    // Grain amount (Latent): 0 is no grain; anything but 1 keeps the clean density to blend with.
++    const double grain_amount = params.grain.amount;
++    std::vector<float> clean_density;
++    if (params.grain.active && grain_amount > 0.0 && grain_amount != 1.0)
++        clean_density.assign(density_cmy_out, density_cmy_out + static_cast<size_t>(npix) * 3);
++    if (params.grain.active && grain_amount > 0.0) {
+         ScopedStage _t(STG_GRAIN);
+         GrainParams grain = params.grain;
+         // The sublayer path is selected when sublayers_active AND the profile
+@@ -685,6 +690,13 @@ void develop(const float* log_raw, int width, int height, const Profile& film,
+             apply_grain_to_density(density_cmy_out, npix, width, height,
+                                    params.pixel_size_um, grain, density_cmy_out);
+         }
++        // clean + amount * (grainy - clean), place by place (no threads: the same bytes for any count)
++        if (!clean_density.empty()) {
++            const float a = static_cast<float>(grain_amount);
++            const size_t n3 = static_cast<size_t>(npix) * 3;
++            for (size_t i = 0; i < n3; ++i)
++                density_cmy_out[i] = clean_density[i] + a * (density_cmy_out[i] - clean_density[i]);
++        }
+     }
+ }
+ 
+diff --git a/engine/spektra-core/src/main/cpp/spektra.cpp b/engine/spektra-core/src/main/cpp/spektra.cpp
+index ead4bd4..19cfbd0 100644
+--- a/engine/spektra-core/src/main/cpp/spektra.cpp
++++ b/engine/spektra-core/src/main/cpp/spektra.cpp
+@@ -780,6 +780,10 @@ void apply_user_grain(spk::GrainParams& g, const spk_params* p) {
+     g.micro_structure[0] = p->grain_micro_structure[0];
+     g.micro_structure[1] = p->grain_micro_structure[1];
+     g.n_sub_layers = p->grain_n_sub_layers > 0 ? p->grain_n_sub_layers : 1;
++    // Latent's grain amount; unset (or not a number) is the model's own grain.
++    g.amount = (p->grain_amount_set != 0 && p->grain_amount == p->grain_amount)
++                   ? (p->grain_amount > 0.0f ? static_cast<double>(p->grain_amount) : 0.0)
++                   : 1.0;
+ }
+ 
+ // Apply the camera/enlarger optical diffusion-filter params from spk_params onto
+diff --git a/engine/spektra-core/src/main/cpp/spektra.h b/engine/spektra-core/src/main/cpp/spektra.h
+index 45ddcae..817c9c3 100644
+--- a/engine/spektra-core/src/main/cpp/spektra.h
++++ b/engine/spektra-core/src/main/cpp/spektra.h
+@@ -350,6 +350,12 @@ typedef struct {
+     const float* print_exposure_map;
+     int32_t print_exposure_map_w;
+     int32_t print_exposure_map_h;
++    /* Grain amount (Latent): how strong the film's grain is, 0 none … 1 the model's own … more is
++     * stronger. Read only when grain_amount_set is non-zero, so a zeroed struct keeps the model's
++     * own grain; 1 leaves every render byte-identical. The viewing glare that grain_active also
++     * turns on is not affected. */
++    int32_t grain_amount_set;
++    float grain_amount;
+ } spk_params;
+ 
+ /* Initialise `p` to the physical defaults that mirror a default-constructed
+diff --git a/engine/spektra-core/src/main/cpp/spektra_jni.cpp b/engine/spektra-core/src/main/cpp/spektra_jni.cpp
+index 95e9baf..ae5ea75 100644
+--- a/engine/spektra-core/src/main/cpp/spektra_jni.cpp
++++ b/engine/spektra-core/src/main/cpp/spektra_jni.cpp
+@@ -400,6 +400,14 @@ bool marshal_params(JNIEnv* env, jobject params, spk_params* out, ParamStorage*
+             out->grain_blur_dye_clouds_um = call_float(env, grain, "getBlurDyeCloudsUm");
+             read_pair_f(env, grain, "getMicroStructure", out->grain_micro_structure);
+             out->grain_n_sub_layers = call_int(env, grain, "getNSubLayers");
++            // Grain amount (Latent), only when the facade has it.
++            {
++                jclass gc = env->GetObjectClass(grain);
++                jmethodID ga = env->GetMethodID(gc, "getAmount", "()F");
++                env->DeleteLocalRef(gc);
++                if (ga) { out->grain_amount = env->CallFloatMethod(grain, ga); out->grain_amount_set = 1; }
++                else env->ExceptionClear();
++            }
+             env->DeleteLocalRef(grain);
+         }
+         if (halation) {
+diff --git a/engine/spektra-core/src/main/cpp/tests/test_grain_amount.cpp b/engine/spektra-core/src/main/cpp/tests/test_grain_amount.cpp
+new file mode 100644
+index 0000000..384c752
+--- /dev/null
++++ b/engine/spektra-core/src/main/cpp/tests/test_grain_amount.cpp
+@@ -0,0 +1,131 @@
++// Grain amount (spk_params::grain_amount, Latent) — end to end through spk_simulate / spk_simulate_tap.
++//
++//   1. amount unset and amount 1 are byte-identical (final picture and film density);
++//   2. amount 0 gives exactly the film density without grain;
++//   3. amount 0.5 and 1.5 are clean + amount * (grainy - clean), place by place;
++//   4. the grain's spread scales with the amount (0.5 -> half);
++//   5. a warm engine cannot serve a stale picture: 1, 0.5, then 1 again;
++//   6. 1 worker and 8 workers give the same bytes at 0.5;
++//   7. the preview path honours the amount too.
++//
++// Usage: test_grain_amount <asset_dir>
++#include "spektra.h"
++
++#include <cmath>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <string>
++#include <vector>
++
++static int failures = 0;
++static void check(const char* what, bool ok, const std::string& detail = "") {
++    std::printf("[%s] %s%s\n", what, ok ? "PASS" : "FAIL", detail.empty() ? "" : (" — " + detail).c_str());
++    if (!ok) ++failures;
++}
++
++static const int W = 160, H = 100;
++
++static std::vector<float> make_input() {
++    std::vector<float> rgb(static_cast<size_t>(W) * H * 3);
++    for (int y = 0; y < H; ++y)
++        for (int x = 0; x < W; ++x) {
++            float* p = rgb.data() + (static_cast<size_t>(y) * W + x) * 3;
++            p[0] = 0.02f + 0.50f * x / (W - 1);
++            p[1] = 0.18f;
++            p[2] = 0.05f + 0.40f * y / (H - 1);
++        }
++    return rgb;
++}
++
++static void base_params(spk_params* p, bool grain, int set, float amount) {
++    p->film_profile = "kodak_portra_400";
++    p->print_profile = "kodak_portra_endura";
++    spk_default_params(p);
++    p->grain_active = grain ? 1 : 0;
++    p->grain_amount_set = set;
++    p->grain_amount = amount;
++}
++
++static std::vector<float> run(spk_engine* eng, std::vector<float>& in, const spk_params& p, const char* tap = nullptr, bool preview = false) {
++    spk_image img{in.data(), W, H, SPK_CS_PROPHOTO};
++    spk_image out{};
++    spk_status st = tap ? spk_simulate_tap(eng, &img, &p, tap, &out)
++                  : preview ? spk_simulate_preview(eng, &img, &p, &out) : spk_simulate(eng, &img, &p, &out);
++    if (st != SPK_OK) { std::printf("simulate failed: %s\n", spk_status_str(st)); ++failures; return {}; }
++    std::vector<float> v(out.data, out.data + static_cast<size_t>(out.width) * out.height * 3);
++    spk_image_free(&out);
++    return v;
++}
++
++static double max_diff(const std::vector<float>& a, const std::vector<float>& b) {
++    if (a.size() != b.size() || a.empty()) return 1e9;
++    double m = 0;
++    for (size_t i = 0; i < a.size(); ++i) m = std::fmax(m, std::fabs(static_cast<double>(a[i]) - b[i]));
++    return m;
++}
++static bool same(const std::vector<float>& a, const std::vector<float>& b) {
++    return !a.empty() && a.size() == b.size() && std::memcmp(a.data(), b.data(), a.size() * sizeof(float)) == 0;
++}
++static double spread(const std::vector<float>& g, const std::vector<float>& c) {
++    double s = 0; for (size_t i = 0; i < g.size(); ++i) { double d = g[i] - c[i]; s += d * d; }
++    return std::sqrt(s / std::max<size_t>(g.size(), 1));
++}
++static std::string fmt(double v) { char b[48]; std::snprintf(b, sizeof b, "%.3e", v); return b; }
++
++int main(int argc, char** argv) {
++    if (argc < 2) { std::printf("usage: test_grain_amount <asset_dir>\n"); return 2; }
++    spk_engine* eng = nullptr;
++    if (spk_engine_create(argv[1], &eng) != SPK_OK) { std::printf("engine create failed\n"); return 1; }
++    std::vector<float> in = make_input();
++    spk_params p{};
++
++    base_params(&p, true, 0, 0.f);   auto img_unset = run(eng, in, p);  auto d_unset = run(eng, in, p, "film_density_cmy");
++    base_params(&p, true, 1, 1.f);   auto img_one = run(eng, in, p);    auto d_one = run(eng, in, p, "film_density_cmy");
++    check("1. unset == 1 (picture)", same(img_unset, img_one), fmt(max_diff(img_unset, img_one)));
++    check("1. unset == 1 (film density)", same(d_unset, d_one), fmt(max_diff(d_unset, d_one)));
++    check("1. the grain is really there", spread(d_one, run(eng, in, (base_params(&p, false, 0, 0.f), p), "film_density_cmy")) > 1e-3);
++
++    base_params(&p, false, 0, 0.f);  auto d_clean = run(eng, in, p, "film_density_cmy");
++    base_params(&p, true, 1, 0.f);   auto d_zero = run(eng, in, p, "film_density_cmy");
++    check("2. amount 0 == no grain (film density)", same(d_zero, d_clean), fmt(max_diff(d_zero, d_clean)));
++
++    for (float a : {0.5f, 1.5f}) {
++        base_params(&p, true, 1, a); auto d = run(eng, in, p, "film_density_cmy");
++        std::vector<float> want(d_clean.size());
++        for (size_t i = 0; i < want.size(); ++i) want[i] = d_clean[i] + a * (d_one[i] - d_clean[i]);
++        double e = max_diff(d, want);
++        check((std::string("3. amount ") + fmt(a) + " is the blend").c_str(), e < 1e-5, fmt(e));
++        double r = spread(d, d_clean) / spread(d_one, d_clean);
++        check((std::string("4. spread at ") + fmt(a)).c_str(), std::fabs(r - a) < 1e-3, "ratio " + fmt(r));
++    }
++
++    base_params(&p, true, 1, 1.f);   auto a1 = run(eng, in, p);
++    base_params(&p, true, 1, 0.5f);  auto a5 = run(eng, in, p);
++    base_params(&p, true, 1, 1.f);   auto a1b = run(eng, in, p);
++    check("5. 0.5 differs from 1", max_diff(a1, a5) > 1e-4, fmt(max_diff(a1, a5)));
++    check("5. 1 again == 1 (no stale memo)", same(a1, a1b), fmt(max_diff(a1, a1b)));
++    spk_engine_destroy(eng);
++
++    std::vector<float> t[2];
++    const char* counts[2] = {"1", "8"};
++    for (int k = 0; k < 2; ++k) {
++        setenv("SPK_NUM_THREADS", counts[k], 1);
++        spk_engine* e = nullptr; spk_engine_create(argv[1], &e);
++        base_params(&p, true, 1, 0.5f); t[k] = run(e, in, p);
++        spk_engine_destroy(e);
++    }
++    unsetenv("SPK_NUM_THREADS");
++    check("6. 1 vs 8 workers at 0.5", same(t[0], t[1]), fmt(max_diff(t[0], t[1])));
++
++    spk_engine* e = nullptr; spk_engine_create(argv[1], &e);
++    base_params(&p, true, 1, 1.f);  auto pv1 = run(e, in, p, nullptr, true);
++    base_params(&p, true, 1, 0.f);  auto pv0 = run(e, in, p, nullptr, true);
++    base_params(&p, true, 0, 0.f);  auto pvu = run(e, in, p, nullptr, true);
++    check("7. preview: unset == 1", same(pv1, pvu), fmt(max_diff(pv1, pvu)));
++    check("7. preview: 0 differs from 1", max_diff(pv1, pv0) > 1e-4, fmt(max_diff(pv1, pv0)));
++    spk_engine_destroy(e);
++
++    std::printf(failures ? "FAIL: %d check(s)\n" : "all passed\n", failures);
++    return failures ? 1 : 0;
++}
+diff --git a/engine/spektra-core/src/main/kotlin/com/spectrafilm/engine/SpektraParams.kt b/engine/spektra-core/src/main/kotlin/com/spectrafilm/engine/SpektraParams.kt
+index c3136a3..e5ddaaf 100644
+--- a/engine/spektra-core/src/main/kotlin/com/spectrafilm/engine/SpektraParams.kt
++++ b/engine/spektra-core/src/main/kotlin/com/spectrafilm/engine/SpektraParams.kt
+@@ -107,6 +107,8 @@ data class GrainParams(
+     val blurDyeCloudsUm: Float = 1.0f,
+     val microStructure: Pair<Float, Float> = 0.2f to 30f,
+     val nSubLayers: Int = 1,
++    /** How strong the grain is (Latent): 0 none, 1 the film's own, more is stronger. */
++    val amount: Float = 1.0f,
+ )
+ 
+ data class HalationParams(
+-- 
+2.43.0
+

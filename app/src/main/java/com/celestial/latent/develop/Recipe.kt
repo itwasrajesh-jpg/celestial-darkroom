@@ -79,6 +79,8 @@ data class Recipe(
     val grainParticleScaleLayers: List<Float> = listOf(2.5f, 1.0f, 0.5f),
     val grainUniformity: List<Float> = listOf(0.97f, 0.97f, 0.99f),
     val grainDensityMin: List<Float> = listOf(0.07f, 0.08f, 0.12f),
+    /** How strong the grain is, over the whole picture (61c): 0 none, 1 the film's own, 1.5 stronger. */
+    val grainAmount: Float = 1f,
     /** Some presets set a deliberate exposure instead of letting the engine level every shot. */
     val autoExposure: Boolean = true,
     // DIR couplers (chemistry: saturation and edge contrast)
@@ -224,6 +226,7 @@ data class Recipe(
                 agxParticleScaleLayers = triple(grainParticleScaleLayers, 1f),
                 uniformity = triple(grainUniformity, 0.97f),
                 densityMin = triple(grainDensityMin, 0.07f),
+                amount = grainAmount.coerceIn(0f, 1.5f),
             ),
             halation = HalationParams(active = halation, halationAmount = halationAmount, halationSpatialScale = halationScale,
                 scatterAmount = scatterAmount, boostEv = halationBoostEv, protectEv = halationProtectEv,
@@ -270,7 +273,7 @@ data class Recipe(
     /** A one-line summary of the settings that shape the look, for the log. */
     fun summary(): String = "film=$film paper=$paper scanFilm=$scanFilm ev=$exposureEv autoExp=$autoExposure " +
         "contrast=$filmContrast printExp=$printExposure printComp=$printExposureCompensation " +
-        "grain=$grain(${grainSizeUm2}, scale=$grainParticleScale) halation=$halation($halationAmount) " +
+        "grain=$grain(${grainSizeUm2}, scale=$grainParticleScale, amount=$grainAmount) halation=$halation($halationAmount) " +
         "dir=$dir($dirAmount) glare=$glare " +
         "lensFilter=$diffusion${if (diffusion) "/$diffusionFamily/s=$diffusionStrength/scale=$diffusionScale/core=$diffusionCore/halo=$diffusionHalo/bloom=$diffusionBloom" else ""} " +
         "enlargerFilter=$printDiffusion${if (printDiffusion) "/$printDiffusionFamily/s=$printDiffusionStrength" else ""} " +
@@ -289,6 +292,7 @@ data class Recipe(
         put("grainParticleScaleLayers", org.json.JSONArray(grainParticleScaleLayers.map { it.toDouble() }))
         put("grainUniformity", org.json.JSONArray(grainUniformity.map { it.toDouble() }))
         put("grainDensityMin", org.json.JSONArray(grainDensityMin.map { it.toDouble() }))
+        put("grainAmount", grainAmount.toDouble())
         put("autoExposure", autoExposure)
         put("dir", dir); put("dirAmount", dirAmount.toDouble()); put("dirSameLayer", dirSameLayer.toDouble())
         put("dirInterLayer", dirInterLayer.toDouble()); put("dirDiffusionUm", dirDiffusionUm.toDouble())
@@ -346,6 +350,7 @@ data class Recipe(
                 grainParticleScaleLayers = floats(o, "grainParticleScaleLayers", d.grainParticleScaleLayers),
                 grainUniformity = floats(o, "grainUniformity", d.grainUniformity),
                 grainDensityMin = floats(o, "grainDensityMin", d.grainDensityMin),
+                grainAmount = f("grainAmount", d.grainAmount),
                 autoExposure = o.optBoolean("autoExposure", d.autoExposure),
                 dir = o.optBoolean("dir", d.dir), dirAmount = f("dirAmount", d.dirAmount), dirSameLayer = f("dirSameLayer", d.dirSameLayer),
                 dirInterLayer = f("dirInterLayer", d.dirInterLayer), dirDiffusionUm = f("dirDiffusionUm", d.dirDiffusionUm),

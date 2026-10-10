@@ -396,6 +396,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                     onExposure = { e -> set { copy(printExposure = e) } },
                     onFilters = { y, m -> set { copy(yFilterShift = y, mFilterShift = m) } },
                     onGrain = { on, size -> set { copy(grain = on, grainSizeUm2 = size) } },
+                    onGrainAmount = { a -> set { copy(grainAmount = a) } },
                     exposureMap = exposureMap,
                     onExposureMap = { exposureMap = it },
                     softenMap = softenMap,
@@ -766,6 +767,8 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                             }
                             "grain" -> {
                                 Head("GRAIN", recipe.grain) { set { copy(grain = it) } }
+                                // the whole picture's grain, stronger or weaker without changing its look (61c)
+                                S("Amount", recipe.grainAmount * 100f, 0f, 150f, "%.0f%%", recipe.grain) { set { copy(grainAmount = Math.round(it) / 100f) } }
                                 S("Particle size", recipe.grainSizeUm2, 0.05f, 1.2f, "%.2f µm²", recipe.grain) { set { copy(grainSizeUm2 = it) } }
                                 S("Softness", recipe.grainBlur, 0f, 2f, "%.2f", recipe.grain) { set { copy(grainBlur = it) } }
                                 S("Dye-cloud blur", recipe.grainDyeCloudUm, 0f, 4f, "%.2f µm", recipe.grain) { set { copy(grainDyeCloudUm = it) } }

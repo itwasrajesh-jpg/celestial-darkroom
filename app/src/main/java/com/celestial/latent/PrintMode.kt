@@ -134,6 +134,7 @@ private fun TestStripStep(
     onExposure: (Float) -> Unit,
     modifier: Modifier = Modifier,
     onGrain: (Boolean, Float) -> Unit = { _, _ -> },
+    onGrainAmount: (Float) -> Unit = {},
 ) {
     val context = LocalContext.current
     val current by rememberUpdatedState(recipe)
@@ -149,7 +150,7 @@ private fun TestStripStep(
 
     // Develop the strips left to right, each coming up out of the paper as it finishes — again
     // when the grain is changed below (60c), so the strips show it.
-    LaunchedEffect(centre, recipe.grain, recipe.grainSizeUm2) {
+    LaunchedEffect(centre, recipe.grain, recipe.grainSizeUm2, recipe.grainAmount) {
         developed = 0
         for (i in 0 until STRIPS) { images[i] = null; paperCover[i].snapTo(1f) }
         for (i in 0 until STRIPS) {
@@ -283,6 +284,21 @@ private fun TestStripStep(
             )
             Text("coarser", color = LatentColors.TextDim, fontSize = 10.sp)
         }
+        // How much grain, over the whole picture (61c): 0 none … 100% the film's own … 150%.
+        // Widths: "amount" 50 dp under the grain chip, the value 44 dp, the slider the rest.
+        var amountLive by remember(recipe.grainAmount) { mutableStateOf(recipe.grainAmount) }
+        Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("amount", color = if (recipe.grain) LatentColors.Text else LatentColors.TextDim, fontSize = 10.sp, modifier = Modifier.width(50.dp))
+            androidx.compose.material3.Slider(
+                value = amountLive, onValueChange = { amountLive = (it * 20f).roundToInt() / 20f },
+                onValueChangeFinished = { onGrainAmount(amountLive) }, valueRange = 0f..1.5f,
+                enabled = recipe.grain,
+                colors = androidx.compose.material3.SliderDefaults.colors(thumbColor = LatentColors.Amber,
+                    activeTrackColor = LatentColors.Amber, inactiveTrackColor = LatentColors.Surface),
+                modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
+            )
+            Text("${(amountLive * 100f).roundToInt()}%", color = LatentColors.TextDim, fontSize = 10.sp, modifier = Modifier.width(44.dp))
+        }
     }
 }
 
@@ -398,6 +414,8 @@ fun PrintPanel(
     onFilters: (Float, Float) -> Unit,
     /** The film's grain from the test strip (60c): on or off, and its particle size — FULL → GRAIN's own settings. */
     onGrain: (Boolean, Float) -> Unit = { _, _ -> },
+    /** The whole picture's grain amount from the test strip (61c) — FULL → GRAIN → Amount. */
+    onGrainAmount: (Float) -> Unit = {},
     exposureMap: ExposureMap?,
     onExposureMap: (ExposureMap?) -> Unit,
     softenMap: ExposureMap?,
@@ -486,7 +504,7 @@ fun PrintPanel(
             label = "print step",
         ) { s ->
             when (s) {
-                0 -> TestStripStep(recipe, render, onExposure, Modifier.fillMaxSize(), onGrain = onGrain)
+                0 -> TestStripStep(recipe, render, onExposure, Modifier.fillMaxSize(), onGrain = onGrain, onGrainAmount = onGrainAmount)
                 1 -> RingAroundStep(recipe, render, { r, e -> cache.peek(r, e) }, onFilters, Modifier.fillMaxSize())
                 // each painting step shows the print with BOTH masks: it is one print
                 2 -> PaintStep(DODGE_BURN_SPEC, recipe, exposureMap, onExposureMap, depthRanks = depthRanks, selectPicture = selectPicture,
