@@ -51,6 +51,10 @@ Local changes to the engine are kept as patch files in this repository's
 - Film profiles and LUTs from spektrafilm — CC BY-SA 4.0. Any profile derived from
   them (for example a blended emulsion) is also CC BY-SA 4.0 and must not be named
   as a product of Kodak, Fujifilm, Leica or any other manufacturer.
+- **Roboto** (Roboto 3 Classic, Light/Regular/Medium/Bold, `app/src/main/res/font/`) — the app's
+  font, bundled so the app looks the same on every phone. Copyright 2011 The Roboto Project Authors,
+  SIL Open Font License 1.1 (full text in `app/src/main/res/raw/roboto_ofl.txt`). The OFL allows
+  bundling with software under any licence, including GPLv3; the fonts themselves stay OFL.
 
 "Celestial Darkroom" and "Celestial" are names, not licensed code: GPLv3 covers the software,
 not the naming of it.

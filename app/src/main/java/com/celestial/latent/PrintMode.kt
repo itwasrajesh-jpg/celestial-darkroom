@@ -21,6 +21,11 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.wrapContentHeight
+import androidx.compose.foundation.border
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -85,6 +90,9 @@ import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.pow
 import kotlin.math.roundToInt
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.style.TextOverflow
 
 /** The print exposure the engine accepts; the same limits as the darkroom's sliders. */
 private const val MIN_EXPOSURE = PRINT_EXPOSURE_MIN
@@ -330,15 +338,32 @@ private fun StepIndicator(active: Int, available: Int, onSelect: (Int) -> Unit, 
     // a phone has, and the last would be crushed. "STRIP", 12 dp gaps and 1.2 sp letter spacing
     // come to about 331 dp.
     val steps = listOf("STRIP", "COLOUR", "DODGE & BURN", "SOFTEN", "FOG", "LIGHT")
-    // six names are wider than a phone: the row scrolls sideways
-    Row(modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-        steps.forEachIndexed { i, label ->
-            val on = i == active
-            val bar by animateFloatAsState(if (on) 1f else 0f, tween(260), label = "step")
-            Column(Modifier.pointerInput(i) { detectTapGestures(onTap = { onSelect(i) }) }) {
-                Text("${i + 1}  $label", color = when { on -> LatentColors.Amber; i < available -> LatentColors.TextDim; else -> LatentColors.Line },
-                    fontSize = 10.sp, letterSpacing = 1.2.sp, maxLines = 1, softWrap = false)
-                Box(Modifier.padding(top = 4.dp).height(2.dp).width((40 * bar).dp).clip(RoundedCornerShape(1.dp)).background(LatentColors.Amber))
+    // Six names, measured on this phone as it draws them (61d): spread across the width when they fit;
+    // a phone that draws everything larger (the Xiaomi) gets them up to 20% smaller so all six still
+    // show; only beyond that does the row scroll, and then it keeps the chosen step in view.
+    val measurer = rememberTextMeasurer()
+    val density = LocalDensity.current
+    BoxWithConstraints(modifier.fillMaxWidth()) {
+        val base = TextStyle(fontSize = 10.sp, letterSpacing = 1.2.sp)
+        val widths = remember(density) { steps.mapIndexed { i, l -> measurer.measure("${i + 1}  $l", base, maxLines = 1, softWrap = false).size.width.toFloat() } }
+        val gap = with(density) { 8.dp.toPx() }
+        val avail = constraints.maxWidth.toFloat()
+        val k = ((avail - gap * (steps.size - 1)) / widths.sum()).coerceIn(0.8f, 1f)
+        val fits = widths.sum() * k + gap * (steps.size - 1) <= avail
+        val scroll = rememberScrollState()
+        LaunchedEffect(active, fits) {
+            if (!fits) scroll.animateScrollTo((widths.take(active).sum() * k + gap * active - gap * 2).toInt().coerceAtLeast(0))
+        }
+        Row(if (fits) Modifier.fillMaxWidth() else Modifier.fillMaxWidth().horizontalScroll(scroll),
+            horizontalArrangement = if (fits) Arrangement.SpaceBetween else Arrangement.spacedBy(8.dp)) {
+            steps.forEachIndexed { i, label ->
+                val on = i == active
+                val bar by animateFloatAsState(if (on) 1f else 0f, tween(260), label = "step")
+                Column(Modifier.pointerInput(i) { detectTapGestures(onTap = { onSelect(i) }) }) {
+                    Text("${i + 1}  $label", color = when { on -> LatentColors.Amber; i < available -> LatentColors.TextDim; else -> LatentColors.Line },
+                        fontSize = (10f * k).sp, letterSpacing = (1.2f * k).sp, maxLines = 1, softWrap = false)
+                    Box(Modifier.padding(top = 4.dp).height(2.dp).width((40 * bar).dp).clip(RoundedCornerShape(1.dp)).background(LatentColors.Amber))
+                }
             }
         }
     }
@@ -363,6 +388,15 @@ data class Masks(
 
 /** The height of a painting step's tabbed controls: the same for every tab, so the photo never moves. */
 private val CONTROLS_HEIGHT = 196.dp
+
+/**
+ * The share of the phone's height a painting step's photo always gets (61d). Before, the photo had
+ * what the controls left, so on a phone set to draw everything larger (the Xiaomi, about 1.26× the
+ * Pixel) it shrank to a fifth of the screen; now the controls under it scroll instead.
+ */
+private const val PHOTO_SHARE = 0.5f
+/** Room kept for the one-line hint above the photo, when working out the controls' share (dp). */
+private const val HINT_ROOM = 40
 
 /** Test strips are large enough to hold up to a long press showing the whole print. */
 private const val STRIP_EDGE = 560
@@ -2044,7 +2078,15 @@ private fun PaintStep(
             }
         }
     }
-    Column(modifier) {
+    // the hint is one line; "?" opens the rest (61d) — the selection's messages always show in full
+    var hintOpen by remember { mutableStateOf(false) }
+    val screenH = LocalConfiguration.current.screenHeightDp.toFloat()
+    BoxWithConstraints(modifier) {
+    // the photo keeps at least PHOTO_SHARE of the phone's height; what is under it scrolls in the rest
+    val total = if (constraints.hasBoundedHeight) maxHeight.value else screenH * 0.75f
+    val photoMin = minOf(screenH * PHOTO_SHARE, total * 0.8f)
+    val lowerMax = (total - photoMin - HINT_ROOM).coerceAtLeast(96f).dp
+    Column(Modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(top = 10.dp), verticalAlignment = Alignment.CenterVertically) {
             Text(
                 when {
@@ -2061,8 +2103,14 @@ private fun PaintStep(
                     else -> spec.hint
                 },
                 color = if (selOpen) LatentColors.Text else LatentColors.TextDim, fontSize = 11.sp,
-                modifier = Modifier.weight(1f),
+                maxLines = if (selOpen || hintOpen) Int.MAX_VALUE else 1, overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f).pointerInput(Unit) { detectTapGestures(onTap = { hintOpen = !hintOpen }) },
             )
+            if (!selOpen) Text(if (hintOpen) "×" else "?", color = LatentColors.TextDim, fontSize = 11.sp,
+                modifier = Modifier.padding(start = 6.dp).size(22.dp).clip(RoundedCornerShape(999.dp))
+                    .border(1.dp, LatentColors.Line, RoundedCornerShape(999.dp))
+                    .pointerInput(Unit) { detectTapGestures(onTap = { hintOpen = !hintOpen }) }
+                    .wrapContentHeight(Alignment.CenterVertically), textAlign = TextAlign.Center)
             // tap to select: its own panel, on every tab (the outline becomes the depth bar's split)
             if (selectPicture != null && !selOpen) Box(Modifier.padding(start = 8.dp)) { Chip("select", on = false) { openSelect() } }
         }
@@ -2247,6 +2295,8 @@ private fun PaintStep(
                     .pointerInput(Unit) { detectTapGestures(onTap = { Haptics.tick(context); zoom.reset(); detail = null }) }
                     .padding(horizontal = 10.dp, vertical = 4.dp))
         }
+        // Everything under the photo: at most what PHOTO_SHARE leaves, scrolling when it needs more (61d).
+        Column(Modifier.fillMaxWidth().heightIn(max = lowerMax).verticalScroll(rememberScrollState())) {
         // The depth bar, on every tab: this step's side (tap it again for everywhere), the split shown
         // (foreground warm, background cool), and fix — paint on the photo to correct it, on any tab.
         if (!selOpen && (depthRanks != null || depthSplit != null)) Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 6.dp)) {
@@ -2310,6 +2360,8 @@ private fun PaintStep(
                 }
             }
         }
+        }
+    }
     }
 }
 

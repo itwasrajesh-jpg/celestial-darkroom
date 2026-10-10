@@ -974,10 +974,11 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
             }
         }
         if (printSize > 1f) {
+            // one line (61d): on a phone that draws everything larger, two lines here took the photo's room
             Text(
-                "Larger print: the film's grain is made at the new size, so it stays fine. " +
-                    "No new detail is added, and it takes about ${"%.1f".format(printSize * printSize)}× as long.",
-                color = LatentColors.TextDim, fontSize = 10.sp, lineHeight = 14.sp,
+                "Finer grain at the larger size, no new detail; about ${"%.1f".format(printSize * printSize)}× as long.",
+                color = LatentColors.TextDim, fontSize = 10.sp, lineHeight = 14.sp, maxLines = 1,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
                 modifier = Modifier.padding(horizontal = 18.dp).padding(top = 4.dp),
             )
         }
