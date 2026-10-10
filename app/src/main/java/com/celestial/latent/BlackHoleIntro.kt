@@ -72,7 +72,7 @@ import kotlinx.coroutines.launch
  * where light is held; a black hole is the darkroom of the universe.
  *
  * Made in the Celestial Light Puzzle chat (shaders and driver tested there as WebGL 2 on the
- * 15 Ultra); this is the native port of its driver. The three shaders are copied unchanged except one line (the sky band, 61e).
+ * 15 Ultra); this is the native port of its driver. The three shaders are copied unchanged except the sky band (61e) and the noise hash (61f).
  *
  * Shown over the camera, which opens behind it, so the camera never waits. Tap skips it. 3.6 s on
  * the very first launch, 2.2 s after. Safeguards kept from the original: adaptive resolution,
@@ -468,7 +468,7 @@ private class BlackHoleRenderer(
     }
 }
 
-// The three shaders, copied from the black hole intro's handoff (GLSL ES 3.00); one change: the sky band squares with x*x (61e).
+// The three shaders, copied from the black hole intro's handoff (GLSL ES 3.00); changes: the sky band squares with x*x (61e), noise() uses a whole-number hash (61f).
 private const val VS = """#version 300 es
 in vec2 aPos;
 void main(){ gl_Position = vec4(aPos, 0.0, 1.0); }"""
@@ -493,15 +493,24 @@ float hash(vec3 p){
   p *= 17.0;
   return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
 }
+// The noise lattice uses a whole-number hash: the float hash() above amplifies rounding about 250000x, and a GPU that
+// rounds one lattice corner differently in neighbouring cells (Adreno) made the haze jump in straight seams (61f).
+float ihash(ivec3 c){
+  uvec3 q = uvec3(c);
+  uint h = (q.x * 0x8da6b343u) ^ (q.y * 0xd8163841u) ^ (q.z * 0xcb1ab31fu);
+  h ^= h >> 16; h *= 0x7feb352du; h ^= h >> 15; h *= 0x846ca68bu; h ^= h >> 16;
+  return float(h >> 8) * (1.0 / 16777216.0);
+}
 float noise(vec3 x){
-  vec3 i = floor(x);
-  vec3 f = fract(x);
+  vec3 fl = floor(x);
+  ivec3 i = ivec3(fl);
+  vec3 f = x - fl;
   f = f * f * (3.0 - 2.0 * f);
   return mix(
-    mix(mix(hash(i), hash(i + vec3(1.0, 0.0, 0.0)), f.x),
-        mix(hash(i + vec3(0.0, 1.0, 0.0)), hash(i + vec3(1.0, 1.0, 0.0)), f.x), f.y),
-    mix(mix(hash(i + vec3(0.0, 0.0, 1.0)), hash(i + vec3(1.0, 0.0, 1.0)), f.x),
-        mix(hash(i + vec3(0.0, 1.0, 1.0)), hash(i + vec3(1.0, 1.0, 1.0)), f.x), f.y),
+    mix(mix(ihash(i), ihash(i + ivec3(1, 0, 0)), f.x),
+        mix(ihash(i + ivec3(0, 1, 0)), ihash(i + ivec3(1, 1, 0)), f.x), f.y),
+    mix(mix(ihash(i + ivec3(0, 0, 1)), ihash(i + ivec3(1, 0, 1)), f.x),
+        mix(ihash(i + ivec3(0, 1, 1)), ihash(i + ivec3(1, 1, 1)), f.x), f.y),
     f.z);
 }
 float fbm(vec3 p){
