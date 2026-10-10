@@ -72,7 +72,7 @@ import kotlinx.coroutines.launch
  * where light is held; a black hole is the darkroom of the universe.
  *
  * Made in the Celestial Light Puzzle chat (shaders and driver tested there as WebGL 2 on the
- * 15 Ultra); this is the native port of its driver. The three shaders are copied unchanged except the sky band (61e) and the noise hash (61f).
+ * 15 Ultra); this is the native port of its driver. The three shaders are copied unchanged except the sky band (61e), the noise hash (61f) and highp int (61g).
  *
  * Shown over the camera, which opens behind it, so the camera never waits. Tap skips it. 3.6 s on
  * the very first launch, 2.2 s after. Safeguards kept from the original: adaptive resolution,
@@ -468,13 +468,14 @@ private class BlackHoleRenderer(
     }
 }
 
-// The three shaders, copied from the black hole intro's handoff (GLSL ES 3.00); changes: the sky band squares with x*x (61e), noise() uses a whole-number hash (61f).
+// The three shaders, copied from the black hole intro's handoff (GLSL ES 3.00); changes: the sky band squares with x*x (61e), noise() uses a whole-number hash (61f) with highp int (61g).
 private const val VS = """#version 300 es
 in vec2 aPos;
 void main(){ gl_Position = vec4(aPos, 0.0, 1.0); }"""
 
 private const val FS_SCENE = """#version 300 es
 precision highp float;
+precision highp int;   // ints default to mediump in fragment shaders; Adreno runs that as 16-bit, which zeroed ihash (61g)
 uniform vec2 uRes;
 uniform float uTime;
 uniform vec3 uCam;
