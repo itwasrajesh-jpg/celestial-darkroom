@@ -557,7 +557,8 @@ object Develop {
      *   would only get slower.
      */
     fun render(context: Context, source: Source, recipe: Recipe, preview: Boolean, upscale: Float = 1f,
-               exposureMap: ExposureMap? = null, softenMask: ExposureMap? = null, log: (String) -> Unit = {}): Pair<ByteArray, Pair<Int, Int>> {
+               exposureMap: ExposureMap? = null, softenMask: ExposureMap? = null, saturationMap: ExposureMap? = null,
+               log: (String) -> Unit = {}): Pair<ByteArray, Pair<Int, Int>> {
         val t = System.nanoTime()
         Log.i("Latent", "render start: source ${source.width}x${source.height}, preview=$preview, cap=${recipe.previewMaxSize}")
         Log.i("Latent", "recipe: " + sanitised(recipe).summary())
@@ -590,6 +591,12 @@ object Develop {
             engineFor(context).use { engine ->
                 val result = if (preview) engine.simulatePreview(source.image, params) else engine.simulate(source.image, params)
                 result.use { r ->
+                    // painted saturation (62a): on the finished print, before any bars
+                    if (Saturation.wanted(saturationMap)) {
+                        val ts = System.nanoTime()
+                        Saturation.apply(r.data, r.width, r.height, r.colorSpace, saturationMap)
+                        if (!preview) Log.i("Latent", "saturation painted in ${(System.nanoTime() - ts) / 1_000_000} ms")
+                    }
                     // film-still bars, around the full-size print only: previews stay the bare
                     // picture, so painting, zoom and masks all line up with what they draw on
                     if (!preview && source.letterbox) {
@@ -880,7 +887,7 @@ object Develop {
                     framing: Framing = Framing(), fogMask: ExposureMap? = null, fogLook: FogLook = FogLook(),
                     raysMask: ExposureMap? = null, raysLook: RaysLook = RaysLook(),
                     extraLights: List<RaysLook> = emptyList(),
-                    depthSplit: ExposureMap? = null,
+                    depthSplit: ExposureMap? = null, saturationMap: ExposureMap? = null,
                     log: (String) -> Unit = {}): Uri {
         log(if (maxEdge > 0) "decoding…" else "decoding at full size…")
         val pair = pairFirst != null && isRaw
@@ -910,7 +917,7 @@ object Develop {
             fastDiffusionSource(s, recipe, preview = false, softenMask = softenMask, log = log)
             fastPrintDiffusionSource(s, recipe, preview = false, log = log)
             log("developing ${s.width}×${s.height}…")
-            val (bytes, dims) = render(context, s, recipe, preview = false, upscale = upscale, exposureMap = exposureMap, softenMask = softenMask, log = log)
+            val (bytes, dims) = render(context, s, recipe, preview = false, upscale = upscale, exposureMap = exposureMap, softenMask = softenMask, saturationMap = saturationMap, log = log)
             log("saving ${dims.first}×${dims.second}, ${bytes.size / 1024} KB")
             // The fog and light travel inside the file, so the Film Builder can read them exactly
             // later — even if the file is renamed or the original's fog is changed afterwards.

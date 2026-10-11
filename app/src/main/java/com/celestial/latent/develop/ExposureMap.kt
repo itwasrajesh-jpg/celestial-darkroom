@@ -105,6 +105,8 @@ object ExposureMaps {
     const val DEPTH_SPLIT = "depthsplit"
     /** The user's fixes to that split: +1 make foreground, −1 make background, 0 as the depth says. */
     const val DEPTH_FIX = "depthfix"
+    /** Painted saturation (62a): −1 grey … 0 untouched … +1 twice the colour, applied after the film (see Saturation). */
+    const val SATURATION = "saturation"
 
     private fun file(context: Context, photo: Uri, kind: String): File {
         val digest = MessageDigest.getInstance("SHA-1").digest(photo.toString().toByteArray())

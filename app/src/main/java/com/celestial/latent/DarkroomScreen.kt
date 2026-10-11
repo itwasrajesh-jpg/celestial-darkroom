@@ -119,8 +119,10 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
     // the photo's foreground and background (from its depth, with the user's fixes), kept with it
     var depthSplit by remember { mutableStateOf(ExposureMaps.load(context, source, ExposureMaps.DEPTH_SPLIT)) }
     var depthFix by remember { mutableStateOf(ExposureMaps.load(context, source, ExposureMaps.DEPTH_FIX)) }
+    // ...and where its colour is painted richer or paler (62a, DODGE & BURN's saturation)
+    var saturationMap by remember { mutableStateOf(ExposureMaps.load(context, source, ExposureMaps.SATURATION)) }
     /** Everything painted on this photo, as one value, so no render can mix them up. */
-    fun currentMasks() = Masks(exposureMap, softenMap, fogMap, raysMap, raysOn = true)
+    fun currentMasks() = Masks(exposureMap, softenMap, fogMap, raysMap, raysOn = true, saturation = saturationMap)
     // A double exposure: this frame was made onto an earlier one, and is shown and printed as both.
     val pairFirst = remember { if (isRaw) com.celestial.latent.develop.DoubleExposure.firstFor(context, source) else null }
     // How the photo is framed — turned, flipped, straightened. The photo's own, like its masks.
@@ -183,7 +185,8 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                 val target = if (cropFraction < 1f) Develop.centreCrop(src!!, cropFraction).also { cropped = it } else src!!
                 val t0 = System.nanoTime()
                 val map = exposureMap?.let { if (cropFraction < 1f) it.centreCrop(cropFraction) else it }
-                val (bytes, _) = Develop.render(context, target, r, preview = true, exposureMap = map, softenMask = softenMap) { m -> status = m }
+                val sat = saturationMap?.let { if (cropFraction < 1f) it.centreCrop(cropFraction) else it }
+                val (bytes, _) = Develop.render(context, target, r, preview = true, exposureMap = map, softenMask = softenMap, saturationMap = sat) { m -> status = m }
                 lastRenderMs = ((System.nanoTime() - t0) / 1_000_000).toInt()
                 preview = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
                 previewIsPartial = cropFraction < 1f
@@ -211,7 +214,8 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                 fogMask = masks.fog, fogLook = fogLook,
                 raysMask = masks.rays, raysLook = if (masks.raysOn) raysLook else com.celestial.latent.develop.RaysLook(),
                 extraLights = if (masks.raysOn) extraLights else emptyList(), depthSplit = depthSplit) { }
-            val (bytes, _) = Develop.render(context, s0, r.copy(previewMaxSize = edge), preview = true, exposureMap = masks.dodge, softenMask = masks.soften)
+            val (bytes, _) = Develop.render(context, s0, r.copy(previewMaxSize = edge), preview = true, exposureMap = masks.dodge, softenMask = masks.soften,
+                saturationMap = masks.saturation)
             BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
         } catch (t: Throwable) {
             android.util.Log.w("Latent", "print strip failed: ${t.message}"); null
@@ -233,7 +237,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                 extraLights = if (masks.raysOn) extraLights else emptyList(), depthSplit = depthSplit) { }
             Develop.cropRegion(whole, region).use { part ->
                 val (bytes, _) = Develop.render(context, part, r.copy(previewMaxSize = edge), preview = true,
-                    exposureMap = masks.dodge?.crop(region), softenMask = masks.soften)
+                    exposureMap = masks.dodge?.crop(region), softenMask = masks.soften, saturationMap = masks.saturation?.crop(region))
                 BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
             }
         } catch (t: Throwable) {
@@ -278,6 +282,13 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { ExposureMaps.save(context, source, m) }
         if (!printing && src != null) render(fast = false)
     }
+    // The same for the painted saturation (62a).
+    LaunchedEffect(saturationMap) {
+        delay(400)
+        val m = saturationMap
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { ExposureMaps.save(context, source, m, ExposureMaps.SATURATION) }
+        if (!printing && src != null) render(fast = false)
+    }
     // The same for the soften mask. Kept even when all sharp: that is a choice, not "untouched".
     LaunchedEffect(softenMap) {
         delay(400)
@@ -300,6 +311,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
             val srcAspect = if (framing.quarter % 2 == 1) 1f / shown else shown
             exposureMap = exposureMap?.let { com.celestial.latent.develop.Framings.carry(it, framing, next, srcAspect) }
             softenMap = softenMap?.let { com.celestial.latent.develop.Framings.carry(it, framing, next, srcAspect) }
+            saturationMap = saturationMap?.let { com.celestial.latent.develop.Framings.carry(it, framing, next, srcAspect) }
             depthSplit = depthSplit?.let { com.celestial.latent.develop.Framings.carry(it, framing, next, srcAspect) }
             depthFix = depthFix?.let { com.celestial.latent.develop.Framings.carry(it, framing, next, srcAspect) }
         }
@@ -399,6 +411,9 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                     onGrainAmount = { a -> set { copy(grainAmount = a) } },
                     exposureMap = exposureMap,
                     onExposureMap = { exposureMap = it },
+                    saturationMap = saturationMap,
+                    onSaturationMap = { saturationMap = it },
+                    onDirAmount = { a -> set { copy(dirAmount = a, dir = true) } },
                     softenMap = softenMap,
                     onSoftenMap = { softenMap = it },
                     onDiffusionOn = { if (!recipe.diffusion) set { copy(diffusion = true) } },
@@ -995,6 +1010,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
             Text((if (isRaw) "FROM RAW" else "FILM OVER JPEG") + (if (heavy) " · WITH DIFFUSION, SLOW" else "") +
                 (if (printSize > 1f) " · ${com.celestial.latent.develop.DarkroomPrefs.label(printSize)} PRINT" else "") +
                 (if (exposureMap?.isBlank == false) " · DODGED & BURNED" else "") +
+                (if (com.celestial.latent.develop.Saturation.wanted(saturationMap)) " · COLOUR PAINTED" else "") +
                 (if (softenMap != null && recipe.diffusion) " · SOFTENED IN PLACES" else "") +
                 (if (pairFirst != null) " · DOUBLE EXPOSURE" else "") +
                 (if (!framing.isIdentity) " · FRAMED" else "") +
@@ -1012,6 +1028,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                     fullJob = com.celestial.latent.develop.DevelopQueue.submitFull(
                         context, source, isRaw, recipe, upscale = printSize, exposureMap = exposureMap, softenMask = softenMap, pairFirst = pairFirst, framing = framing,
                         fogMask = fogMap, fogLook = fogLook, raysMask = raysMap, raysLook = raysLook, extraLights = extraLights, depthSplit = depthSplit,
+                        saturationMap = saturationMap,
                         onStatus = { m ->
                             status = "full size: $m"
                             if (m.startsWith("failed")) fullError =
