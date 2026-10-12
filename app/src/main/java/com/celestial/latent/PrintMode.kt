@@ -1534,6 +1534,18 @@ private fun FogColourRow(look: FogLook, picking: Boolean, onLook: (FogLook) -> U
             )
             Text("${(amountLive * 100f).roundToInt()}%", color = LatentColors.Text, fontSize = 10.sp)
         }
+        // glowing mist (62b): the mist lit by the placed lights — bright and in their colour towards them,
+        // cool and dim away; 0% is the even veil as before. Needs a light placed on LIGHT and the depth model.
+        var litLive by remember(look.lit) { mutableStateOf(look.lit) }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("lit by lights", color = LatentColors.TextDim, fontSize = 10.sp)
+            androidx.compose.material3.Slider(
+                value = litLive, onValueChange = { litLive = it },
+                onValueChangeFinished = { onLook(look.copy(lit = (litLive * 20f).roundToInt() / 20f)) },
+                valueRange = 0f..1f, colors = sliderColours, modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
+            )
+            Text("${(litLive * 100f).roundToInt()}%", color = LatentColors.Text, fontSize = 10.sp)
+        }
     }
 }
 

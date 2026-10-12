@@ -40,6 +40,8 @@ data class FogLook(
     val air: String = "",
     val airScale: Float = 1f,
     val airKeep: Boolean = false,
+    /** Glowing mist (62b): how much the mist is lit by the placed lights, 0 (one even light, as before) … 1 ([GlowMist]). */
+    val lit: Float = 0f,
 ) {
     /**
      * Which atmosphere this fog is, or null for painted fog. Saves from 60a, before the kind was
@@ -57,7 +59,13 @@ data class FogLook(
      * comma forms were told apart by counting parts, and a fifth field would have made a new
      * colour indistinguishable from an old picked one.
      */
-    fun key(): String = (if (airLevel <= 0f && glow <= 0f)
+    fun key(): String = (if (lit > 0f)
+        // glowing mist (62b): v5 is v4's fields, always all of them, then lit
+        listOf("v5", mode, "%.3f".format(Locale.US, warmth), "%.3f".format(Locale.US, amount),
+            "%.1f".format(Locale.US, hue), "%.3f".format(Locale.US, tint), "%.4f".format(Locale.US, airLevel),
+            "%.3f".format(Locale.US, glow), "%.4f".format(Locale.US, glowU), "%.4f".format(Locale.US, glowV),
+            air, "%.3f".format(Locale.US, airScale), if (airKeep) "1" else "0", "%.2f".format(Locale.US, lit))
+    else if (airLevel <= 0f && glow <= 0f)
         listOf("v2", mode, "%.3f".format(Locale.US, warmth), "%.3f".format(Locale.US, amount),
             "%.1f".format(Locale.US, hue), "%.3f".format(Locale.US, tint))
     else if (air.isNotEmpty())
@@ -78,7 +86,14 @@ data class FogLook(
         fun parse(s: String?): FogLook {
             if (s.isNullOrEmpty()) return FogLook()
             return runCatching {
-                if (s.startsWith("v4|")) {
+                if (s.startsWith("v5|")) {
+                    val p = s.split("|")
+                    FogLook(p[1], p[2].toFloat(),
+                        if (p.size >= 17) listOf(p[14].toFloat(), p[15].toFloat(), p[16].toFloat()) else null,
+                        p[3].toFloat().coerceIn(0f, 1f), p[4].toFloat(), p[5].toFloat().coerceIn(0f, 1f),
+                        p[6].toFloat().coerceAtLeast(0f), p[7].toFloat().coerceIn(0f, 1f), p[8].toFloat(), p[9].toFloat(),
+                        p[10], p[11].toFloat().coerceIn(0.1f, 3f), p[12] == "1", p[13].toFloat().coerceIn(0f, 1f))
+                } else if (s.startsWith("v4|")) {
                     val p = s.split("|")
                     FogLook(p[1], p[2].toFloat(),
                         if (p.size >= 16) listOf(p[13].toFloat(), p[14].toFloat(), p[15].toFloat()) else null,
@@ -355,8 +370,12 @@ object Fog {
         return FloatArray(3) { c[it] * lit }
     }
 
-    /** Fogs [src] in place by the painted thickness [mask] and the colour [look]; an atmosphere's thickness follows fine edges ([FogEdges]). */
-    fun apply(src: Develop.Source, mask: ExposureMap, look: FogLook, log: (String) -> Unit = {}) {
+    /**
+     * Fogs [src] in place by the painted thickness [mask] and the colour [look]; an atmosphere's thickness follows fine edges ([FogEdges]).
+     * With glowing mist ([FogLook.lit]), [lights] and the photo's depth [input], the fog's light comes from the lights ([GlowMist]).
+     */
+    fun apply(src: Develop.Source, mask: ExposureMap, look: FogLook, log: (String) -> Unit = {},
+              lights: List<RaysLook> = emptyList(), input: Sun.Input? = null) {
         if (mask.isBlank) return
         val amount = look.amount.coerceIn(0f, 1f)
         if (amount <= 0f) return
@@ -367,11 +386,21 @@ object Fog {
         val glow = if (look.glow > 0f) ExposureMap(mask.width, mask.height,
             Air.glow(look.glowU, look.glowV, mask.width, mask.height).let { gl -> FloatArray(gl.size) { 1f + (gl[it] - 1f) * look.glow } }) else null
         val f = src.image.data.order(ByteOrder.nativeOrder()).asFloatBuffer()
+        // glowing mist (62b): the fog's light per cell, from the lights in it — worked out on the picture before it is fogged
+        val glowing = lights.filter { GlowMist.wanted(it) }
+        val lit = if (look.lit > 0f && input != null && glowing.isNotEmpty()) runCatching {
+            val t0 = System.currentTimeMillis()
+            GlowMist.field(f, w, h, mask.width, mask.height, input.depth, Depth.SIZE, a, glow?.stops, look.lit,
+                if (look.airKind() != null) look.airScale else 1f, GlowMist.lights(glowing, f, w, h))
+                .also { log("glowing mist (${glowing.size} light${if (glowing.size == 1) "" else "s"}) in ${System.currentTimeMillis() - t0} ms") }
+        }.getOrElse { t -> android.util.Log.e("Latent", "fog: could not light the mist", t); null } else null
         fun fog(x: Int, y: Int, d: Float) {
             if (d <= 0.0005f) return
             val t = exp(-d)
-            val gl = glow?.sample((x + 0.5f) / w, (y + 0.5f) / h) ?: 1f
+            val u = (x + 0.5f) / w; val v = (y + 0.5f) / h
             val o = (y * w + x) * 3
+            if (lit != null) { for (c in 0 until 3) f.put(o + c, f.get(o + c) * t + lit.sample(c, u, v) * (1f - t)); return }
+            val gl = glow?.sample(u, v) ?: 1f
             for (c in 0 until 3) f.put(o + c, f.get(o + c) * t + a[c] * gl * (1f - t))
         }
         if (look.airKind() != null) {
