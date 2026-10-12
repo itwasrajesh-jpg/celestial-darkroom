@@ -109,6 +109,8 @@ object ExposureMaps {
     const val SATURATION = "saturation"
     /** Wet ground (64a): 0 dry … 1 wet … 2 standing water, applied before the film (see Wet). */
     const val WET = "wet"
+    /** Where the rain on the window is wiped away or added (65a, WET → WINDOW): −1 wiped … +1 twice the drops. */
+    const val RAIN = "rain"
 
     private fun file(context: Context, photo: Uri, kind: String): File {
         val digest = MessageDigest.getInstance("SHA-1").digest(photo.toString().toByteArray())

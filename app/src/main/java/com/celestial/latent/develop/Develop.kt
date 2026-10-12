@@ -255,6 +255,13 @@ object Develop {
             .onFailure { t -> Log.e("Latent", "light: could not lay the god rays", t) }
     }
 
+    /** Rain on the window (65a), in front of the lens; a failure is logged and the photo develops without it. */
+    private fun windowRain(src: Source, look: RainLook, wipe: ExposureMap?, log: (String) -> Unit) {
+        if (!Rain.wanted(look)) return
+        runCatching { Rain.apply(src, look, wipe, log) }
+            .onFailure { t -> Log.e("Latent", "rain: could not put the rain on the window", t) }
+    }
+
     /** The painted ground made wet (64a), after the lights on surfaces and before the air; a failure is logged and the photo develops without it. */
     private fun wetGround(src: Source, mask: ExposureMap?, look: WetLook, input: Sun.Input?, log: (String) -> Unit) {
         if (!Wet.wanted(mask)) return
@@ -269,7 +276,7 @@ object Develop {
                    raysMask: ExposureMap? = null, raysLook: RaysLook = RaysLook(),
                    extraLights: List<RaysLook> = emptyList(),
                    depthSplit: ExposureMap? = null,
-                   wetMask: ExposureMap? = null, wetLook: WetLook = WetLook(),
+                   wetMask: ExposureMap? = null, wetLook: WetLook = WetLook(), rainMask: ExposureMap? = null,
                    log: (String) -> Unit = {}): Source {
         // The pristine decode is cached on its own, so changing a pre-engine setting costs a
         // copy rather than a fresh decode of the file (which was over a second every time).
@@ -313,7 +320,9 @@ object Develop {
             if (wet || (listOf(raysLook) + extraLights).any { Sun.wanted(it) || Beams.wanted(it) || GodRays.wanted(it) || (glowing && GlowMist.wanted(it)) })
                 "sun:${Depth.isReady(context)}" else "-",
             // wet ground (64a): where it is painted and how
-            if (wet) "${wetMask!!.width}x${wetMask.height}:${wetMask.stops.contentHashCode()}:${wetLook.key()}" else "-",
+            if (wet) "${wetMask!!.width}x${wetMask.height}:${wetMask.stops.contentHashCode()}:${wetLook.groundKey()}" else "-",
+            // rain on the window (65a): how, and where it is wiped
+            if (Rain.wanted(wetLook.window)) "${wetLook.window.key()}:${rainMask?.stops?.contentHashCode() ?: 0}" else "-",
         ).joinToString("|")
         if (working.preparedFor == prep) return working
         working.frameFrom(pristine, framing)
@@ -339,6 +348,8 @@ object Develop {
         for (light in listOf(raysLook) + extraLights) if (sunIn == null || !Beams.wanted(light)) Rays.apply(working, light, raysMask, fogMask, fogLook.amount, log, split)
         beamsInAir(working, listOf(raysLook) + extraLights, raysMask, fogMask, sunIn, log, split) // and in the air, in front of it all
         godRaysOver(working, godRays, fogMask, fogLook.amount, log)
+        // rain on the window (65a): the glass is the last thing in front of the lens
+        windowRain(working, wetLook.window, rainMask, log)
         lensFilterSource(working, recipe, log)
         fastDiffusionSource(working, recipe, preview = true, softenMask = softenMask, log = log)
         fastPrintDiffusionSource(working, recipe, preview = true, log = log)
@@ -915,7 +926,7 @@ object Develop {
                     raysMask: ExposureMap? = null, raysLook: RaysLook = RaysLook(),
                     extraLights: List<RaysLook> = emptyList(),
                     depthSplit: ExposureMap? = null, saturationMap: ExposureMap? = null, lith: LithLook = LithLook(),
-                    wetMask: ExposureMap? = null, wetLook: WetLook = WetLook(),
+                    wetMask: ExposureMap? = null, wetLook: WetLook = WetLook(), rainMask: ExposureMap? = null,
                     log: (String) -> Unit = {}): Uri {
         log(if (maxEdge > 0) "decoding…" else "decoding at full size…")
         val pair = pairFirst != null && isRaw
@@ -942,6 +953,7 @@ object Develop {
             for (light in listOf(raysLook) + extraLights) if (sunIn == null || !Beams.wanted(light)) Rays.apply(s, light, raysMask, fogMask, fogLook.amount, log, split)
             beamsInAir(s, listOf(raysLook) + extraLights, raysMask, fogMask, sunIn, log, split)
             godRaysOver(s, godRays, fogMask, fogLook.amount, log)
+            windowRain(s, wetLook.window, rainMask, log)
             lensFilterSource(s, recipe, log)
             fastDiffusionSource(s, recipe, preview = false, softenMask = softenMask, log = log)
             fastPrintDiffusionSource(s, recipe, preview = false, log = log)

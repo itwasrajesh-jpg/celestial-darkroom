@@ -392,6 +392,8 @@ data class Masks(
     /** Where the ground is wet (64a, the WET step), and how it shines; applied before the film. */
     val wet: ExposureMap? = null,
     val wetLook: com.celestial.latent.develop.WetLook = com.celestial.latent.develop.WetLook(),
+    /** Where the rain on the window is wiped away or added (65a, WET → WINDOW); how is wetLook.window. */
+    val rain: ExposureMap? = null,
 )
 
 /** The height of a painting step's tabbed controls: the same for every tab, so the photo never moves. */
@@ -480,6 +482,9 @@ fun PrintPanel(
     onWetMap: (ExposureMap?) -> Unit = {},
     wetLook: com.celestial.latent.develop.WetLook = com.celestial.latent.develop.WetLook(),
     onWetLook: (com.celestial.latent.develop.WetLook) -> Unit = {},
+    /** Where the rain on the window is wiped away or added (65a, the WET step's WINDOW chip). */
+    rainMap: ExposureMap? = null,
+    onRainMap: (ExposureMap?) -> Unit = {},
     sampleScene: (Float, Float) -> FloatArray?,
     /** The photo's air for an atmosphere (60a): brightness per mask cell against its brightest light, given the depth. */
     readAir: ((FloatArray, Int, Int) -> com.celestial.latent.develop.Air.Reading?)? = null,
@@ -516,7 +521,7 @@ fun PrintPanel(
     // the selected light as it is being dragged; follows the saved one whenever that changes
     var raysLive by remember(sel) { mutableStateOf(sel.withDefaults()) }
     // all four masks as they stand; each painting step swaps in its own, as it is being painted
-    val all = Masks(exposureMap, softenMap, fogMap, raysMap, raysOn = true, saturation = saturationMap, lith = lithLook, wet = wetMap, wetLook = wetLook)
+    val all = Masks(exposureMap, softenMap, fogMap, raysMap, raysOn = true, saturation = saturationMap, lith = lithLook, wet = wetMap, wetLook = wetLook, rain = rainMap)
     // the photo's depth, for painting by distance in every step — worked out once, when first wanted
     val depthRanks = remember { if (com.celestial.latent.develop.Depth.isReady(context)) DepthRanks() else null }
     // tap to select: the picture read once by the model and shared by every painting step (59a);
@@ -625,8 +630,18 @@ fun PrintPanel(
                     tabs = listOf("WATER" to @Composable {
                         WetWaterRow(wetLook, hasDepth = depthRanks != null || com.celestial.latent.develop.Depth.isReady(context), onLook = onWetLook)
                     }),
+                    // ground | window (65a): rain on the glass is the step's second painting, where it is wiped
+                    layer = PaintLayer(
+                        chips = "GROUND" to "WINDOW",
+                        spec = RAIN_SPEC, map = rainMap, onMap = onRainMap,
+                        startMap = { a -> ExposureMap.blank(a) },
+                        render = { r, e, m, rm -> renderWithMasks(r, e, all.copy(wet = m, rain = rm)) },
+                        renderRegion = renderRegionWithMasks?.let { f -> { r, e, m, rm, reg -> f(r, e, all.copy(wet = m, rain = rm), reg) } },
+                        controls = @Composable { WindowRainRow(wetLook.window) { w -> onWetLook(wetLook.copy(window = w)) } },
+                        tabName = "RAIN",
+                    ),
                     lookState = wetLook, onRestoreLook = { onWetLook(it as com.celestial.latent.develop.WetLook) },
-                    renderBefore = { r, e -> renderWithMasks(r, e, all.copy(wet = null)) },
+                    renderBefore = { r, e -> renderWithMasks(r, e, all.copy(wet = null, rain = null, wetLook = wetLook.copy(window = com.celestial.latent.develop.RainLook()))) },
                     refreshKey = wetLook)
                 7 -> LithStep(recipe, lithLook, onLithLook, render = { r, e, l -> renderWithMasks(r, e, all.copy(lith = l)) }, modifier = Modifier.fillMaxSize())
                 else -> PaintStep(RAYS_SPEC, recipe, raysMap, onRaysMap, depthRanks = depthRanks, selectPicture = selectPicture,
@@ -1034,6 +1049,8 @@ private class PaintLayer(
     val renderRegion: ((Recipe, Int, ExposureMap?, ExposureMap?, Region) -> Bitmap?)? = null,
     /** Controls shown above the brush while this painting is chosen. */
     val controls: (@Composable () -> Unit)? = null,
+    /** In a step with tabs (65a: WET), the controls take the first tab's place, under this name, while this painting is chosen. */
+    val tabName: String? = null,
 )
 
 /**
@@ -1518,6 +1535,28 @@ private val WET_SPEC = PaintSpec(
             val wet = Math.round(m.stops.count { it > 0.05f } * 100f / m.stops.size)
             val water = Math.round(m.stops.count { it > 1.5f } * 100f / m.stops.size)
             "$wet% wet" + if (water > 0) " · $water% standing water" else ""
+        }
+    },
+)
+
+/** Rain on the window's guide (65a): pale glass where it is wiped, the wet blue where drops are added. */
+private val WIPED_TINT = Color(0xFFC9D1D9)
+
+/**
+ * Rain on the window (65a), WET's second painting: −1 the glass wiped clean … 0 as the rain left it …
+ * +1 twice the drops. Paint a face or a sign clear, as a finger on a misted pane would.
+ */
+private val RAIN_SPEC = PaintSpec(
+    hint = "Wipe the glass clean where you want to see through, or paint more rain. Lift your finger to see it develop.",
+    minusLabel = "Wipe", plusLabel = "Rain",
+    min = -1f, max = 1f, overlayFull = 1f,
+    tintPlus = WET_TINT, tintMinus = WIPED_TINT,
+    status = { m, _ ->
+        if (m == null) "drops as the rain left them" else {
+            val wiped = Math.round(m.stops.count { it < -0.05f } * 100f / m.stops.size)
+            val more = Math.round(m.stops.count { it > 0.05f } * 100f / m.stops.size)
+            if (wiped == 0 && more == 0) "drops as the rain left them"
+            else listOfNotNull(if (wiped > 0) "wiped on $wiped%" else null, if (more > 0) "more rain on $more%" else null).joinToString(" · ") + " of the glass"
         }
     },
 )
@@ -2576,7 +2615,7 @@ private fun PaintStep(
             // keeps its size whichever tab is open (a long tab scrolls within the space).
             Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 4.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.Top) {
             Row(horizontalArrangement = Arrangement.spacedBy(18.dp)) {
-                (tabs.map { it.first } + "BRUSH").forEachIndexed { i, name ->
+                (tabs.mapIndexed { i, t -> if (i == 0 && layerOn && layer?.tabName != null) layer.tabName else t.first } + "BRUSH").forEachIndexed { i, name ->
                     val on = i == tab
                     val bar by animateFloatAsState(if (on) 1f else 0f, tween(220), label = "tab")
                     Column(Modifier.pointerInput(i) { detectTapGestures(onTap = { if (i != tab) Haptics.tick(context); tab = i }) }) {
@@ -2597,7 +2636,8 @@ private fun PaintStep(
             }
             Box(Modifier.fillMaxWidth().height(CONTROLS_HEIGHT)) {
                 Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-                    if (tab < tabs.size) tabs[tab].second() else brushRows()
+                    if (tab == 0 && layerOn && layer?.tabName != null) layer.controls?.invoke()
+                    else if (tab < tabs.size) tabs[tab].second() else brushRows()
                 }
             }
         }
@@ -2989,5 +3029,35 @@ private fun LithSlider(name: String, value: Float, enabled: Boolean, onDone: (Fl
             modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
         )
         Text("${(live * 100f).roundToInt()}%", color = LatentColors.TextDim, fontSize = 10.sp, modifier = Modifier.width(44.dp))
+    }
+}
+
+/**
+ * The WET step's RAIN tab while WINDOW is chosen (65a): rain on the glass, off on every photo until
+ * it is chosen here. Drops in focus melts the street behind; street in focus softens the drops.
+ * Widths: three short chips (~40 + 104 + 104 dp) and "new drops"; sliders as WATER's.
+ */
+@Composable
+private fun WindowRainRow(look: com.celestial.latent.develop.RainLook, onLook: (com.celestial.latent.develop.RainLook) -> Unit) {
+    Column(Modifier.fillMaxWidth().padding(bottom = 6.dp)) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 6.dp), horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+            Chip("off", on = !look.on) { onLook(look.copy(on = false)) }
+            Chip("drops in focus", on = look.on && !look.streetFocus) { onLook(look.copy(on = true, streetFocus = false)) }
+            Chip("street in focus", on = look.on && look.streetFocus) { onLook(look.copy(on = true, streetFocus = true)) }
+        }
+        val x = { v: Float -> "×${"%.1f".format(Locale.US, v)}" }
+        WetSlider("how rainy", look.amount, 0.3f..2f, left = "few", right = "many", label = x, enabled = look.on) { onLook(look.copy(amount = it)) }
+        WetSlider("drop size", look.size, 0.6f..1.6f, left = "small", right = "big", label = x, enabled = look.on) { onLook(look.copy(size = it)) }
+        WetSlider("trails", look.trails, 0f..2f, left = "none", right = "many", label = x, enabled = look.on) { onLook(look.copy(trails = it)) }
+        WetSlider(if (look.streetFocus) "drop blur" else "street blur", look.blur, 0.4f..1.6f, left = "less", right = "more", label = x, enabled = look.on) { onLook(look.copy(blur = it)) }
+        Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp), verticalAlignment = Alignment.CenterVertically) {
+            Chip("new drops", on = false, enabled = look.on) { onLook(look.copy(seed = look.seed + 1)) }
+        }
+        Text(
+            if (!look.on) "Off on this photo. Choose drops in focus or street in focus to put rain on the window."
+            else "Paint on BRUSH: Wipe clears the glass (a face, a sign), Rain adds drops. No depth model needed.",
+            color = LatentColors.TextDim, fontSize = 11.sp,
+            modifier = Modifier.padding(horizontal = 18.dp).padding(top = 4.dp),
+        )
     }
 }

@@ -29,9 +29,15 @@ data class WetLook(
     val puddles: Float = 0.25f,
     /** Plants beside the water stand up out of the ground and show in it. */
     val plants: Boolean = true,
+    /** Rain on the window (65a, the WINDOW chip): off until it is turned on. */
+    val window: RainLook = RainLook(),
 ) {
-    fun key(): String = listOf("v1", "%.3f".format(Locale.US, shine), "%.3f".format(Locale.US, reflection),
+    /** What the wet ground reads: a change to the window's rain leaves the ground as it is. */
+    fun groundKey(): String = listOf("v1", "%.3f".format(Locale.US, shine), "%.3f".format(Locale.US, reflection),
         "%.3f".format(Locale.US, puddles), if (plants) "1" else "0").joinToString("|")
+
+    /** All of it, as kept with the photo: the ground's own five fields, then the window's (65a) when it was touched. */
+    fun key(): String = if (window == RainLook()) groundKey() else groundKey() + "|" + window.key()
 
     companion object {
         fun parse(s: String?): WetLook {
@@ -39,7 +45,8 @@ data class WetLook(
             return runCatching {
                 val p = s.split("|")
                 require(p[0] == "v1")
-                WetLook(p[1].toFloat().coerceIn(0f, 1f), p[2].toFloat().coerceIn(1f, 4f), p[3].toFloat().coerceIn(0f, 0.6f), p[4] == "1")
+                WetLook(p[1].toFloat().coerceIn(0f, 1f), p[2].toFloat().coerceIn(1f, 4f), p[3].toFloat().coerceIn(0f, 0.6f), p[4] == "1",
+                    if (p.size > 5) RainLook.parse(p.drop(5).joinToString("|")) else RainLook())
             }.getOrDefault(WetLook())
         }
     }
