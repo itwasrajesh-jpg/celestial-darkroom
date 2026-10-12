@@ -2659,6 +2659,9 @@ private fun AirRow(look: FogLook, ask: AirAsk, hasDepth: Boolean, filmAir: FogLo
                 enabled = hasDepth, colors = sliderColours, modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
             )
             Text("thicker", color = LatentColors.TextDim, fontSize = 10.sp)
+            // how thick, against the proven atmosphere (62c): the number recipes and proofs quote
+            Text("×${"%.1f".format(java.util.Locale.US, scaleLive)}", color = LatentColors.Text, fontSize = 10.sp,
+                modifier = Modifier.padding(start = 6.dp))
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
             Chip("keep the foreground clear", on = ask.keepForeground, enabled = hasDepth && !ask.busy) {
