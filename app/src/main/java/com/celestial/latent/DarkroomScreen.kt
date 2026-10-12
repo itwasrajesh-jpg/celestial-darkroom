@@ -123,8 +123,11 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
     var saturationMap by remember { mutableStateOf(ExposureMaps.load(context, source, ExposureMaps.SATURATION)) }
     // ...and whether it is printed on lith paper, and how (63a, PRINT's LITH step)
     var lithLook by remember { mutableStateOf(com.celestial.latent.develop.LithLooks.load(context, source)) }
+    // ...and where its ground is wet, and how (64a, PRINT's WET step)
+    var wetMap by remember { mutableStateOf(ExposureMaps.load(context, source, ExposureMaps.WET)) }
+    var wetLook by remember { mutableStateOf(com.celestial.latent.develop.WetLooks.load(context, source)) }
     /** Everything painted on this photo, as one value, so no render can mix them up. */
-    fun currentMasks() = Masks(exposureMap, softenMap, fogMap, raysMap, raysOn = true, saturation = saturationMap, lith = lithLook)
+    fun currentMasks() = Masks(exposureMap, softenMap, fogMap, raysMap, raysOn = true, saturation = saturationMap, lith = lithLook, wet = wetMap, wetLook = wetLook)
     // A double exposure: this frame was made onto an earlier one, and is shown and printed as both.
     val pairFirst = remember { if (isRaw) com.celestial.latent.develop.DoubleExposure.firstFor(context, source) else null }
     // How the photo is framed — turned, flipped, straightened. The photo's own, like its masks.
@@ -182,7 +185,8 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                 val iso = Develop.isoOf(context, source)
                 // The working buffer belongs to the cache and is reused; never closed here.
                 src = Develop.openCached(context, source, isRaw, DECODE_EDGE, r, iso, softenMask = softenMap, pairFirst = pairFirst, framing = framing,
-                    fogMask = fogMap, fogLook = fogLook, raysMask = raysMap, raysLook = raysLook, extraLights = extraLights, depthSplit = depthSplit) { m -> status = m }
+                    fogMask = fogMap, fogLook = fogLook, raysMask = raysMap, raysLook = raysLook, extraLights = extraLights, depthSplit = depthSplit,
+                    wetMask = wetMap, wetLook = wetLook) { m -> status = m }
                 // Middle of the frame first on the quick pass: it appears sooner and reads the same.
                 val target = if (cropFraction < 1f) Develop.centreCrop(src!!, cropFraction).also { cropped = it } else src!!
                 val t0 = System.nanoTime()
@@ -217,7 +221,8 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
             val s0 = Develop.openCached(context, source, isRaw, DECODE_EDGE, r, iso, softenMask = masks.soften, pairFirst = pairFirst, framing = framing,
                 fogMask = masks.fog, fogLook = fogLook,
                 raysMask = masks.rays, raysLook = if (masks.raysOn) raysLook else com.celestial.latent.develop.RaysLook(),
-                extraLights = if (masks.raysOn) extraLights else emptyList(), depthSplit = depthSplit) { }
+                extraLights = if (masks.raysOn) extraLights else emptyList(), depthSplit = depthSplit,
+                wetMask = masks.wet, wetLook = masks.wetLook) { }
             val (bytes, _) = Develop.render(context, s0, r.copy(previewMaxSize = edge), preview = true, exposureMap = masks.dodge, softenMask = masks.soften,
                 saturationMap = masks.saturation, lith = masks.lith)
             BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
@@ -238,7 +243,8 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
             val whole = Develop.openCached(context, source, isRaw, DETAIL_EDGE, r, iso, softenMask = masks.soften, pairFirst = pairFirst, framing = framing,
                 fogMask = masks.fog, fogLook = fogLook,
                 raysMask = masks.rays, raysLook = if (masks.raysOn) raysLook else com.celestial.latent.develop.RaysLook(),
-                extraLights = if (masks.raysOn) extraLights else emptyList(), depthSplit = depthSplit) { }
+                extraLights = if (masks.raysOn) extraLights else emptyList(), depthSplit = depthSplit,
+                wetMask = masks.wet, wetLook = masks.wetLook) { }
             Develop.cropRegion(whole, region).use { part ->
                 val (bytes, _) = Develop.render(context, part, r.copy(previewMaxSize = edge), preview = true,
                     exposureMap = masks.dodge?.crop(region), softenMask = masks.soften, saturationMap = masks.saturation?.crop(region),
@@ -294,6 +300,16 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { ExposureMaps.save(context, source, m, ExposureMaps.SATURATION) }
         if (!printing && src != null) render(fast = false)
     }
+    // The wet ground and how it shines (64a), kept with the photo; a change re-develops the preview.
+    LaunchedEffect(wetMap, wetLook) {
+        delay(400)
+        val m = wetMap; val l = wetLook
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            ExposureMaps.save(context, source, m, ExposureMaps.WET)
+            com.celestial.latent.develop.WetLooks.save(context, source, l)
+        }
+        if (!printing && src != null) render(fast = false)
+    }
     // The lith settings (63a), kept with the photo; a change re-develops the preview.
     LaunchedEffect(lithLook) {
         delay(400)
@@ -324,6 +340,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
             exposureMap = exposureMap?.let { com.celestial.latent.develop.Framings.carry(it, framing, next, srcAspect) }
             softenMap = softenMap?.let { com.celestial.latent.develop.Framings.carry(it, framing, next, srcAspect) }
             saturationMap = saturationMap?.let { com.celestial.latent.develop.Framings.carry(it, framing, next, srcAspect) }
+            wetMap = wetMap?.let { com.celestial.latent.develop.Framings.carry(it, framing, next, srcAspect) }
             depthSplit = depthSplit?.let { com.celestial.latent.develop.Framings.carry(it, framing, next, srcAspect) }
             depthFix = depthFix?.let { com.celestial.latent.develop.Framings.carry(it, framing, next, srcAspect) }
         }
@@ -435,6 +452,10 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                     onFogLook = { fogLook = it },
                     lithLook = lithLook,
                     onLithLook = { lithLook = it },
+                    wetMap = wetMap,
+                    onWetMap = { wetMap = it },
+                    wetLook = wetLook,
+                    onWetLook = { wetLook = it },
                     sampleScene = { u, v ->
                         val q = com.celestial.latent.develop.DevelopQueue
                         q.engineLane.acquire()
@@ -1030,6 +1051,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                 (if (!framing.isIdentity) " · FRAMED" else "") +
                 (if (fogMap?.isBlank == false) " · FOGGED" else "") +
                 (if (raysLook.placed) " · LIGHT" else "") +
+                (if (com.celestial.latent.develop.Wet.wanted(wetMap)) " · WET" else "") +
                 (if (lithLook.on) " · LITH" else ""),
                 color = LatentColors.Line, fontSize = 9.sp, letterSpacing = 1.5.sp, lineHeight = 13.sp,
                 // takes the space the button leaves and wraps if it must — it used to crush the button
@@ -1043,7 +1065,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                     fullJob = com.celestial.latent.develop.DevelopQueue.submitFull(
                         context, source, isRaw, recipe, upscale = printSize, exposureMap = exposureMap, softenMask = softenMap, pairFirst = pairFirst, framing = framing,
                         fogMask = fogMap, fogLook = fogLook, raysMask = raysMap, raysLook = raysLook, extraLights = extraLights, depthSplit = depthSplit,
-                        saturationMap = saturationMap, lith = lithLook,
+                        saturationMap = saturationMap, lith = lithLook, wetMask = wetMap, wetLook = wetLook,
                         onStatus = { m ->
                             status = "full size: $m"
                             if (m.startsWith("failed")) fullError =

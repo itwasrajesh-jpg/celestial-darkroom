@@ -193,8 +193,8 @@ object Develop {
      */
     /** The photo's depth, when any light lights surfaces; never stops a develop. */
     private fun sunInput(context: Context, source: Uri, framing: Framing, src: Source, lights: List<RaysLook>, log: (String) -> Unit,
-                         fogLit: Boolean = false): Sun.Input? =
-        if (lights.none { Sun.wanted(it) || Beams.wanted(it) || GodRays.wanted(it) || (fogLit && GlowMist.wanted(it)) }) null else runCatching { Sun.prepare(context, source, framing, src, log) }
+                         fogLit: Boolean = false, wet: Boolean = false): Sun.Input? =
+        if (!wet && lights.none { Sun.wanted(it) || Beams.wanted(it) || GodRays.wanted(it) || (fogLit && GlowMist.wanted(it)) }) null else runCatching { Sun.prepare(context, source, framing, src, log) }
             .getOrElse { t -> Log.e("Latent", "light: could not prepare the depth", t); null }
 
     /**
@@ -255,12 +255,21 @@ object Develop {
             .onFailure { t -> Log.e("Latent", "light: could not lay the god rays", t) }
     }
 
+    /** The painted ground made wet (64a), after the lights on surfaces and before the air; a failure is logged and the photo develops without it. */
+    private fun wetGround(src: Source, mask: ExposureMap?, look: WetLook, input: Sun.Input?, log: (String) -> Unit) {
+        if (!Wet.wanted(mask)) return
+        if (input == null) { log("wet ground needs the depth model (Settings → Depth test)"); return }
+        runCatching { Wet.apply(src, mask!!, look, input, log) }
+            .onFailure { t -> Log.e("Latent", "wet: could not wet the ground", t) }
+    }
+
     fun openCached(context: Context, source: Uri, isRaw: Boolean, maxEdge: Int, recipe: Recipe, iso: Int,
                    softenMask: ExposureMap? = null, pairFirst: Uri? = null, framing: Framing = Framing(),
                    fogMask: ExposureMap? = null, fogLook: FogLook = FogLook(),
                    raysMask: ExposureMap? = null, raysLook: RaysLook = RaysLook(),
                    extraLights: List<RaysLook> = emptyList(),
                    depthSplit: ExposureMap? = null,
+                   wetMask: ExposureMap? = null, wetLook: WetLook = WetLook(),
                    log: (String) -> Unit = {}): Source {
         // The pristine decode is cached on its own, so changing a pre-engine setting costs a
         // copy rather than a fresh decode of the file (which was over a second every time).
@@ -289,6 +298,7 @@ object Develop {
         val split = splitFor(context, source, listOf(raysLook) + extraLights, depthSplit)
         // glowing mist (62b) lights the fog from the lights, so it needs the depth even when no light asks for it
         val glowing = fogMask != null && fogLook.lit > 0f
+        val wet = Wet.wanted(wetMask)
         val prep = listOf(
             framing.key(), isoUsed,
             // only the settings the preparation below reads — grain, halation, saturation, the film and
@@ -300,13 +310,15 @@ object Develop {
             ExtraLights.key(extraLights),
             split?.let { "${it.width}x${it.height}:${it.stops.contentHashCode()}" } ?: "-",
             // light on surfaces needs the depth model: once it is installed, prepare again
-            if ((listOf(raysLook) + extraLights).any { Sun.wanted(it) || Beams.wanted(it) || GodRays.wanted(it) || (glowing && GlowMist.wanted(it)) })
+            if (wet || (listOf(raysLook) + extraLights).any { Sun.wanted(it) || Beams.wanted(it) || GodRays.wanted(it) || (glowing && GlowMist.wanted(it)) })
                 "sun:${Depth.isReady(context)}" else "-",
+            // wet ground (64a): where it is painted and how
+            if (wet) "${wetMask!!.width}x${wetMask.height}:${wetMask.stops.contentHashCode()}:${wetLook.key()}" else "-",
         ).joinToString("|")
         if (working.preparedFor == prep) return working
         working.frameFrom(pristine, framing)
         // the depth comes from the framed picture as it was, before fog or light touch it
-        val sunIn = sunInput(context, source, framing, working, listOf(raysLook) + extraLights, log, glowing)
+        val sunIn = sunInput(context, source, framing, working, listOf(raysLook) + extraLights, log, glowing, wet)
         // the sensor's noise is cleaned first, so fog and light never work with it
         denoiseSource(working, recipe, isoUsed, log)
         sensorNoiseSource(working, recipe, isoUsed, log)
@@ -317,6 +329,8 @@ object Develop {
         // the lights on what they meet first, then the air in front of them (60e): fog laid before the
         // light was lit by it as if it were a wall, in patches where the depth said shadow or sun
         sunOnSurfaces(working, listOf(raysLook) + extraLights, raysMask, sunIn, log, underLights, split)
+        // wet ground (64a): a lamp's pool of light shows in the water; the air comes after, in front of it
+        wetGround(working, wetMask, wetLook, sunIn, log)
         // god rays read the sky's gaps from the lit picture, before the fog veils them (60f)
         val godRays = godRaysFor(working, listOf(raysLook) + extraLights, sunIn, log)
         // the air — it is in front of the lens — then the lens filter
@@ -901,6 +915,7 @@ object Develop {
                     raysMask: ExposureMap? = null, raysLook: RaysLook = RaysLook(),
                     extraLights: List<RaysLook> = emptyList(),
                     depthSplit: ExposureMap? = null, saturationMap: ExposureMap? = null, lith: LithLook = LithLook(),
+                    wetMask: ExposureMap? = null, wetLook: WetLook = WetLook(),
                     log: (String) -> Unit = {}): Uri {
         log(if (maxEdge > 0) "decoding…" else "decoding at full size…")
         val pair = pairFirst != null && isRaw
@@ -913,7 +928,7 @@ object Develop {
             try { opened.blankSized(fw, fh).also { it.frameFrom(opened, framing) } } finally { opened.close() }
         }
         return src.use { s ->
-            val sunIn = sunInput(context, source, framing, s, listOf(raysLook) + extraLights, log, fogMask != null && fogLook.lit > 0f)
+            val sunIn = sunInput(context, source, framing, s, listOf(raysLook) + extraLights, log, fogMask != null && fogLook.lit > 0f, Wet.wanted(wetMask))
             // A pair carries the noise of both frames: clean it for the noisier of the two.
             val iso = if (pair) maxOf(isoOf(context, source), isoOf(context, pairFirst!!)) else isoOf(context, source)
             denoiseSource(s, recipe, iso, log)
@@ -921,6 +936,7 @@ object Develop {
             val split = splitFor(context, source, listOf(raysLook) + extraLights, depthSplit)
             // the lights on surfaces, then the air in front of them (60e), as in the preview
             sunOnSurfaces(s, listOf(raysLook) + extraLights, raysMask, sunIn, log, null, split)
+            wetGround(s, wetMask, wetLook, sunIn, log)
             val godRays = godRaysFor(s, listOf(raysLook) + extraLights, sunIn, log)
             fogMask?.let { Fog.apply(s, it, fogLook, log, listOf(raysLook) + extraLights, sunIn) }
             for (light in listOf(raysLook) + extraLights) if (sunIn == null || !Beams.wanted(light)) Rays.apply(s, light, raysMask, fogMask, fogLook.amount, log, split)

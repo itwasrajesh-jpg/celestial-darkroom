@@ -338,8 +338,8 @@ private fun StepIndicator(active: Int, available: Int, onSelect: (Int) -> Unit, 
     // Four names in one row, measured: "TEST STRIP" and 16 dp gaps would need ~394 dp of the ~357
     // a phone has, and the last would be crushed. "STRIP", 12 dp gaps and 1.2 sp letter spacing
     // come to about 331 dp.
-    val steps = listOf("STRIP", "COLOUR", "DODGE & BURN", "SOFTEN", "FOG", "LIGHT", "LITH")
-    // Seven names since 63a's LITH, measured on this phone as it draws them (61d): spread across the width when they fit;
+    val steps = listOf("STRIP", "COLOUR", "DODGE & BURN", "SOFTEN", "FOG", "LIGHT", "WET", "LITH")
+    // Eight names since 64a's WET (seven since 63a's LITH), measured on this phone as it draws them (61d): spread across the width when they fit;
     // a phone that draws everything larger (the Xiaomi) gets them up to 20% smaller so all six still
     // show; only beyond that does the row scroll, and then it keeps the chosen step in view.
     val measurer = rememberTextMeasurer()
@@ -389,6 +389,9 @@ data class Masks(
     val saturation: ExposureMap? = null,
     /** The print made again on lith paper (63a, the LITH step), last of all. Not painted, but part of the print. */
     val lith: com.celestial.latent.develop.LithLook = com.celestial.latent.develop.LithLook(),
+    /** Where the ground is wet (64a, the WET step), and how it shines; applied before the film. */
+    val wet: ExposureMap? = null,
+    val wetLook: com.celestial.latent.develop.WetLook = com.celestial.latent.develop.WetLook(),
 )
 
 /** The height of a painting step's tabbed controls: the same for every tab, so the photo never moves. */
@@ -472,6 +475,11 @@ fun PrintPanel(
     /** Lith paper and how the print was pulled (63a, the LITH step). */
     lithLook: com.celestial.latent.develop.LithLook = com.celestial.latent.develop.LithLook(),
     onLithLook: (com.celestial.latent.develop.LithLook) -> Unit = {},
+    /** Where the ground is wet and how it shines (64a, the WET step). */
+    wetMap: ExposureMap? = null,
+    onWetMap: (ExposureMap?) -> Unit = {},
+    wetLook: com.celestial.latent.develop.WetLook = com.celestial.latent.develop.WetLook(),
+    onWetLook: (com.celestial.latent.develop.WetLook) -> Unit = {},
     sampleScene: (Float, Float) -> FloatArray?,
     /** The photo's air for an atmosphere (60a): brightness per mask cell against its brightest light, given the depth. */
     readAir: ((FloatArray, Int, Int) -> com.celestial.latent.develop.Air.Reading?)? = null,
@@ -508,7 +516,7 @@ fun PrintPanel(
     // the selected light as it is being dragged; follows the saved one whenever that changes
     var raysLive by remember(sel) { mutableStateOf(sel.withDefaults()) }
     // all four masks as they stand; each painting step swaps in its own, as it is being painted
-    val all = Masks(exposureMap, softenMap, fogMap, raysMap, raysOn = true, saturation = saturationMap, lith = lithLook)
+    val all = Masks(exposureMap, softenMap, fogMap, raysMap, raysOn = true, saturation = saturationMap, lith = lithLook, wet = wetMap, wetLook = wetLook)
     // the photo's depth, for painting by distance in every step — worked out once, when first wanted
     val depthRanks = remember { if (com.celestial.latent.develop.Depth.isReady(context)) DepthRanks() else null }
     // tap to select: the picture read once by the model and shared by every painting step (59a);
@@ -519,6 +527,7 @@ fun PrintPanel(
     var sideDodge by remember { mutableStateOf(0) }
     var sideSoften by remember { mutableStateOf(0) }
     var sideFog by remember { mutableStateOf(0) }
+    var sideWet by remember { mutableStateOf(0) }
     // the fog step's AIR tab: its wish (an atmosphere), carried out by the step itself (60a)
     val airAsk = remember { AirAsk() }
     // the air this photo's film carries, when it was saved from the Film Builder with an atmosphere (60b)
@@ -532,7 +541,7 @@ fun PrintPanel(
 
     Column(modifier.background(LatentColors.Background)) {
         StepIndicator(
-            active = step, available = 7,
+            active = step, available = 8,
             onSelect = { i -> if (i != step) Haptics.tick(context); step = i },
             modifier = Modifier.padding(horizontal = 18.dp).padding(top = 6.dp),
         )
@@ -606,7 +615,20 @@ fun PrintPanel(
                     lookState = fogLook, onRestoreLook = { onFogLook(it as FogLook) }, pickOnTab = 0,
                     // a new colour or amount re-develops the print — it used to wait for the next stroke
                     refreshKey = fogLook)
-                6 -> LithStep(recipe, lithLook, onLithLook, render = { r, e, l -> renderWithMasks(r, e, all.copy(lith = l)) }, modifier = Modifier.fillMaxSize())
+                // wet ground (64a): painted like the fog, with its own shine; it needs the depth for the ground's shape
+                6 -> PaintStep(WET_SPEC, recipe, wetMap, onWetMap, depthRanks = depthRanks, selectPicture = selectPicture,
+                    depthSide = sideWet, onDepthSide = { sideWet = it }, depthSplit = depthSplit, onDepthSplit = onDepthSplit, depthFix = depthFix, onDepthFix = onDepthFix,
+                    renderWith = { r, e, m -> renderWithMasks(r, e, all.copy(wet = m)) },
+                    stepStartMap = { a -> ExposureMap.blank(a) },
+                    modifier = Modifier.fillMaxSize(),
+                    renderRegion = renderRegionWithMasks?.let { f -> { r, e, m, reg -> f(r, e, all.copy(wet = m), reg) } },
+                    tabs = listOf("WATER" to @Composable {
+                        WetWaterRow(wetLook, hasDepth = depthRanks != null || com.celestial.latent.develop.Depth.isReady(context), onLook = onWetLook)
+                    }),
+                    lookState = wetLook, onRestoreLook = { onWetLook(it as com.celestial.latent.develop.WetLook) },
+                    renderBefore = { r, e -> renderWithMasks(r, e, all.copy(wet = null)) },
+                    refreshKey = wetLook)
+                7 -> LithStep(recipe, lithLook, onLithLook, render = { r, e, l -> renderWithMasks(r, e, all.copy(lith = l)) }, modifier = Modifier.fillMaxSize())
                 else -> PaintStep(RAYS_SPEC, recipe, raysMap, onRaysMap, depthRanks = depthRanks, selectPicture = selectPicture,
                     // the light itself lands only on its chosen side; the bar sets the selected light's
                     depthSide = sel.side.roundToInt(), onDepthSide = { setSel(sel.copy(side = it.toFloat())) }, depthSplit = depthSplit, onDepthSplit = onDepthSplit, depthFix = depthFix, onDepthFix = onDepthFix,
@@ -951,6 +973,11 @@ private class PaintSpec(
      */
     val gradientAmount: FloatArray? = null,
     val gradientHint: String = "",
+    /**
+     * The brush's strength chips, named for this step, and how much one pass of each adds (64a:
+     * damp · wet · puddle). Null = gentle · medium · strong, as [STRENGTH] × [passScale].
+     */
+    val strengths: List<Pair<String, Float>>? = null,
 )
 
 private val DODGE_BURN_SPEC = PaintSpec(
@@ -1473,6 +1500,28 @@ private val FOG_SPEC = PaintSpec(
     },
 )
 
+/** Wet ground's guide: a cool blue where it is wet, deeper where water stands. */
+private val WET_TINT = Color(0xFF5B8FD6)
+
+/**
+ * Wet ground (64a): 0 dry … 1 wet … 2 standing water. A pass of "damp" adds 0.4, "wet" 1, "puddle"
+ * 2 (straight to standing water); "Dry" takes it away. Paint only where water would really lie.
+ */
+private val WET_SPEC = PaintSpec(
+    hint = "Paint where the ground is wet — only where rain would lie. Dry paints it away.",
+    minusLabel = "Dry", plusLabel = "Wet",
+    min = 0f, max = 2f, overlayFull = 2f,
+    tintPlus = WET_TINT, tintMinus = WET_TINT,
+    strengths = listOf("damp" to 0.4f, "wet" to 1f, "puddle" to 2f),
+    status = { m, _ ->
+        if (m == null || m.isBlank) "dry" else {
+            val wet = Math.round(m.stops.count { it > 0.05f } * 100f / m.stops.size)
+            val water = Math.round(m.stops.count { it > 1.5f } * 100f / m.stops.size)
+            "$wet% wet" + if (water > 0) " · $water% standing water" else ""
+        }
+    },
+)
+
 /**
  * The fog's colour: Auto (the scene's own brightest light — the safe choice), a preset, your own
  * colour (a hue and how strongly tinted), or light taken from the photo. Cool–warm and amount
@@ -1828,7 +1877,7 @@ private fun PaintStep(
     /** How much a whole stroke adds where it is at full strength: a gradient's own amounts, or a brush pass. */
     fun strokeAmount(): Float {
         val g = spec.gradientAmount
-        return if (gradientTool && g != null) g[strength] else STRENGTH[strength] * spec.passScale
+        return if (gradientTool && g != null) g[strength] else spec.strengths?.getOrNull(strength)?.second ?: (STRENGTH[strength] * spec.passScale)
     }
 
     /**
@@ -2180,7 +2229,7 @@ private fun PaintStep(
             horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically,
         ) {
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                listOf("gentle", "medium", "strong").forEachIndexed { i, label -> Chip(label, on = strength == i) { strength = i } }
+                (spec.strengths?.map { it.first } ?: listOf("gentle", "medium", "strong")).forEachIndexed { i, label -> Chip(label, on = strength == i) { strength = i } }
             }
             Chip("mask", on = showMask) { showMask = !showMask }
         }
@@ -2880,6 +2929,48 @@ private fun LithStep(
         LithSlider("grain", look.grit, look.on) { onLook(look.copy(grit = it)) }
         LithSlider("edges", look.burn, look.on) { onLook(look.copy(burn = it)) }
         LithSlider("glow", look.glow, look.on) { onLook(look.copy(glow = it)) }
+    }
+}
+
+/**
+ * The WET step's WATER tab (64a): how the wet ground shines. Values are shown, as everywhere (62c).
+ * Widths: name 64 dp + slider + value 44 dp; the chip row is one short chip.
+ */
+@Composable
+private fun WetWaterRow(look: com.celestial.latent.develop.WetLook, hasDepth: Boolean, onLook: (com.celestial.latent.develop.WetLook) -> Unit) {
+    Column(Modifier.fillMaxWidth().padding(bottom = 6.dp)) {
+        WetSlider("shine", look.shine, 0f..1f, left = "mirror", right = "streaks", label = { "${(it * 100f).roundToInt()}%" }, enabled = hasDepth) { onLook(look.copy(shine = it)) }
+        WetSlider("reflection", look.reflection, 1f..4f, left = "real", right = "strong", label = { "×${"%.1f".format(Locale.US, it)}" }, enabled = hasDepth) { onLook(look.copy(reflection = it)) }
+        WetSlider("puddles", look.puddles, 0f..0.6f, left = "none", right = "many", label = { "${(it * 100f).roundToInt()}%" }, enabled = hasDepth) { onLook(look.copy(puddles = it)) }
+        Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp), verticalAlignment = Alignment.CenterVertically) {
+            Chip("plants mirrored", on = look.plants, enabled = hasDepth) { onLook(look.copy(plants = !look.plants)) }
+        }
+        Text(
+            if (!hasDepth) "Wet ground needs the depth model: install it from LIGHT → SURFACE."
+            else "Paint on BRUSH: damp, wet, or puddle for standing water. Reflection above ×1 is stronger than real water.",
+            color = if (!hasDepth) LatentColors.Amber else LatentColors.TextDim, fontSize = 11.sp,
+            modifier = Modifier.padding(horizontal = 18.dp).padding(top = 4.dp),
+        )
+    }
+}
+
+/** One of the WET step's sliders: its name, the two ends, its value; the print re-develops on release. */
+@Composable
+private fun WetSlider(name: String, value: Float, range: ClosedFloatingPointRange<Float>, left: String, right: String,
+                      label: (Float) -> String, enabled: Boolean, onDone: (Float) -> Unit) {
+    var live by remember(value) { mutableStateOf(value) }
+    Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(name, color = if (enabled) LatentColors.Text else LatentColors.TextDim, fontSize = 10.sp, modifier = Modifier.width(64.dp))
+        Text(left, color = LatentColors.TextDim, fontSize = 9.sp)
+        androidx.compose.material3.Slider(
+            value = live, onValueChange = { live = it }, onValueChangeFinished = { onDone(live) }, valueRange = range,
+            enabled = enabled,
+            colors = androidx.compose.material3.SliderDefaults.colors(thumbColor = LatentColors.Amber,
+                activeTrackColor = LatentColors.Amber, inactiveTrackColor = LatentColors.Surface),
+            modifier = Modifier.weight(1f).padding(horizontal = 6.dp),
+        )
+        Text(right, color = LatentColors.TextDim, fontSize = 9.sp)
+        Text(label(live), color = LatentColors.Text, fontSize = 10.sp, modifier = Modifier.width(44.dp).padding(start = 6.dp))
     }
 }
 

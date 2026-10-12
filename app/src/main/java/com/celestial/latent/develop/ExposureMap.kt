@@ -107,6 +107,8 @@ object ExposureMaps {
     const val DEPTH_FIX = "depthfix"
     /** Painted saturation (62a): −1 grey … 0 untouched … +1 twice the colour, applied after the film (see Saturation). */
     const val SATURATION = "saturation"
+    /** Wet ground (64a): 0 dry … 1 wet … 2 standing water, applied before the film (see Wet). */
+    const val WET = "wet"
 
     private fun file(context: Context, photo: Uri, kind: String): File {
         val digest = MessageDigest.getInstance("SHA-1").digest(photo.toString().toByteArray())
