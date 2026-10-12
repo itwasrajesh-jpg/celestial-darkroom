@@ -121,8 +121,10 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
     var depthFix by remember { mutableStateOf(ExposureMaps.load(context, source, ExposureMaps.DEPTH_FIX)) }
     // ...and where its colour is painted richer or paler (62a, DODGE & BURN's saturation)
     var saturationMap by remember { mutableStateOf(ExposureMaps.load(context, source, ExposureMaps.SATURATION)) }
+    // ...and whether it is printed on lith paper, and how (63a, PRINT's LITH step)
+    var lithLook by remember { mutableStateOf(com.celestial.latent.develop.LithLooks.load(context, source)) }
     /** Everything painted on this photo, as one value, so no render can mix them up. */
-    fun currentMasks() = Masks(exposureMap, softenMap, fogMap, raysMap, raysOn = true, saturation = saturationMap)
+    fun currentMasks() = Masks(exposureMap, softenMap, fogMap, raysMap, raysOn = true, saturation = saturationMap, lith = lithLook)
     // A double exposure: this frame was made onto an earlier one, and is shown and printed as both.
     val pairFirst = remember { if (isRaw) com.celestial.latent.develop.DoubleExposure.firstFor(context, source) else null }
     // How the photo is framed — turned, flipped, straightened. The photo's own, like its masks.
@@ -186,7 +188,9 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                 val t0 = System.nanoTime()
                 val map = exposureMap?.let { if (cropFraction < 1f) it.centreCrop(cropFraction) else it }
                 val sat = saturationMap?.let { if (cropFraction < 1f) it.centreCrop(cropFraction) else it }
-                val (bytes, _) = Develop.render(context, target, r, preview = true, exposureMap = map, softenMask = softenMap, saturationMap = sat) { m -> status = m }
+                val lithFrame = if (cropFraction < 1f) (1f - cropFraction) / 2f else 0f
+                val (bytes, _) = Develop.render(context, target, r, preview = true, exposureMap = map, softenMask = softenMap, saturationMap = sat,
+                    lith = lithLook, lithFrame = if (lithFrame > 0f) com.celestial.latent.develop.Region(lithFrame, lithFrame, 1f - lithFrame, 1f - lithFrame) else null) { m -> status = m }
                 lastRenderMs = ((System.nanoTime() - t0) / 1_000_000).toInt()
                 preview = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
                 previewIsPartial = cropFraction < 1f
@@ -215,7 +219,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                 raysMask = masks.rays, raysLook = if (masks.raysOn) raysLook else com.celestial.latent.develop.RaysLook(),
                 extraLights = if (masks.raysOn) extraLights else emptyList(), depthSplit = depthSplit) { }
             val (bytes, _) = Develop.render(context, s0, r.copy(previewMaxSize = edge), preview = true, exposureMap = masks.dodge, softenMask = masks.soften,
-                saturationMap = masks.saturation)
+                saturationMap = masks.saturation, lith = masks.lith)
             BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
         } catch (t: Throwable) {
             android.util.Log.w("Latent", "print strip failed: ${t.message}"); null
@@ -237,7 +241,8 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                 extraLights = if (masks.raysOn) extraLights else emptyList(), depthSplit = depthSplit) { }
             Develop.cropRegion(whole, region).use { part ->
                 val (bytes, _) = Develop.render(context, part, r.copy(previewMaxSize = edge), preview = true,
-                    exposureMap = masks.dodge?.crop(region), softenMask = masks.soften, saturationMap = masks.saturation?.crop(region))
+                    exposureMap = masks.dodge?.crop(region), softenMask = masks.soften, saturationMap = masks.saturation?.crop(region),
+                    lith = masks.lith, lithFrame = region)
                 BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
             }
         } catch (t: Throwable) {
@@ -287,6 +292,13 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
         delay(400)
         val m = saturationMap
         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { ExposureMaps.save(context, source, m, ExposureMaps.SATURATION) }
+        if (!printing && src != null) render(fast = false)
+    }
+    // The lith settings (63a), kept with the photo; a change re-develops the preview.
+    LaunchedEffect(lithLook) {
+        delay(400)
+        val l = lithLook
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { com.celestial.latent.develop.LithLooks.save(context, source, l) }
         if (!printing && src != null) render(fast = false)
     }
     // The same for the soften mask. Kept even when all sharp: that is a choice, not "untouched".
@@ -421,6 +433,8 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                     onFogMap = { fogMap = it },
                     fogLook = fogLook,
                     onFogLook = { fogLook = it },
+                    lithLook = lithLook,
+                    onLithLook = { lithLook = it },
                     sampleScene = { u, v ->
                         val q = com.celestial.latent.develop.DevelopQueue
                         q.engineLane.acquire()
@@ -1015,7 +1029,8 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                 (if (pairFirst != null) " · DOUBLE EXPOSURE" else "") +
                 (if (!framing.isIdentity) " · FRAMED" else "") +
                 (if (fogMap?.isBlank == false) " · FOGGED" else "") +
-                (if (raysLook.placed) " · LIGHT" else ""),
+                (if (raysLook.placed) " · LIGHT" else "") +
+                (if (lithLook.on) " · LITH" else ""),
                 color = LatentColors.Line, fontSize = 9.sp, letterSpacing = 1.5.sp, lineHeight = 13.sp,
                 // takes the space the button leaves and wraps if it must — it used to crush the button
                 modifier = Modifier.weight(1f).padding(end = 12.dp))
@@ -1028,7 +1043,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                     fullJob = com.celestial.latent.develop.DevelopQueue.submitFull(
                         context, source, isRaw, recipe, upscale = printSize, exposureMap = exposureMap, softenMask = softenMap, pairFirst = pairFirst, framing = framing,
                         fogMask = fogMap, fogLook = fogLook, raysMask = raysMap, raysLook = raysLook, extraLights = extraLights, depthSplit = depthSplit,
-                        saturationMap = saturationMap,
+                        saturationMap = saturationMap, lith = lithLook,
                         onStatus = { m ->
                             status = "full size: $m"
                             if (m.startsWith("failed")) fullError =

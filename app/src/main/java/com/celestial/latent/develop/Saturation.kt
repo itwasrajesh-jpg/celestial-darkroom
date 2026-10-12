@@ -59,14 +59,14 @@ object Saturation {
      * lands on Oklab's white and a grey stays grey. Rows sum to 1. Worked out in
      * `saturation/scripts/mats.py`.
      */
-    private fun toLms(cs: ColorSpace): FloatArray = when (cs) {
+    internal fun toLms(cs: ColorSpace): FloatArray = when (cs) {
         ColorSpace.ADOBE_RGB -> floatArrayOf(0.5764322615f, 0.3699132211f, 0.0536545174f, 0.2963164739f, 0.5916761266f, 0.1120073994f, 0.1234782548f, 0.2194986958f, 0.6570230494f)
         ColorSpace.PROPHOTO -> floatArrayOf(0.7154424272f, 0.3527978350f, -0.0682402623f, 0.2744081529f, 0.6678051474f, 0.0577866996f, 0.1097832179f, 0.1862005159f, 0.7040162663f)
         ColorSpace.REC2020 -> floatArrayOf(0.6167557872f, 0.3601983994f, 0.0230458134f, 0.2651330640f, 0.6358393641f, 0.0990275718f, 0.1001026342f, 0.2039065194f, 0.6959908464f)
         ColorSpace.ACES2065_1 -> floatArrayOf(0.8904168753f, 0.2608507978f, -0.1512676732f, 0.3445028151f, 0.6776538492f, -0.0221566644f, 0.1350936450f, 0.1902030641f, 0.6747032910f)
         else -> floatArrayOf(0.4122214708f, 0.5363325363f, 0.0514459929f, 0.2119034982f, 0.6806995451f, 0.1073969566f, 0.0883024619f, 0.2817188376f, 0.6299787005f)
     }
-    private fun fromLms(cs: ColorSpace): FloatArray = when (cs) {
+    internal fun fromLms(cs: ColorSpace): FloatArray = when (cs) {
         ColorSpace.ADOBE_RGB -> floatArrayOf(2.5540368479f, -1.6219762026f, 0.0679393546f, -1.2684380041f, 2.6097574007f, -0.3413193963f, -0.0562347472f, -0.5670418341f, 1.6232765812f)
         ColorSpace.PROPHOTO -> floatArrayOf(1.7383710577f, -0.9879649045f, 0.2495938467f, -0.7070394029f, 1.9343467487f, -0.2273073456f, -0.0840788343f, -0.3575405970f, 1.4416194312f)
         ColorSpace.REC2020 -> floatArrayOf(2.1399067357f, -1.2463895088f, 0.1064827730f, -0.8847358625f, 2.1632309821f, -0.2784951194f, -0.0485737580f, -0.4545031429f, 1.5030769009f)

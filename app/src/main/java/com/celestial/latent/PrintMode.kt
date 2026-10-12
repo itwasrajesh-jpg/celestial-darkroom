@@ -338,8 +338,8 @@ private fun StepIndicator(active: Int, available: Int, onSelect: (Int) -> Unit, 
     // Four names in one row, measured: "TEST STRIP" and 16 dp gaps would need ~394 dp of the ~357
     // a phone has, and the last would be crushed. "STRIP", 12 dp gaps and 1.2 sp letter spacing
     // come to about 331 dp.
-    val steps = listOf("STRIP", "COLOUR", "DODGE & BURN", "SOFTEN", "FOG", "LIGHT")
-    // Six names, measured on this phone as it draws them (61d): spread across the width when they fit;
+    val steps = listOf("STRIP", "COLOUR", "DODGE & BURN", "SOFTEN", "FOG", "LIGHT", "LITH")
+    // Seven names since 63a's LITH, measured on this phone as it draws them (61d): spread across the width when they fit;
     // a phone that draws everything larger (the Xiaomi) gets them up to 20% smaller so all six still
     // show; only beyond that does the row scroll, and then it keeps the chosen step in view.
     val measurer = rememberTextMeasurer()
@@ -387,6 +387,8 @@ data class Masks(
     val raysOn: Boolean = false,
     /** Colour painted richer or paler (62a, DODGE & BURN's saturation), applied after the film. */
     val saturation: ExposureMap? = null,
+    /** The print made again on lith paper (63a, the LITH step), last of all. Not painted, but part of the print. */
+    val lith: com.celestial.latent.develop.LithLook = com.celestial.latent.develop.LithLook(),
 )
 
 /** The height of a painting step's tabbed controls: the same for every tab, so the photo never moves. */
@@ -467,6 +469,9 @@ fun PrintPanel(
     onFogMap: (ExposureMap?) -> Unit,
     fogLook: FogLook,
     onFogLook: (FogLook) -> Unit,
+    /** Lith paper and how the print was pulled (63a, the LITH step). */
+    lithLook: com.celestial.latent.develop.LithLook = com.celestial.latent.develop.LithLook(),
+    onLithLook: (com.celestial.latent.develop.LithLook) -> Unit = {},
     sampleScene: (Float, Float) -> FloatArray?,
     /** The photo's air for an atmosphere (60a): brightness per mask cell against its brightest light, given the depth. */
     readAir: ((FloatArray, Int, Int) -> com.celestial.latent.develop.Air.Reading?)? = null,
@@ -503,7 +508,7 @@ fun PrintPanel(
     // the selected light as it is being dragged; follows the saved one whenever that changes
     var raysLive by remember(sel) { mutableStateOf(sel.withDefaults()) }
     // all four masks as they stand; each painting step swaps in its own, as it is being painted
-    val all = Masks(exposureMap, softenMap, fogMap, raysMap, raysOn = true, saturation = saturationMap)
+    val all = Masks(exposureMap, softenMap, fogMap, raysMap, raysOn = true, saturation = saturationMap, lith = lithLook)
     // the photo's depth, for painting by distance in every step — worked out once, when first wanted
     val depthRanks = remember { if (com.celestial.latent.develop.Depth.isReady(context)) DepthRanks() else null }
     // tap to select: the picture read once by the model and shared by every painting step (59a);
@@ -527,7 +532,7 @@ fun PrintPanel(
 
     Column(modifier.background(LatentColors.Background)) {
         StepIndicator(
-            active = step, available = 6,
+            active = step, available = 7,
             onSelect = { i -> if (i != step) Haptics.tick(context); step = i },
             modifier = Modifier.padding(horizontal = 18.dp).padding(top = 6.dp),
         )
@@ -601,6 +606,7 @@ fun PrintPanel(
                     lookState = fogLook, onRestoreLook = { onFogLook(it as FogLook) }, pickOnTab = 0,
                     // a new colour or amount re-develops the print — it used to wait for the next stroke
                     refreshKey = fogLook)
+                6 -> LithStep(recipe, lithLook, onLithLook, render = { r, e, l -> renderWithMasks(r, e, all.copy(lith = l)) }, modifier = Modifier.fillMaxSize())
                 else -> PaintStep(RAYS_SPEC, recipe, raysMap, onRaysMap, depthRanks = depthRanks, selectPicture = selectPicture,
                     // the light itself lands only on its chosen side; the bar sets the selected light's
                     depthSide = sel.side.roundToInt(), onDepthSide = { setSel(sel.copy(side = it.toFloat())) }, depthSplit = depthSplit, onDepthSplit = onDepthSplit, depthFix = depthFix, onDepthFix = onDepthFix,
@@ -2726,4 +2732,171 @@ private fun Chip(label: String, on: Boolean, enabled: Boolean = true, onTap: () 
             .pointerInput(label, on, enabled) { detectTapGestures(onTap = { if (enabled) { Haptics.tick(context); onTap() } }) }
             .padding(horizontal = 10.dp, vertical = 5.dp),
     )
+}
+
+// ---------------------------------------------------------------------------------------------
+// Step seven (63a): lith. The finished print made again on lith paper, last of all.
+// ---------------------------------------------------------------------------------------------
+
+/** The five pulls on the lith strip: early (soft, warm) … late (the shadows raced to black). */
+private val PULLS = listOf(0.1f, 0.3f, 0.5f, 0.7f, 0.9f)
+private val PULL_NAMES = listOf("early", "", "middle", "", "late")
+
+/**
+ * Step seven, lith: a pull strip made like the test strip — the same print pulled from the
+ * developer at five moments, side by side — then the paper, the grain, the burned-in edges and the
+ * highlights' glow. Off by default; with no paper chosen the strip shows what tan paper would do,
+ * and tapping a pull prints on it.
+ *
+ * @param render develops the whole print (every painting included) with a lith look. Blocks.
+ */
+@Composable
+private fun LithStep(
+    recipe: Recipe,
+    look: com.celestial.latent.develop.LithLook,
+    onLook: (com.celestial.latent.develop.LithLook) -> Unit,
+    render: (Recipe, Int, com.celestial.latent.develop.LithLook) -> Bitmap?,
+    modifier: Modifier = Modifier,
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val current by rememberUpdatedState(recipe)
+    // what the strip shows: the chosen paper, or tan before one is chosen
+    val shown = if (look.on) look else look.copy(paper = "tan")
+    val images = remember { mutableStateListOf<Bitmap?>().apply { repeat(STRIPS) { add(null) } } }
+    val paperCover = remember { List(STRIPS) { Animatable(1f) } }
+    val selected = PULLS.indices.minByOrNull { abs(PULLS[it] - look.snatch) } ?: 2
+    var holding by remember { mutableStateOf<Int?>(null) }
+    var developed by remember { mutableStateOf(0) }
+    val measurer = rememberTextMeasurer()
+
+    // Pull the strips left to right — again when anything but the pull itself changes.
+    LaunchedEffect(shown.copy(snatch = 0f, border = false), recipe) {
+        developed = 0
+        for (i in 0 until STRIPS) { images[i] = null; paperCover[i].snapTo(1f) }
+        for (i in 0 until STRIPS) {
+            val bmp = withContext(Dispatchers.Default) { render(current, STRIP_EDGE, shown.copy(snatch = PULLS[i])) }
+            if (!isActive) return@LaunchedEffect
+            images[i] = bmp
+            developed = i + 1
+            launch { paperCover[i].animateTo(0f, tween(900, easing = FastOutSlowInEasing)) }
+        }
+    }
+
+    val outline by animateFloatAsState(if (look.on && images[selected] != null) 1f else 0f, spring(stiffness = Spring.StiffnessMediumLow), label = "outline")
+    val holdAlpha by animateFloatAsState(if (holding != null) 1f else 0f, tween(220), label = "hold")
+    val pw = com.celestial.latent.develop.Lith.paperWhite(shown.paper)
+    val paperColour = Color(pw[0] / 255f, pw[1] / 255f, pw[2] / 255f)
+
+    Column(modifier) {
+        Text(
+            if (look.on) "Tap the pull that looks right. Hold one to see the whole print."
+            else "Lith paper, pulled from the developer at five moments. Tap one to print on it.",
+            color = LatentColors.TextDim, fontSize = 11.sp, maxLines = 2,
+            modifier = Modifier.padding(horizontal = 18.dp).padding(top = 10.dp),
+        )
+        Box(Modifier.fillMaxWidth().weight(1f).padding(horizontal = 18.dp, vertical = 12.dp)) {
+            val first = images.firstOrNull { it != null }
+            val aspect = first?.let { it.width.toFloat() / it.height } ?: (3f / 4f)
+            Canvas(
+                Modifier.fillMaxSize().pointerInput(aspect, look) {
+                    val labelPx = LABEL_SPACE.toPx()
+                    detectTapGestures(
+                        onPress = { pos ->
+                            val i = stripAt(pos, size.width.toFloat(), size.height.toFloat() - labelPx, aspect) ?: return@detectTapGestures
+                            val show = scope.launch { delay(320); if (images[i] != null) { holding = i; Haptics.tick(context) } }
+                            tryAwaitRelease()
+                            show.cancel(); holding = null
+                        },
+                        onLongPress = { },   // a hold is for looking; it must not also select
+                        onTap = { pos ->
+                            val i = stripAt(pos, size.width.toFloat(), size.height.toFloat() - labelPx, aspect) ?: return@detectTapGestures
+                            if (images[i] == null) return@detectTapGestures
+                            Haptics.tick(context)
+                            onLook(shown.copy(snatch = PULLS[i]))
+                        },
+                    )
+                },
+            ) {
+                val r = printRect(size.width, size.height - LABEL_SPACE.toPx(), aspect)
+                // the sheet: with the border on, the margin of bare lith paper the print will have
+                val border = if (shown.border) 0.045f * maxOf(r.width, r.height) else 6.dp.toPx()
+                val sheet = if (shown.border) paperColour else PAPER
+                drawRect(Color.Black.copy(alpha = 0.45f), Offset(r.left - border + 4.dp.toPx(), r.top - border + 8.dp.toPx()), Size(r.width + 2 * border, r.height + 2 * border))
+                drawRect(sheet, Offset(r.left - border, r.top - border), Size(r.width + 2 * border, r.height + 2 * border))
+                val w = r.width / STRIPS
+                for (i in 0 until STRIPS) {
+                    val x = r.left + i * w
+                    val img = images[i]
+                    if (img != null) {
+                        val sx = (img.width * i / STRIPS)
+                        val sw = (img.width / STRIPS).coerceAtLeast(1)
+                        drawImage(
+                            img.asImageBitmap(),
+                            srcOffset = IntOffset(sx, 0), srcSize = IntSize(sw, img.height),
+                            dstOffset = IntOffset(x.toInt(), r.top.toInt()), dstSize = IntSize((w + 1).toInt(), r.height.toInt()),
+                        )
+                    }
+                    val cover = paperCover[i].value
+                    if (cover > 0.001f) drawRect(sheet.copy(alpha = cover), Offset(x, r.top), Size(w + 1, r.height))
+                    if (i > 0) drawLine(Color.Black.copy(alpha = 0.35f), Offset(x, r.top), Offset(x, r.top + r.height), 1.dp.toPx())
+                    if (PULL_NAMES[i].isNotEmpty()) {
+                        val label = measurer.measure(PULL_NAMES[i], TextStyle(
+                            color = if (look.on && i == selected && img != null) LatentColors.Amber else LatentColors.TextDim, fontSize = 11.sp))
+                        drawText(label, topLeft = Offset(x + (w - label.size.width) / 2f, r.top + r.height + border + 8.dp.toPx()))
+                    }
+                }
+                if (outline > 0f) {
+                    val sx = r.left + selected * w
+                    drawRect(LatentColors.Amber.copy(alpha = outline), Offset(sx + 1.dp.toPx(), r.top + 1.dp.toPx()),
+                        Size(w - 2.dp.toPx(), r.height - 2.dp.toPx()), style = Stroke(2.dp.toPx()))
+                }
+                val h = holding
+                if (h != null && holdAlpha > 0f) {
+                    images[h]?.let { full ->
+                        drawImage(full.asImageBitmap(), dstOffset = IntOffset(r.left.toInt(), r.top.toInt()),
+                            dstSize = IntSize(r.width.toInt(), r.height.toInt()), alpha = holdAlpha)
+                    }
+                }
+            }
+        }
+        Text(
+            when {
+                developed < STRIPS -> "pulling strip ${developed + 1} of $STRIPS…"
+                look.on -> "on ${look.paper} paper · pulled at ${(look.snatch * 100f).roundToInt()}%, early 0 … late 100"
+                else -> "an ordinary print · no lith"
+            },
+            color = LatentColors.Text, fontSize = 12.sp,
+            modifier = Modifier.padding(horizontal = 18.dp).padding(bottom = 6.dp),
+        )
+        // The paper, then the border. Widths: off 42, tan 44, salmon 64, olive 54, border 62 dp, 6 dp gaps.
+        Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+            Chip("off", on = !look.on) { onLook(look.copy(paper = "")) }
+            for (p in listOf("tan", "salmon", "olive")) Chip(p, on = look.paper == p) { onLook(look.copy(paper = p)) }
+            Spacer(Modifier.weight(1f))
+            Chip("border", on = look.on && look.border, enabled = look.on) { onLook(look.copy(border = !look.border)) }
+        }
+        LithSlider("grain", look.grit, look.on) { onLook(look.copy(grit = it)) }
+        LithSlider("edges", look.burn, look.on) { onLook(look.copy(burn = it)) }
+        LithSlider("glow", look.glow, look.on) { onLook(look.copy(glow = it)) }
+    }
+}
+
+/** One of the lith step's sliders: its name (50 dp), 0 … 100% in 5% steps, its value (44 dp). */
+@Composable
+private fun LithSlider(name: String, value: Float, enabled: Boolean, onDone: (Float) -> Unit) {
+    var live by remember(value) { mutableStateOf(value) }
+    Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(name, color = if (enabled) LatentColors.Text else LatentColors.TextDim, fontSize = 10.sp, modifier = Modifier.width(50.dp))
+        androidx.compose.material3.Slider(
+            value = live, onValueChange = { live = (it * 20f).roundToInt() / 20f },
+            onValueChangeFinished = { onDone(live) }, valueRange = 0f..1f,
+            enabled = enabled,
+            colors = androidx.compose.material3.SliderDefaults.colors(thumbColor = LatentColors.Amber,
+                activeTrackColor = LatentColors.Amber, inactiveTrackColor = LatentColors.Surface),
+            modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
+        )
+        Text("${(live * 100f).roundToInt()}%", color = LatentColors.TextDim, fontSize = 10.sp, modifier = Modifier.width(44.dp))
+    }
 }

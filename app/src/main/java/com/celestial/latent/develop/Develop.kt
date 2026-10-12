@@ -562,6 +562,7 @@ object Develop {
      */
     fun render(context: Context, source: Source, recipe: Recipe, preview: Boolean, upscale: Float = 1f,
                exposureMap: ExposureMap? = null, softenMask: ExposureMap? = null, saturationMap: ExposureMap? = null,
+               lith: LithLook = LithLook(), lithFrame: Region? = null,
                log: (String) -> Unit = {}): Pair<ByteArray, Pair<Int, Int>> {
         val t = System.nanoTime()
         Log.i("Latent", "render start: source ${source.width}x${source.height}, preview=$preview, cap=${recipe.previewMaxSize}")
@@ -601,12 +602,20 @@ object Develop {
                         Saturation.apply(r.data, r.width, r.height, r.colorSpace, saturationMap)
                         if (!preview) Log.i("Latent", "saturation painted in ${(System.nanoTime() - ts) / 1_000_000} ms")
                     }
-                    // film-still bars, around the full-size print only: previews stay the bare
-                    // picture, so painting, zoom and masks all line up with what they draw on
+                    // lith (63a): the finished print made again on lith paper, last of all.
+                    // [lithFrame]: which part of the whole picture this is (a zoom, the quick centre pass)
+                    if (lith.on) {
+                        val tl = System.nanoTime()
+                        Lith.apply(r.data, r.width, r.height, r.colorSpace, lith, lithFrame)
+                        if (!preview) Log.i("Latent", "lith (${lith.paper}, pulled ${lith.snatch}) in ${(System.nanoTime() - tl) / 1_000_000} ms")
+                    }
+                    // film-still bars and the lith paper's border, around the full-size print only:
+                    // previews stay the bare picture, so painting, zoom and masks all line up with what they draw on
+                    val (bd, bw, bh) = if (!preview) Lith.border(r.data, r.width, r.height, r.colorSpace, lith) else Triple(r.data, r.width, r.height)
                     if (!preview && source.letterbox) {
-                        val (data, w, h) = letterbox(r.data, r.width, r.height)
+                        val (data, w, h) = letterbox(bd, bw, bh)
                         dims = w to h; toJpeg(data, w, h, r.colorSpace, ourSpace)
-                    } else { dims = r.width to r.height; toJpeg(r.data, r.width, r.height, r.colorSpace, ourSpace) }
+                    } else { dims = bw to bh; toJpeg(bd, bw, bh, r.colorSpace, ourSpace) }
                 }
             }
         } finally {
@@ -891,7 +900,7 @@ object Develop {
                     framing: Framing = Framing(), fogMask: ExposureMap? = null, fogLook: FogLook = FogLook(),
                     raysMask: ExposureMap? = null, raysLook: RaysLook = RaysLook(),
                     extraLights: List<RaysLook> = emptyList(),
-                    depthSplit: ExposureMap? = null, saturationMap: ExposureMap? = null,
+                    depthSplit: ExposureMap? = null, saturationMap: ExposureMap? = null, lith: LithLook = LithLook(),
                     log: (String) -> Unit = {}): Uri {
         log(if (maxEdge > 0) "decoding…" else "decoding at full size…")
         val pair = pairFirst != null && isRaw
@@ -921,7 +930,7 @@ object Develop {
             fastDiffusionSource(s, recipe, preview = false, softenMask = softenMask, log = log)
             fastPrintDiffusionSource(s, recipe, preview = false, log = log)
             log("developing ${s.width}×${s.height}…")
-            val (bytes, dims) = render(context, s, recipe, preview = false, upscale = upscale, exposureMap = exposureMap, softenMask = softenMask, saturationMap = saturationMap, log = log)
+            val (bytes, dims) = render(context, s, recipe, preview = false, upscale = upscale, exposureMap = exposureMap, softenMask = softenMask, saturationMap = saturationMap, lith = lith, log = log)
             log("saving ${dims.first}×${dims.second}, ${bytes.size / 1024} KB")
             // The fog and light travel inside the file, so the Film Builder can read them exactly
             // later — even if the file is renamed or the original's fog is changed afterwards.
