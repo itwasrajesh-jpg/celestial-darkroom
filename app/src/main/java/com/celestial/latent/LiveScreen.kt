@@ -15,7 +15,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -97,8 +97,12 @@ fun LiveScreen(edit: LiveEdit, onClose: () -> Unit) {
                 Text("Close", color = LatentColors.Text, fontSize = 13.sp,
                     modifier = Modifier.clip(RoundedCornerShape(999.dp)).combinedClickable(onClick = { onClose() }).padding(horizontal = 12.dp, vertical = 6.dp))
             }
+            // the clip and the controls scroll together: on a phone that draws everything larger (the
+            // Xiaomi) a small scroll box of its own under the clip left the lower controls out of reach
+            val screenH = androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp
+            Column(Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState())) {
             // the clip, looping; or what to do
-            Box(Modifier.fillMaxWidth().weight(1f).background(LatentColors.Surface.copy(alpha = 0.35f)), contentAlignment = Alignment.Center) {
+            Box(Modifier.fillMaxWidth().height((screenH * 0.5f).dp).background(LatentColors.Surface.copy(alpha = 0.35f)), contentAlignment = Alignment.Center) {
                 val c = clip
                 if (c != null && !running) {
                     key(c.path) {
@@ -121,9 +125,9 @@ fun LiveScreen(edit: LiveEdit, onClose: () -> Unit) {
                         modifier = Modifier.padding(horizontal = 32.dp))
                 }
             }
-            // only the things this edit has
-            // at most a third of the screen, so the clip keeps its room on a phone that draws everything larger (the Xiaomi)
-            Column(Modifier.fillMaxWidth().heightIn(max = (androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp / 3).dp).verticalScroll(rememberScrollState()).padding(horizontal = 18.dp)) {
+
+            // only the things this edit has, under the clip, in the same scroll
+            Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 8.dp)) {
                 if (moves.rain) {
                     Section("RAIN ON THE WINDOW")
                     LiveSlider("Drops running and landing", look.drops, 0f, 2f, "%.1f", !running) { look = look.copy(drops = it) }
@@ -158,6 +162,7 @@ fun LiveScreen(edit: LiveEdit, onClose: () -> Unit) {
                     Section("GOD RAYS")
                     LiveSlider("Shimmer", look.shimmer * 100f, 0f, 100f, "%.0f %%", !running) { look = look.copy(shimmer = it / 100f) }
                 }
+            }
             }
             if (running) {
                 Box(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(top = 8.dp).clip(RoundedCornerShape(999.dp)).background(LatentColors.Surface)) {
