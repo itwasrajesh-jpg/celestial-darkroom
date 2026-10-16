@@ -416,6 +416,8 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
 
     fun set(block: Recipe.() -> Recipe) { recipe = recipe.block() }
 
+    // a Box only so the living photo panel (66a) can lie over the darkroom, in the app's own window
+    Box(Modifier.fillMaxSize()) {
     Column(Modifier.fillMaxSize().background(LatentColors.Background).statusBarsPadding().navigationBarsPadding()) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 10.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             Text("‹", color = LatentColors.Text, fontSize = 22.sp, modifier = Modifier.combinedClickable(onClick = onBack).padding(horizontal = 6.dp))
@@ -1098,10 +1100,11 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                     )
                 }).padding(horizontal = 16.dp, vertical = 9.dp))
         }
-        if (liveOpen) LiveScreen(
-            com.celestial.latent.develop.LiveEdit(source, isRaw, recipe, exposureMap, softenMap, pairFirst, framing, fogMap, fogLook,
-                raysMap, raysLook, extraLights, depthSplit, saturationMap, lithLook, wetMap, wetLook, rainMap),
-        ) { liveOpen = false }
+    }
+    if (liveOpen) LiveScreen(
+        com.celestial.latent.develop.LiveEdit(source, isRaw, recipe, exposureMap, softenMap, pairFirst, framing, fogMap, fogLook,
+            raysMap, raysLook, extraLights, depthSplit, saturationMap, lithLook, wetMap, wetLook, rainMap),
+    ) { liveOpen = false }
     }
 }
 

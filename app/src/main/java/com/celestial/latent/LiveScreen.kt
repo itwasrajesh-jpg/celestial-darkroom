@@ -41,8 +41,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.input.pointer.pointerInput
 import com.celestial.latent.develop.DevelopQueue
 import com.celestial.latent.develop.Live
 import com.celestial.latent.develop.LiveEdit
@@ -86,8 +85,13 @@ fun LiveScreen(edit: LiveEdit, onClose: () -> Unit) {
             })
     }
 
-    Dialog(onDismissRequest = { onClose() }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        Column(Modifier.fillMaxSize().background(LatentColors.Background).statusBarsPadding().navigationBarsPadding()) {
+    // Drawn over the darkroom in the app's own window, not as a dialog: a dialog window on the Xiaomi
+    // (HyperOS) did not get the screen's bars, and its bottom row ended up below the screen.
+    androidx.activity.compose.BackHandler { onClose() }
+    Box(Modifier.fillMaxSize().background(LatentColors.Background)
+        // the darkroom underneath must not take taps meant for this panel
+        .pointerInput(Unit) { awaitPointerEventScope { while (true) awaitPointerEvent() } }) {
+        Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
             Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text("LIVING PHOTO", color = LatentColors.TextBright, fontSize = 13.sp, letterSpacing = 2.sp, modifier = Modifier.weight(1f))
                 Text("Close", color = LatentColors.Text, fontSize = 13.sp,
@@ -118,7 +122,8 @@ fun LiveScreen(edit: LiveEdit, onClose: () -> Unit) {
                 }
             }
             // only the things this edit has
-            Column(Modifier.fillMaxWidth().heightIn(max = 300.dp).verticalScroll(rememberScrollState()).padding(horizontal = 18.dp)) {
+            // at most a third of the screen, so the clip keeps its room on a phone that draws everything larger (the Xiaomi)
+            Column(Modifier.fillMaxWidth().heightIn(max = (androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp / 3).dp).verticalScroll(rememberScrollState()).padding(horizontal = 18.dp)) {
                 if (moves.rain) {
                     Section("RAIN ON THE WINDOW")
                     LiveSlider("Drops running and landing", look.drops, 0f, 2f, "%.1f", !running) { look = look.copy(drops = it) }
