@@ -89,13 +89,26 @@ object Rain {
     }
 
     /** One spot of water on the glass, in the print's pixels. */
-    private class Cap(val cx: Float, val cy: Float, val rx: Float, val ry: Float, val sag: Float, val height: Float, val trail: Boolean)
+    internal class Cap(val cx: Float, val cy: Float, val rx: Float, val ry: Float, val sag: Float, val height: Float, val trail: Boolean)
 
     /** A plain three-channel picture. */
-    private class Img(val w: Int, val h: Int, val p: FloatArray = FloatArray(w * h * 3))
+    internal class Img(val w: Int, val h: Int, val p: FloatArray = FloatArray(w * h * 3))
 
     /** The work itself, on a plain buffer: [f] three floats per pixel (linear ProPhoto), [w] × [h]. In place. */
     internal fun process(f: FloatBuffer, w: Int, h: Int, look: RainLook, wipe: ExposureMap?) {
+        val scene = scene(f, w, h, look)
+        draw(f, scene, glass(w, h, scene.u, look, wipe))
+    }
+
+    /**
+     * Everything the rain needs from the picture behind the glass, worked out once: the living
+     * photo (66a) draws many panes of moving water over one scene.
+     */
+    internal class Scene(val w: Int, val h: Int, val look: RainLook, val u: Float, val e: Float, val sm: Float, val um: Float,
+                         val sq: Float, val mw: Int, val mh: Int, val seen: Img, val sky: Img, val back: Img?)
+
+    /** The picture behind the glass, read for the rain (the first half of [process]). */
+    internal fun scene(f: FloatBuffer, w: Int, h: Int, look: RainLook): Scene {
         val long = max(w, h)
         val u = long / 1600f                                   // the proof's pixel sizes were for 1600 across
 
@@ -135,8 +148,14 @@ object Rain {
             bq
         }
 
-        // ---- the water on the glass
-        val caps = glass(w, h, u, look, wipe)
+        return Scene(w, h, look, u, e, sm, um, sq, mw, mh, seen, sky, back)
+    }
+
+    /** The water [caps] drawn over [f] (the picture [scene] was read from), in place (the second half of [process]). */
+    internal fun draw(f: FloatBuffer, scene: Scene, caps: List<Cap>) {
+        val w = scene.w; val h = scene.h; val look = scene.look; val u = scene.u; val e = scene.e
+        val sm = scene.sm; val um = scene.um; val sq = scene.sq; val mw = scene.mw; val mh = scene.mh; val mn = mw * mh
+        val seen = scene.seen; val sky = scene.sky; val back = scene.back
         val zt = 0.15f * u
 
         // one drop's colour at a print point, into [o], given the cap on top there; returns how much water covers it
@@ -235,7 +254,7 @@ object Rain {
     // ---------------------------------------------------------------- the glass
 
     /** The water on the glass, as the proof's make_glass, in print pixels. */
-    private fun glass(w: Int, h: Int, u: Float, look: RainLook, wipe: ExposureMap?): List<Cap> {
+    internal fun glass(w: Int, h: Int, u: Float, look: RainLook, wipe: ExposureMap?): List<Cap> {
         val rng = Random(look.seed.toLong() * 7919L + 17L)
         val caps = ArrayList<Cap>()
         val area = (w / u) * (h / u) / (1600f * 1200f)

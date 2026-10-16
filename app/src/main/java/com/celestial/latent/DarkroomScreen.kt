@@ -153,6 +153,8 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
     var src by remember { mutableStateOf<Develop.Source?>(null) }
     var coarse by remember { mutableStateOf(false) }
     var fullRunning by remember { mutableStateOf(false) }
+    // the living photo panel (66a)
+    var liveOpen by remember { mutableStateOf(false) }
     var previewIsPartial by remember { mutableStateOf(false) }
     var gpuTest by remember { mutableStateOf("") }
     var lookId by remember { mutableStateOf("") }
@@ -1063,6 +1065,10 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                 color = LatentColors.Line, fontSize = 9.sp, letterSpacing = 1.5.sp, lineHeight = 13.sp,
                 // takes the space the button leaves and wraps if it must — it used to crush the button
                 modifier = Modifier.weight(1f).padding(end = 12.dp))
+            // the living photo (66a): this edit as a short loop, only what the darkroom added moving
+            Text("Live", color = LatentColors.TextBright, fontSize = 12.sp, maxLines = 1, softWrap = false,
+                modifier = Modifier.padding(end = 8.dp).clip(RoundedCornerShape(999.dp)).background(LatentColors.Surface)
+                    .combinedClickable(onClick = { Haptics.click(context); liveOpen = true }).padding(horizontal = 14.dp, vertical = 9.dp))
             Text(if (fullRunning) "Developing… ${elapsed}s" else "Develop full size", color = LatentColors.AmberInk, fontSize = 12.sp,
                 maxLines = 1, softWrap = false,
                 modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(LatentColors.Amber).combinedClickable(onClick = {
@@ -1092,6 +1098,10 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                     )
                 }).padding(horizontal = 16.dp, vertical = 9.dp))
         }
+        if (liveOpen) LiveScreen(
+            com.celestial.latent.develop.LiveEdit(source, isRaw, recipe, exposureMap, softenMap, pairFirst, framing, fogMap, fogLook,
+                raysMap, raysLook, extraLights, depthSplit, saturationMap, lithLook, wetMap, wetLook, rainMap),
+        ) { liveOpen = false }
     }
 }
 

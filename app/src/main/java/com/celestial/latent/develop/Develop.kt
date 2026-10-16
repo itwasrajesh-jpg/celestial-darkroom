@@ -593,24 +593,7 @@ object Develop {
         Log.i("Latent", "render start: source ${source.width}x${source.height}, preview=$preview, cap=${recipe.previewMaxSize}")
         Log.i("Latent", "recipe: " + sanitised(recipe).summary())
         var dims = 0 to 0
-        // GPU is preview-only: a full render always goes through the CPU engine.
-        val base = sanitised(if (preview) recipe else recipe.copy(gpuPreview = false))
-            // A straightened picture shows less of the film: tell the engine the film it sees is
-            // that much narrower, so grain and halation keep their true size.
-            .let { if (source.filmScale != 1f) it.copy(filmFormatMm = it.filmFormatMm * source.filmScale) else it }
-            // Our own filter has already run on the pixels, so the engine's LENS filter stays
-            // off — but the enlarger's is a different stage, later in the chain, and is left to
-            // the engine. Switching both off was dropping half the glow.
-            .let { if (it.diffusion && (it.fastDiffusion || preview || softenMask != null || !FilmDiffusion.engineHas(it.diffusionFamily))) it.copy(diffusion = false) else it }
-            .let { if (it.printDiffusion && (it.fastDiffusion || preview || !FilmDiffusion.engineHas(it.printDiffusionFamily))) it.copy(printDiffusion = false) else it }
-        // Our own spaces are built from the engine's sRGB output, so ask it for sRGB.
-        val ourSpace = if (OutputSpace.isOurs(base.outputColorSpace)) base.outputColorSpace else ""
-        val params = (if (ourSpace.isEmpty()) base else base.copy(outputColorSpace = OutputSpace.ENGINE_SRGB)).toParams()
-            .let { if (!preview && upscale > 1.001f) it.copy(io = it.io.copy(upscaleFactor = upscale)) else it }
-            // Dodge & burn: the engine multiplies the enlarger light by the map, place by place.
-            .let { p -> if (exposureMap == null || exposureMap.isBlank) p else p.copy(enlarger = p.enlarger.copy(
-                printExposureMap = exposureMap.multipliers(),
-                printExposureMapWidth = exposureMap.width, printExposureMapHeight = exposureMap.height)) }
+        val (params, ourSpace) = filmParams(source, recipe, preview, upscale, exposureMap, softenMask)
         if (!preview && upscale > 1.001f) {
             Log.i("Latent", "print size ${upscale}×: ${source.width}x${source.height} -> about " +
                 "${(source.width * upscale).toInt()}x${(source.height * upscale).toInt()}")
@@ -652,6 +635,33 @@ object Develop {
         return jpeg to dims
     }
 
+
+    /**
+     * The engine's settings for developing [source] with [recipe], and the output space Latent makes
+     * itself afterwards ("" when the engine makes it). Shared by [render] and the living photo (66a).
+     */
+    internal fun filmParams(source: Source, recipe: Recipe, preview: Boolean, upscale: Float = 1f,
+                            exposureMap: ExposureMap? = null, softenMask: ExposureMap? = null): Pair<com.spectrafilm.engine.SpektraParams, String> {
+        // GPU is preview-only: a full render always goes through the CPU engine.
+        val base = sanitised(if (preview) recipe else recipe.copy(gpuPreview = false))
+            // A straightened picture shows less of the film: tell the engine the film it sees is
+            // that much narrower, so grain and halation keep their true size.
+            .let { if (source.filmScale != 1f) it.copy(filmFormatMm = it.filmFormatMm * source.filmScale) else it }
+            // Our own filter has already run on the pixels, so the engine's LENS filter stays
+            // off — but the enlarger's is a different stage, later in the chain, and is left to
+            // the engine. Switching both off was dropping half the glow.
+            .let { if (it.diffusion && (it.fastDiffusion || preview || softenMask != null || !FilmDiffusion.engineHas(it.diffusionFamily))) it.copy(diffusion = false) else it }
+            .let { if (it.printDiffusion && (it.fastDiffusion || preview || !FilmDiffusion.engineHas(it.printDiffusionFamily))) it.copy(printDiffusion = false) else it }
+        // Our own spaces are built from the engine's sRGB output, so ask it for sRGB.
+        val ourSpace = if (OutputSpace.isOurs(base.outputColorSpace)) base.outputColorSpace else ""
+        val params = (if (ourSpace.isEmpty()) base else base.copy(outputColorSpace = OutputSpace.ENGINE_SRGB)).toParams()
+            .let { if (!preview && upscale > 1.001f) it.copy(io = it.io.copy(upscaleFactor = upscale)) else it }
+            // Dodge & burn: the engine multiplies the enlarger light by the map, place by place.
+            .let { p -> if (exposureMap == null || exposureMap.isBlank) p else p.copy(enlarger = p.enlarger.copy(
+                printExposureMap = exposureMap.multipliers(),
+                printExposureMapWidth = exposureMap.width, printExposureMapHeight = exposureMap.height)) }
+        return params to ourSpace
+    }
 
     /**
      * Watches this app's memory during a full develop, on a background thread, and logs the peak.
@@ -939,24 +949,10 @@ object Develop {
             try { opened.blankSized(fw, fh).also { it.frameFrom(opened, framing) } } finally { opened.close() }
         }
         return src.use { s ->
-            val sunIn = sunInput(context, source, framing, s, listOf(raysLook) + extraLights, log, fogMask != null && fogLook.lit > 0f, Wet.wanted(wetMask))
             // A pair carries the noise of both frames: clean it for the noisier of the two.
             val iso = if (pair) maxOf(isoOf(context, source), isoOf(context, pairFirst!!)) else isoOf(context, source)
-            denoiseSource(s, recipe, iso, log)
-            sensorNoiseSource(s, recipe, iso, log)
-            val split = splitFor(context, source, listOf(raysLook) + extraLights, depthSplit)
-            // the lights on surfaces, then the air in front of them (60e), as in the preview
-            sunOnSurfaces(s, listOf(raysLook) + extraLights, raysMask, sunIn, log, null, split)
-            wetGround(s, wetMask, wetLook, sunIn, log)
-            val godRays = godRaysFor(s, listOf(raysLook) + extraLights, sunIn, log)
-            fogMask?.let { Fog.apply(s, it, fogLook, log, listOf(raysLook) + extraLights, sunIn) }
-            for (light in listOf(raysLook) + extraLights) if (sunIn == null || !Beams.wanted(light)) Rays.apply(s, light, raysMask, fogMask, fogLook.amount, log, split)
-            beamsInAir(s, listOf(raysLook) + extraLights, raysMask, fogMask, sunIn, log, split)
-            godRaysOver(s, godRays, fogMask, fogLook.amount, log)
-            windowRain(s, wetLook.window, rainMask, log)
-            lensFilterSource(s, recipe, log)
-            fastDiffusionSource(s, recipe, preview = false, softenMask = softenMask, log = log)
-            fastPrintDiffusionSource(s, recipe, preview = false, log = log)
+            prepareStages(context, source, s, iso, recipe, framing, softenMask, fogMask, fogLook, raysMask, raysLook, extraLights,
+                depthSplit, wetMask, wetLook, rainMask, log)
             log("developing ${s.width}×${s.height}…")
             val (bytes, dims) = render(context, s, recipe, preview = false, upscale = upscale, exposureMap = exposureMap, softenMask = softenMask, saturationMap = saturationMap, lith = lith, log = log)
             log("saving ${dims.first}×${dims.second}, ${bytes.size / 1024} KB")
@@ -973,6 +969,41 @@ object Develop {
             saveDeveloped(context, bytes, source, recipe.film, tag = if (pair) "DX" else null,
                 note = atmo.note(Texture.noteOf(recipe)))
         }
+    }
+
+    /**
+     * Everything a full develop does to the framed picture before the film, in order, in place:
+     * noise, the lights on surfaces, wet ground, the fog, the light in the air, god rays, the rain
+     * on the window, the lens filter and the diffusion filters. Shared by [developFull] and the
+     * living photo (66a), which develops the same edit several times with one thing changed.
+     * [fogScale] thickens the fog alone (not the lights' reading of it); [beforeRain] is shown the
+     * picture just before the rain goes on the glass.
+     */
+    internal fun prepareStages(context: Context, source: Uri, s: Source, iso: Int, recipe: Recipe, framing: Framing,
+                               softenMask: ExposureMap?, fogMask: ExposureMap?, fogLook: FogLook,
+                               raysMask: ExposureMap?, raysLook: RaysLook, extraLights: List<RaysLook>,
+                               depthSplit: ExposureMap?, wetMask: ExposureMap?, wetLook: WetLook, rainMask: ExposureMap?,
+                               log: (String) -> Unit, fogScale: Float = 1f, beforeRain: ((Source) -> Unit)? = null) {
+        val sunIn = sunInput(context, source, framing, s, listOf(raysLook) + extraLights, log, fogMask != null && fogLook.lit > 0f, Wet.wanted(wetMask))
+        denoiseSource(s, recipe, iso, log)
+        sensorNoiseSource(s, recipe, iso, log)
+        val split = splitFor(context, source, listOf(raysLook) + extraLights, depthSplit)
+        // the lights on surfaces, then the air in front of them (60e), as in the preview
+        sunOnSurfaces(s, listOf(raysLook) + extraLights, raysMask, sunIn, log, null, split)
+        wetGround(s, wetMask, wetLook, sunIn, log)
+        val godRays = godRaysFor(s, listOf(raysLook) + extraLights, sunIn, log)
+        fogMask?.let { m ->
+            val fm = if (fogScale == 1f) m else ExposureMap(m.width, m.height, FloatArray(m.stops.size) { m.stops[it] * fogScale })
+            Fog.apply(s, fm, fogLook, log, listOf(raysLook) + extraLights, sunIn)
+        }
+        for (light in listOf(raysLook) + extraLights) if (sunIn == null || !Beams.wanted(light)) Rays.apply(s, light, raysMask, fogMask, fogLook.amount, log, split)
+        beamsInAir(s, listOf(raysLook) + extraLights, raysMask, fogMask, sunIn, log, split)
+        godRaysOver(s, godRays, fogMask, fogLook.amount, log)
+        beforeRain?.invoke(s)
+        windowRain(s, wetLook.window, rainMask, log)
+        lensFilterSource(s, recipe, log)
+        fastDiffusionSource(s, recipe, preview = false, softenMask = softenMask, log = log)
+        fastPrintDiffusionSource(s, recipe, preview = false, log = log)
     }
 
     /**
@@ -1113,7 +1144,7 @@ object Develop {
      * at 1 as if the meter read through the filter. +131 mireds — exactly the 85B, which converts
      * daylight for 3200K tungsten film such as Vision3 200T and 500T.
      */
-    private val GAINS_85B = floatArrayOf(1.2044f, 1f, 0.4923f)
+    internal val GAINS_85B = floatArrayOf(1.2044f, 1f, 0.4923f)
 
     fun lensFilterSource(source: Source, recipe: Recipe, log: (String) -> Unit = {}) {
         if (!recipe.lens85b) return

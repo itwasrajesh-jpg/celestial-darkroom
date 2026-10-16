@@ -127,7 +127,7 @@ object LookBaker {
     ).joinToString("|")
 
     /** Reads an Adobe .cube: LUT_3D_SIZE then size³ RGB triples, blue slowest. */
-    private fun parseCube(text: String, expected: Int): FloatArray? {
+    internal fun parseCube(text: String, expected: Int): FloatArray? {
         val values = FloatArray(expected * expected * expected * 3)
         var i = 0
         for (line in text.lineSequence()) {
