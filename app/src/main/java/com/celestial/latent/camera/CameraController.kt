@@ -86,6 +86,16 @@ class CameraController(
      * sensor mode of its own (3).
      */
     @Volatile var dcgTest = false
+        set(v) { if (v != field) dcgAttempt = 0; field = v }
+    /**
+     * Which way of starting DCG to try. The driver crashed (error 4) before the first frame with the
+     * full 4:3 RAW through camera 0, so after a crash the next way is tried by itself:
+     *  0 = a RAW size the lens can deliver at 60 fps (else the largest 16:9), through camera 0;
+     *  1 = the same, opening the main lens directly;
+     *  2 = direct, and only the plainest requests (no shading map, hot-pixel or session frame-rate settings).
+     * The one that works is kept until the test is switched off.
+     */
+    @Volatile private var dcgAttempt = 0
     private val DCG_OPMODE = 37379
     private val DCG_MODE = 24
     private val DCG_FRAME_NS = 16_666_666L
@@ -195,14 +205,15 @@ class CameraController(
             // The camera-path choice is a 15 Ultra setting; elsewhere, the discovered logical camera.
             val path = if (Lenses.isXiaomi15Ultra) cameraPath else Lenses.LOGICAL_ID
             // A lens that is a camera of its own cannot be reached through the logical camera.
-            directOpen = path == "direct" || fallbackDirect || openZoomedTele || lens.standalone
+            directOpen = path == "direct" || fallbackDirect || openZoomedTele || lens.standalone || (dcgOn() && dcgAttempt >= 1)
             if (openZoomedTele) log("zoom on ${lens.name}: opening the lens directly to stop the logical camera switching sensors")
             logicalId = if (path == "direct") Lenses.LOGICAL_ID else path
             try {
                 physChars = cm.getCameraCharacteristics(lens.physicalId)
                 afRegion = null; afTriggerPending = false; lastTransform = null; lastGains = null
                 val map = physChars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)!!
-                rawSize = map.getOutputSizes(ImageFormat.RAW_SENSOR).maxByOrNull { it.width.toLong() * it.height } ?: rawSize
+                val rawSizes = map.getOutputSizes(ImageFormat.RAW_SENSOR).orEmpty()
+                rawSize = (if (dcgOn()) dcgRawSize(map, rawSizes.toList()) else rawSizes.maxByOrNull { it.width.toLong() * it.height }) ?: rawSize
                 rawReader = ImageReader.newInstance(rawSize.width, rawSize.height, ImageFormat.RAW_SENSOR, 6).also {
                     it.setOnImageAvailableListener({ r -> onRawImage(r) }, handler)
                 }
@@ -242,7 +253,12 @@ class CameraController(
                             log("camera error $error with a JPEG_R stream; Ultra HDR cannot run alongside RAW on this camera — falling back to plain JPEG")
                             status("Ultra HDR needs to be off while shooting RAW on this phone — using plain JPEG")
                             handler.postDelayed({ previewSurface?.let { open(lens, it) } }, 600)
-                        } else status("Camera error $error")
+                        } else if (dcgOn() && error == CameraDevice.StateCallback.ERROR_CAMERA_DEVICE && dcgAttempt < 2) {
+                            dcgAttempt++
+                            log("DCG test: camera error $error on way ${dcgAttempt - 1}; trying way $dcgAttempt")
+                            status("DCG test: trying way $dcgAttempt of 2…")
+                            handler.postDelayed({ previewSurface?.let { open(lens, it) } }, 800)
+                        } else status(if (dcgOn()) "Camera error $error in the DCG test (all 3 ways tried); switch the test off" else "Camera error $error")
                     }
                 }, handler)
             } catch (e: Exception) {
@@ -279,7 +295,7 @@ class CameraController(
         if (!directOpen) outputs.forEach { it.setPhysicalCameraId(lens.physicalId) }
         val sessionType = if (activeOpmode != 0) activeOpmode else SessionConfiguration.SESSION_REGULAR
         val config = SessionConfiguration(sessionType, outputs, executor, object : CameraCaptureSession.StateCallback() {
-            override fun onConfigured(s: CameraCaptureSession) { opening = false; log("session configured: ${outputs.size} streams, opmode=${if (opmode != 0) "0x" + Integer.toHexString(opmode) else "regular"}, tags=${allTags().map { it.name.substringAfterLast('.') + "=" + it.value }}"); session = s; startPreview() }
+            override fun onConfigured(s: CameraCaptureSession) { opening = false; log("session configured: ${outputs.size} streams, opmode=${if (activeOpmode != 0) "0x" + Integer.toHexString(activeOpmode) else "regular"}, tags=${allTags().map { it.name.substringAfterLast('.') + "=" + it.value }}"); session = s; startPreview() }
             override fun onConfigureFailed(s: CameraCaptureSession) {
                 opening = false
                 if (!directOpen) {
@@ -296,12 +312,12 @@ class CameraController(
                 val sp = dev.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
                 sessionTags.forEach { applyVendorTag(sp, it) }
                 // The frame rate is a session setting on many drivers: ask for 60 fps from the start.
-                if (dcgOn()) sp.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, Range(60, 60))
+                if (dcgOn() && dcgAttempt < 2) sp.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, Range(60, 60))
                 config.sessionParameters = sp.build()
             }
             if (dcgOn()) {
                 val minNs = runCatching { physChars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)!!.getOutputMinFrameDuration(ImageFormat.RAW_SENSOR, rawSize) }.getOrDefault(0L)
-                log("DCG test: opmode $DCG_OPMODE (0x${Integer.toHexString(DCG_OPMODE)}) + sensor mode $DCG_MODE on the ${lens.name}, 60 fps · RAW ${rawSize.width}x${rawSize.height}, " +
+                log("DCG test way $dcgAttempt (${if (directOpen) "direct" else "via $logicalId"}${if (dcgAttempt >= 2) ", plain requests" else ""}): opmode $DCG_OPMODE (0x${Integer.toHexString(DCG_OPMODE)}) + sensor mode $DCG_MODE on the ${lens.name}, 60 fps · RAW ${rawSize.width}x${rawSize.height}, " +
                     "fastest RAW frame the lens reports ${"%.1f".format(minNs / 1e6)} ms (60 fps needs 16.7 ms or less)")
             }
             if (activeOpmode != 0) log("session opmode 0x${Integer.toHexString(activeOpmode)} (lens ${lens.physicalId})")
@@ -436,11 +452,12 @@ class CameraController(
             b.set(CaptureRequest.CONTROL_AE_LOCK, c.locked)
         }
         // Keep the preview and still pipelines identical so a capture does not visibly re-configure anything.
-        b.set(CaptureRequest.STATISTICS_LENS_SHADING_MAP_MODE, CameraMetadata.STATISTICS_LENS_SHADING_MAP_MODE_ON)
+        val plain = dcg && dcgAttempt >= 2
+        if (!plain) b.set(CaptureRequest.STATISTICS_LENS_SHADING_MAP_MODE, CameraMetadata.STATISTICS_LENS_SHADING_MAP_MODE_ON)
         // Image quality: optical stabilisation on where the lens has it; best hot-pixel correction; no EIS (crops, stills don't need it).
         b.set(CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE, if (oisAvailable) CameraMetadata.LENS_OPTICAL_STABILIZATION_MODE_ON else CameraMetadata.LENS_OPTICAL_STABILIZATION_MODE_OFF)
         b.set(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_OFF)
-        physChars.get(CameraCharacteristics.HOT_PIXEL_AVAILABLE_HOT_PIXEL_MODES)?.let { modes ->
+        if (!plain) physChars.get(CameraCharacteristics.HOT_PIXEL_AVAILABLE_HOT_PIXEL_MODES)?.let { modes ->
             if (modes.contains(CameraMetadata.HOT_PIXEL_MODE_HIGH_QUALITY)) b.set(CaptureRequest.HOT_PIXEL_MODE, CameraMetadata.HOT_PIXEL_MODE_HIGH_QUALITY)
         }
         // Vendor tags: session-scoped ones are sent again in requests too (harmless, and some HALs read them there).
@@ -633,6 +650,22 @@ class CameraController(
     }
 
     // ---- DCG test (67a): what the camera really did ---------------------------------
+
+    /**
+     * The RAW size for the DCG test. A 60 fps-only mode is most likely a video mode, and video on this
+     * sensor is 16:9, while the app normally asks for the full 4:3 frame (which the lens lists at 30 fps
+     * at best). Prefer a size the lens says it can deliver at 60 fps; failing that, the largest 16:9.
+     */
+    private fun dcgRawSize(map: android.hardware.camera2.params.StreamConfigurationMap, sizes: List<Size>): Size? {
+        val timed = sizes.map { it to runCatching { map.getOutputMinFrameDuration(ImageFormat.RAW_SENSOR, it) }.getOrDefault(0L) }
+        log("DCG test: RAW sizes the main lens lists: " + timed.joinToString { (sz, ns) -> "${sz.width}x${sz.height} (${"%.1f".format(ns / 1e6)} ms)" })
+        val area = { sz: Size -> sz.width.toLong() * sz.height }
+        val fast = timed.filter { it.second in 1..DCG_FRAME_NS }.map { it.first }.maxByOrNull(area)
+        val wide = sizes.filter { Math.abs(it.width.toFloat() / it.height - 16f / 9f) < 0.02f }.maxByOrNull(area)
+        val pick = fast ?: wide ?: sizes.maxByOrNull(area)
+        log("DCG test: using RAW ${pick?.width}x${pick?.height} (${if (fast != null) "fast enough for 60 fps" else if (wide != null) "largest 16:9; none listed at 60 fps" else "largest"})")
+        return pick
+    }
 
     /** One line on the frame rate, shutter and sensor mode the driver reports for a frame. */
     private fun logDcgFrame(what: String, r: CaptureResult) {
