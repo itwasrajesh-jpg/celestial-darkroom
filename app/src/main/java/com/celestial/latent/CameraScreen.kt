@@ -495,7 +495,7 @@ fun CameraScreen(
             }
             val modes = listOfNotNull(
                 if (settings.inSensorZoomJpeg && Lenses.isXiaomi15Ultra && controls.zoom > 1.001f) "ISZ" else null,
-                if (settings.dcgTest && Lenses.isXiaomi15Ultra && lens.physicalId == Lenses.MAIN_ID && controls.zoom <= 1.001f) "DCG 60FPS" else null,
+                if (settings.dcgTest && Lenses.isXiaomi15Ultra && lens.physicalId == Lenses.MAIN_ID && controls.zoom <= 1.001f) "DCG TEST" else null,
                 if (settings.burstMode) "BURST" else null, if (settings.timerSeconds > 0) "${settings.timerSeconds}S" else null,
             )
             val tagLabels = remember(settings.vendorTags, lens) { if (controller.hasCharacteristics) controller.activeTagLabels() else emptyList() }
