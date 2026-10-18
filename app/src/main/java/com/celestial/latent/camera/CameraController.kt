@@ -88,11 +88,13 @@ class CameraController(
     @Volatile var dcgTest = false
         set(v) { if (v != field) dcgAttempt = 0; field = v }
     /**
-     * Which way of starting DCG to try. The driver crashed (error 4) before the first frame with the
-     * full 4:3 RAW through camera 0, so after a crash the next way is tried by itself:
-     *  0 = a RAW size the lens can deliver at 60 fps (else the largest 16:9), through camera 0;
-     *  1 = the same, opening the main lens directly;
-     *  2 = direct, and only the plainest requests (no shading map, hot-pixel or session frame-rate settings).
+     * Which way of starting DCG to try. 67a/67b sent sensor mode 24 as a request and the driver crashed
+     * (error 4) before the first frame, every way. MotionCam's "current_mode 24" is most likely what it
+     * READ BACK from the driver, not what it sent; so from 67c the mode is never sent, only read back.
+     * After a crash the next way is tried by itself:
+     *  0 = opmode only, 60 fps, through camera 0;
+     *  1 = opmode only, 60 fps, the main lens opened directly, plainest requests (no shading map / hot-pixel);
+     *  2 = opmode only, through camera 0, the frame rate left to the driver.
      * The one that works is kept until the test is switched off.
      */
     @Volatile private var dcgAttempt = 0
@@ -147,7 +149,6 @@ class CameraController(
             // JPEG-only hint below, never with it.
             if (out.none { it.name == Lenses.SENSOR_MODE_KEY }) out += VendorTagSpec(Lenses.SENSOR_MODE_KEY, "request", "i32", mode.toString())
         } else if (inSensorZoomJpeg && Lenses.isXiaomi15Ultra && controls.zoom > 1.001f && out.none { it.name == ISZ_KEY }) out += VendorTagSpec(ISZ_KEY, "session", "i32", "1")
-        if (dcgOn() && out.none { it.name == Lenses.SENSOR_MODE_KEY }) out += VendorTagSpec(Lenses.SENSOR_MODE_KEY, "request", "i32", DCG_MODE.toString())
         return out
     }
     @Volatile var onVendorEcho: (String) -> Unit = {}
@@ -205,7 +206,7 @@ class CameraController(
             // The camera-path choice is a 15 Ultra setting; elsewhere, the discovered logical camera.
             val path = if (Lenses.isXiaomi15Ultra) cameraPath else Lenses.LOGICAL_ID
             // A lens that is a camera of its own cannot be reached through the logical camera.
-            directOpen = path == "direct" || fallbackDirect || openZoomedTele || lens.standalone || (dcgOn() && dcgAttempt >= 1)
+            directOpen = path == "direct" || fallbackDirect || openZoomedTele || lens.standalone || (dcgOn() && dcgAttempt == 1)
             if (openZoomedTele) log("zoom on ${lens.name}: opening the lens directly to stop the logical camera switching sensors")
             logicalId = if (path == "direct") Lenses.LOGICAL_ID else path
             try {
@@ -312,12 +313,12 @@ class CameraController(
                 val sp = dev.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
                 sessionTags.forEach { applyVendorTag(sp, it) }
                 // The frame rate is a session setting on many drivers: ask for 60 fps from the start.
-                if (dcgOn() && dcgAttempt < 2) sp.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, Range(60, 60))
+                if (dcgOn() && dcgAttempt != 2) sp.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, Range(60, 60))
                 config.sessionParameters = sp.build()
             }
             if (dcgOn()) {
                 val minNs = runCatching { physChars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)!!.getOutputMinFrameDuration(ImageFormat.RAW_SENSOR, rawSize) }.getOrDefault(0L)
-                log("DCG test way $dcgAttempt (${if (directOpen) "direct" else "via $logicalId"}${if (dcgAttempt >= 2) ", plain requests" else ""}): opmode $DCG_OPMODE (0x${Integer.toHexString(DCG_OPMODE)}) + sensor mode $DCG_MODE on the ${lens.name}, 60 fps · RAW ${rawSize.width}x${rawSize.height}, " +
+                log("DCG test way $dcgAttempt (${if (directOpen) "direct" else "via $logicalId"}${if (dcgAttempt == 1) ", plain requests" else ""}): opmode $DCG_OPMODE (0x${Integer.toHexString(DCG_OPMODE)}) only, no sensor mode sent, on the ${lens.name}, ${if (dcgAttempt == 2) "frame rate left to the driver" else "60 fps"} · RAW ${rawSize.width}x${rawSize.height}, " +
                     "fastest RAW frame the lens reports ${"%.1f".format(minNs / 1e6)} ms (60 fps needs 16.7 ms or less)")
             }
             if (activeOpmode != 0) log("session opmode 0x${Integer.toHexString(activeOpmode)} (lens ${lens.physicalId})")
@@ -435,7 +436,8 @@ class CameraController(
         // so only send it when the user actually zoomed.
         if (c.zoom > 1.001f && sensorMode(c) == null) b.set(CaptureRequest.CONTROL_ZOOM_RATIO, c.zoom)
         // Exposure
-        val dcg = dcgOn(c)
+        val dcgAny = dcgOn(c)
+        val dcg = dcgAny && dcgAttempt != 2   // way 2 leaves the frame rate to the driver
         // DCG mode only runs at 60 fps: hold the frame rate there (auto exposure then stays at 1/60 s or faster).
         if (dcg) b.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, Range(60, 60))
         if (c.manualExposure) {
@@ -452,7 +454,7 @@ class CameraController(
             b.set(CaptureRequest.CONTROL_AE_LOCK, c.locked)
         }
         // Keep the preview and still pipelines identical so a capture does not visibly re-configure anything.
-        val plain = dcg && dcgAttempt >= 2
+        val plain = dcgAny && dcgAttempt == 1
         if (!plain) b.set(CaptureRequest.STATISTICS_LENS_SHADING_MAP_MODE, CameraMetadata.STATISTICS_LENS_SHADING_MAP_MODE_ON)
         // Image quality: optical stabilisation on where the lens has it; best hot-pixel correction; no EIS (crops, stills don't need it).
         b.set(CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE, if (oisAvailable) CameraMetadata.LENS_OPTICAL_STABILIZATION_MODE_ON else CameraMetadata.LENS_OPTICAL_STABILIZATION_MODE_OFF)
@@ -501,7 +503,7 @@ class CameraController(
                 r.get(CaptureResult.COLOR_CORRECTION_TRANSFORM)?.let { lastTransform = it }
                 r.get(CaptureResult.COLOR_CORRECTION_GAINS)?.let { lastGains = it }
             }
-            if (++frameCounter == 45 && dcgOn()) logDcgFrame("preview", r)
+            if (++frameCounter == 45 && Lenses.isXiaomi15Ultra && lens.isMain) logDcgFrame(if (dcgOn()) "preview, DCG test ON" else "preview, DCG test off", r)
             if (frameCounter % 6 == 0) {
                 val gains = lastGains
                 val af = when (r.get(CaptureResult.CONTROL_AF_STATE)) {
@@ -674,7 +676,7 @@ class CameraController(
         val mode = runCatching { r.get(CaptureResult.Key(Lenses.SENSOR_MODE_KEY, Int::class.javaObjectType)) }.getOrNull()
         log("DCG check ($what): frame ${"%.1f".format(fd / 1e6)} ms (${if (fd > 0) "%.0f".format(1e9 / fd) else "?"} fps) · " +
             "shutter 1/${if (exp > 0) "%.0f".format(1e9 / exp) else "?"} s · ISO ${r.get(CaptureResult.SENSOR_SENSITIVITY) ?: 0} · " +
-            "sensor mode sent $DCG_MODE, reported ${mode ?: "not reported"}")
+            "sensor mode reported ${mode ?: "not reported"} (MotionCam's DCG shows $DCG_MODE)")
     }
 
     /**
