@@ -69,6 +69,7 @@ fun SettingsScreen(settings: AppSettings, onChange: (AppSettings) -> Unit, onOpe
 
         Section("Shooting")
         if (Lenses.isXiaomi15Ultra) ToggleRow("In-sensor zoom at ×2", "Asks the driver for the sensor's native centre crop while ×2 is on (JPEG path; the RAW stays the full frame). Nothing is sent at normal zoom.", settings.inSensorZoomJpeg) { onChange(settings.copy(inSensorZoomJpeg = it)) }
+        if (Lenses.isXiaomi15Ultra) ToggleRow("DCG test (main lens)", "Test build. Asks the main lens for its DCG mode, as MotionCam found it (opmode 37379, sensor mode 24). It runs at 60 fps, so no shutter is longer than 1/60 s. Not used at ×2. Each shot writes its brightest raw value to the log.", settings.dcgTest) { onChange(settings.copy(dcgTest = it)) }
         ToggleRow("Open tele lenses directly when zoomed", "Stops the logical camera handing the frame to another sensor mid-zoom (the visible switch and refocus).", settings.teleZoomDirect) { onChange(settings.copy(teleZoomDirect = it)) }
         ToggleRow("Volume buttons take the photo", "Either volume key acts as the shutter", settings.volumeShutter) { onChange(settings.copy(volumeShutter = it)) }
         ToggleRow("Haptics", "Click on the shutter, ticks on slider steps and lens changes", settings.haptics) { onChange(settings.copy(haptics = it)) }

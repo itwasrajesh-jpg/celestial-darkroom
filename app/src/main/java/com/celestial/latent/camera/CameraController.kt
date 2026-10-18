@@ -75,10 +75,21 @@ class CameraController(
     /** Vendor overrides (MotionCam-style). Applied at session creation / in every request. */
     @Volatile var opmode: Int = 0
     @Volatile var opmodeLens: String = "all"
-    private val activeOpmode get() = if (opmode != 0 && (opmodeLens == "all" || opmodeLens == lens.physicalId)) opmode else 0
+    private val activeOpmode get() = if (dcgOn()) DCG_OPMODE else if (opmode != 0 && (opmodeLens == "all" || opmodeLens == lens.physicalId)) opmode else 0
     @Volatile var vendorTags: List<VendorTagSpec> = emptyList()
     /** Built-in feature: Qualcomm in-sensor zoom for the JPEG path. */
     @Volatile var inSensorZoomJpeg = false
+    /**
+     * Test 67a: the main lens's DCG (dual conversion gain) mode, as MotionCam found it on the 15 Ultra —
+     * session opmode 37379 (0x9203) with sensor mode 24, which only runs at 60 fps. So while it is on
+     * the camera is held at 60 fps and no exposure is longer than 1/60 s. Not at ×2, which is a
+     * sensor mode of its own (3).
+     */
+    @Volatile var dcgTest = false
+    private val DCG_OPMODE = 37379
+    private val DCG_MODE = 24
+    private val DCG_FRAME_NS = 16_666_666L
+    private fun dcgOn(c: Controls = controls) = dcgTest && Lenses.isXiaomi15Ultra && lens.physicalId == Lenses.MAIN_ID && sensorMode(c) == null
     /** Open a tele lens directly while zoomed (stops the logical camera switching sensors). */
     @Volatile var teleZoomDirect = true
     private var jpegIsUltraHdr = false   // kept false: JPEG_R cannot share a session with RAW on tested devices
@@ -126,6 +137,7 @@ class CameraController(
             // JPEG-only hint below, never with it.
             if (out.none { it.name == Lenses.SENSOR_MODE_KEY }) out += VendorTagSpec(Lenses.SENSOR_MODE_KEY, "request", "i32", mode.toString())
         } else if (inSensorZoomJpeg && Lenses.isXiaomi15Ultra && controls.zoom > 1.001f && out.none { it.name == ISZ_KEY }) out += VendorTagSpec(ISZ_KEY, "session", "i32", "1")
+        if (dcgOn() && out.none { it.name == Lenses.SENSOR_MODE_KEY }) out += VendorTagSpec(Lenses.SENSOR_MODE_KEY, "request", "i32", DCG_MODE.toString())
         return out
     }
     @Volatile var onVendorEcho: (String) -> Unit = {}
@@ -275,15 +287,22 @@ class CameraController(
                     fallbackDirect = true
                     val surf = previewSurface!!
                     handler.post { open(lens, surf) }
-                } else status("Session configuration failed for ${lens.name}")
+                } else status(if (dcgOn()) "The ${lens.name} refused the DCG test session; switch the DCG test off in settings" else "Session configuration failed for ${lens.name}")
             }
         })
         try {
             val sessionTags = allTags().filter { it.scope == "session" }
-            if (sessionTags.isNotEmpty()) {
+            if (sessionTags.isNotEmpty() || dcgOn()) {
                 val sp = dev.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
                 sessionTags.forEach { applyVendorTag(sp, it) }
+                // The frame rate is a session setting on many drivers: ask for 60 fps from the start.
+                if (dcgOn()) sp.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, Range(60, 60))
                 config.sessionParameters = sp.build()
+            }
+            if (dcgOn()) {
+                val minNs = runCatching { physChars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)!!.getOutputMinFrameDuration(ImageFormat.RAW_SENSOR, rawSize) }.getOrDefault(0L)
+                log("DCG test: opmode $DCG_OPMODE (0x${Integer.toHexString(DCG_OPMODE)}) + sensor mode $DCG_MODE on the ${lens.name}, 60 fps · RAW ${rawSize.width}x${rawSize.height}, " +
+                    "fastest RAW frame the lens reports ${"%.1f".format(minNs / 1e6)} ms (60 fps needs 16.7 ms or less)")
             }
             if (activeOpmode != 0) log("session opmode 0x${Integer.toHexString(activeOpmode)} (lens ${lens.physicalId})")
             dev.createCaptureSession(config)
@@ -304,6 +323,7 @@ class CameraController(
 
     private fun startPreview() {
         val dev = device ?: return; val s = session ?: return; val prev = previewSurface ?: return
+        frameCounter = 0      // so the DCG check reads a settled frame of this session
         val req = dev.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
             addTarget(prev)
             applyControls(this)
@@ -337,7 +357,7 @@ class CameraController(
         val crossedZoom = (controls.zoom > 1.001f) != (c.zoom > 1.001f)
         // The periscope's sensor modes were proven set from the session's start; changing one
         // mid-session is untested, so off / ×2 / ×4 each gets a fresh session.
-        val modeChanged = sensorMode() != sensorMode(c)
+        val modeChanged = sensorMode() != sensorMode(c) || dcgOn() != dcgOn(c)
         controls = c
         val isZoomedTele = zoomedTele()
         if (wasZoomedTele != isZoomedTele || modeChanged || (crossedZoom && inSensorZoomJpeg)) previewSurface?.let { open(lens, it) } else updatePreview()
@@ -399,13 +419,16 @@ class CameraController(
         // so only send it when the user actually zoomed.
         if (c.zoom > 1.001f && sensorMode(c) == null) b.set(CaptureRequest.CONTROL_ZOOM_RATIO, c.zoom)
         // Exposure
+        val dcg = dcgOn(c)
+        // DCG mode only runs at 60 fps: hold the frame rate there (auto exposure then stays at 1/60 s or faster).
+        if (dcg) b.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, Range(60, 60))
         if (c.manualExposure) {
-            val exp = c.shutterNs ?: lastAutoShutterNs
+            val exp = (c.shutterNs ?: lastAutoShutterNs).let { if (dcg) minOf(it, DCG_FRAME_NS) else it }
             val iso = c.iso ?: lastAutoIso
             b.set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_OFF)
             b.set(CaptureRequest.SENSOR_EXPOSURE_TIME, exp.coerceIn(shutterRange.lower, shutterRange.upper))
             b.set(CaptureRequest.SENSOR_SENSITIVITY, iso.coerceIn(isoRange.lower, isoRange.upper))
-            b.set(CaptureRequest.SENSOR_FRAME_DURATION, maxOf(33_333_333L, exp))
+            b.set(CaptureRequest.SENSOR_FRAME_DURATION, if (dcg) DCG_FRAME_NS else maxOf(33_333_333L, exp))
         } else {
             b.set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_ON)
             b.set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, c.evIndex.coerceIn(evRange.lower, evRange.upper))
@@ -461,7 +484,8 @@ class CameraController(
                 r.get(CaptureResult.COLOR_CORRECTION_TRANSFORM)?.let { lastTransform = it }
                 r.get(CaptureResult.COLOR_CORRECTION_GAINS)?.let { lastGains = it }
             }
-            if (++frameCounter % 6 == 0) {
+            if (++frameCounter == 45 && dcgOn()) logDcgFrame("preview", r)
+            if (frameCounter % 6 == 0) {
                 val gains = lastGains
                 val af = when (r.get(CaptureResult.CONTROL_AF_STATE)) {
                     CameraMetadata.CONTROL_AF_STATE_INACTIVE -> "inactive"
@@ -571,6 +595,7 @@ class CameraController(
                 if (baseNames.size > 8) baseNames.remove(baseNames.keys.minOrNull()!!)
                 val name = "$base.dng"
                 val ms = writeDngCreator(img, result, name)
+                logRawStats(img, metaFor(result))
                 sensorMode()?.let { m -> log("in-sensor ×${if (controls.zoom > 2.5f) 4 else 2} on the ${lens.name} (mode $m): the RAW itself is the ${Lenses.effectiveLabel(lens, controls.zoom)}× close-up") }
                     ?: run { if (controls.zoom != 1f) log("2x: JPEG ${if (inSensorZoomJpeg) "in-sensor crop" else "digital crop"} · RAW is the full 1x frame") }
                 val took = t0?.let { (System.nanoTime() - it) / 1_000_000 } ?: -1
@@ -605,6 +630,46 @@ class CameraController(
                 log("alignment shifts px (accepted tiles): " + job.shifts.joinToString(" ") + " · overall ${job.tilesAccepted}/${job.tilesTotal} tiles used")
             } catch (e: Exception) { status("burst save failed: ${e.message}"); Log.e("Latent", "burst", e) }
         }
+    }
+
+    // ---- DCG test (67a): what the camera really did ---------------------------------
+
+    /** One line on the frame rate, shutter and sensor mode the driver reports for a frame. */
+    private fun logDcgFrame(what: String, r: CaptureResult) {
+        val fd = r.get(CaptureResult.SENSOR_FRAME_DURATION) ?: 0L
+        val exp = r.get(CaptureResult.SENSOR_EXPOSURE_TIME) ?: 0L
+        val mode = runCatching { r.get(CaptureResult.Key(Lenses.SENSOR_MODE_KEY, Int::class.javaObjectType)) }.getOrNull()
+        log("DCG check ($what): frame ${"%.1f".format(fd / 1e6)} ms (${if (fd > 0) "%.0f".format(1e9 / fd) else "?"} fps) · " +
+            "shutter 1/${if (exp > 0) "%.0f".format(1e9 / exp) else "?"} s · ISO ${r.get(CaptureResult.SENSOR_SENSITIVITY) ?: 0} · " +
+            "sensor mode sent $DCG_MODE, reported ${mode ?: "not reported"}")
+    }
+
+    /**
+     * The brightest raw value in a shot and how many pixels sit at it, against the white level the
+     * DNG will carry. If the DCG mode delivers more than 10-bit values, the brightest value will
+     * be above that white level and the DNG writer would clip them.
+     */
+    private fun logRawStats(img: Image, r: CaptureResult) {
+        try {
+            val plane = img.planes[0]
+            val sb = plane.buffer.duplicate().order(java.nio.ByteOrder.nativeOrder()).asShortBuffer()
+            val w = img.width; val h = img.height; val stride = plane.rowStride / 2
+            val hist = IntArray(65536)
+            for (y in 0 until h) { val o = y * stride; for (x in 0 until w) hist[sb.get(o + x).toInt() and 0xFFFF]++ }
+            var max = 65535; while (max > 0 && hist[max] == 0) max--
+            val n = w.toLong() * h
+            var acc = 0L; var p999 = max
+            for (v in max downTo 0) { acc += hist[v]; if (acc >= n / 1000) { p999 = v; break } }
+            val white = physChars.get(CameraCharacteristics.SENSOR_INFO_WHITE_LEVEL) ?: 0
+            var over = 0L; for (v in maxOf(white, 0)..65535) over += hist[v]
+            val black = physChars.get(CameraCharacteristics.SENSOR_BLACK_LEVEL_PATTERN)?.getOffsetForIndex(0, 0) ?: -1
+            val dynWhite = r.get(CaptureResult.SENSOR_DYNAMIC_WHITE_LEVEL)
+            val dynBlack = r.get(CaptureResult.SENSOR_DYNAMIC_BLACK_LEVEL)?.firstOrNull()
+            log("raw stats ${if (dcgOn()) "[DCG test ON]" else "[DCG test off]"} ${lens.name} ${w}x$h: brightest $max, 99.9% below $p999 · " +
+                "white level ${white} (frame says ${dynWhite ?: "-"}), black ${black} (frame says ${dynBlack?.let { "%.0f".format(it) } ?: "-"}) · " +
+                "${"%.3f".format(100.0 * over / n)}% of pixels at or above white" + (if (max > white) " · ABOVE WHITE: the DNG would clip these" else ""))
+            if (dcgOn()) logDcgFrame("shot", r)
+        } catch (e: Exception) { log("raw stats failed: ${e.message}") }
     }
 
     // ---- writing ------------------------------------------------------------------

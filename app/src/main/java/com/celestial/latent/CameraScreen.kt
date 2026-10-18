@@ -316,7 +316,7 @@ fun CameraScreen(
     }
 
     // Any of these changes the streams or the session tags: push them, then let the controller rebuild if needed.
-    LaunchedEffect(settings.cameraPath, settings.opmode, settings.opmodeLens, settings.vendorTags, settings.saveJpeg, settings.inSensorZoomJpeg, settings.teleZoomDirect) {
+    LaunchedEffect(settings.cameraPath, settings.opmode, settings.opmodeLens, settings.vendorTags, settings.saveJpeg, settings.inSensorZoomJpeg, settings.teleZoomDirect, settings.dcgTest) {
         controller.cameraPath = settings.cameraPath
         controller.opmode = settings.opmode
         controller.vendorTags = settings.vendorTags.map { CameraController.VendorTagSpec(it.name, it.scope, it.type, it.value, it.lens) }
@@ -324,6 +324,7 @@ fun CameraScreen(
         controller.saveJpeg = settings.saveJpeg
         controller.inSensorZoomJpeg = settings.inSensorZoomJpeg
         controller.teleZoomDirect = settings.teleZoomDirect
+        controller.dcgTest = settings.dcgTest
         controller.syncSession()
     }
     DisposableEffect(Unit) {
@@ -494,6 +495,7 @@ fun CameraScreen(
             }
             val modes = listOfNotNull(
                 if (settings.inSensorZoomJpeg && Lenses.isXiaomi15Ultra && controls.zoom > 1.001f) "ISZ" else null,
+                if (settings.dcgTest && Lenses.isXiaomi15Ultra && lens.physicalId == Lenses.MAIN_ID && controls.zoom <= 1.001f) "DCG 60FPS" else null,
                 if (settings.burstMode) "BURST" else null, if (settings.timerSeconds > 0) "${settings.timerSeconds}S" else null,
             )
             val tagLabels = remember(settings.vendorTags, lens) { if (controller.hasCharacteristics) controller.activeTagLabels() else emptyList() }

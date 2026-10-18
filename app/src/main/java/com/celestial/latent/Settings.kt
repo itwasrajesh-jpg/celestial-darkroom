@@ -33,6 +33,7 @@ data class AppSettings(
     val vendorTags: List<VendorTag> = emptyList(),
     val inSensorZoomJpeg: Boolean = true,   // EnableInsensorZoom, sent only while ×2 is on (JPEG path; RAW stays 1x)
     val teleZoomDirect: Boolean = true,     // open a tele lens directly while zoomed, so the logical camera cannot switch sensors
+    val dcgTest: Boolean = false,           // 67a test: main lens DCG mode (opmode 37379 + sensor mode 24, 60 fps)
     val timerSeconds: Int = 0,              // 0 / 3 / 10
     val burstMode: Boolean = false,         // tap = 16-frame burst (hold = single)
     val haptics: Boolean = true,
@@ -86,6 +87,7 @@ data class AppSettings(
                 vendorTags = (p.getString("vendorTags", "") ?: "").split("\n").mapNotNull { VendorTag.decode(it) },
                 inSensorZoomJpeg = p.getBoolean("inSensorZoomJpeg", true),
                 teleZoomDirect = p.getBoolean("teleZoomDirect", true),
+                dcgTest = p.getBoolean("dcgTest", false),
                 timerSeconds = p.getInt("timerSeconds", 0),
                 burstMode = p.getBoolean("burstMode", false),
                 haptics = p.getBoolean("haptics", true),
@@ -120,6 +122,7 @@ data class AppSettings(
                 .putString("vendorTags", s.vendorTags.joinToString("\n") { it.encode() })
                 .putBoolean("inSensorZoomJpeg", s.inSensorZoomJpeg)
                 .putBoolean("teleZoomDirect", s.teleZoomDirect)
+                .putBoolean("dcgTest", s.dcgTest)
                 .putInt("timerSeconds", s.timerSeconds)
                 .putBoolean("burstMode", s.burstMode)
                 .putBoolean("haptics", s.haptics)
