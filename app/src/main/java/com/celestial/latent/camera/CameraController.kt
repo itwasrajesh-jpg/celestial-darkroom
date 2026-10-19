@@ -80,32 +80,28 @@ class CameraController(
     /** Built-in feature: Qualcomm in-sensor zoom for the JPEG path. */
     @Volatile var inSensorZoomJpeg = false
     /**
-     * Test 67a: the main lens's DCG (dual conversion gain) mode, as MotionCam found it on the 15 Ultra —
-     * session opmode 37379 (0x9203) with sensor mode 24, which only runs at 60 fps. So while it is on
-     * the camera is held at 60 fps and no exposure is longer than 1/60 s. Not at ×2, which is a
-     * sensor mode of its own (3).
+     * DCG (dual conversion gain) on the main lens, as MotionCam found it on the 15 Ultra and shared in its
+     * device profile: camera 2 opened directly, session opmode 37379 (0x9203), sensor mode 24 as an i32
+     * request tag, 30 fps. The sensor then delivers 14-bit RAW (white 16383, black ~1024) of which the
+     * bottom 512 rows are not picture. Measured 19 Oct (67d): about 2.4x less noise in the deepest shadows.
+     * Not at ×2, which is a sensor mode of its own (3).
      */
     @Volatile var dcgTest = false
-        set(v) { if (v != field) dcgAttempt = 0; field = v }
     /**
-     * Which way of starting DCG to try. 67d copies MotionCam's own DCG profile for this phone (shared by
-     * its makers): camera 2 opened directly, opmode 37379, sensor mode 24 as an i32 request tag, manual
-     * exposure, RAW_SENSOR 4096x3072 of which the bottom 512 rows are not picture, and 14-bit data
-     * (black 1023, white 16383). Its saved frame rate is 30. After a crash the next way is tried by itself:
-     *  0 = exactly that, at 30 fps;
-     *  1 = the same at 60 fps (the announcement says "60 only");
-     *  2 = 30 fps with white balance and focus also fixed, and the plainest requests.
-     * The one that works is kept until the test is switched off.
+     * Which way of running DCG works. After a driver crash the next way is tried by itself, and the one
+     * that works is kept for as long as the app runs (so at most one crash per launch):
+     *  0 = auto exposure, held at 30 fps;
+     *  1 = manual exposure at 30 fps — exactly MotionCam's profile, proven on the phone in 67d;
+     *  2 = manual, with white balance and focus also fixed, and the plainest requests.
      */
     @Volatile private var dcgAttempt = 0
     private val DCG_OPMODE = 37379
     private val DCG_MODE = 24
     private val DCG_FRAME_NS = 16_666_666L
-    /** The frame time of the current way: 60 fps on way 1, otherwise 30 fps as in MotionCam's profile. */
-    private val dcgFrameNs get() = if (dcgAttempt == 1) DCG_FRAME_NS else 33_333_333L
-    private val dcgFps get() = if (dcgAttempt == 1) 60 else 30
-    /** MotionCam's DCG levels: 14-bit, black 1023, and only the top 2560 rows are picture. */
-    private val DCG_BLACK = 1023
+    private val dcgFrameNs = 33_333_333L
+    private val dcgFps = 30
+    /** DCG levels: 14-bit, black as the driver reports it (1024 measured; MotionCam uses 1023), top 2560 rows. */
+    private val DCG_BLACK = 1024
     private val DCG_WHITE = 16383
     private val DCG_SKIP_BOTTOM = 512
     private var lastFocusD = 0f
@@ -265,10 +261,10 @@ class CameraController(
                             handler.postDelayed({ previewSurface?.let { open(lens, it) } }, 600)
                         } else if (dcgOn() && error == CameraDevice.StateCallback.ERROR_CAMERA_DEVICE && dcgAttempt < 2) {
                             dcgAttempt++
-                            log("DCG test: camera error $error on way ${dcgAttempt - 1}; trying way $dcgAttempt")
-                            status("DCG test: trying way $dcgAttempt of 2…")
+                            log("DCG: camera error $error on way ${dcgAttempt - 1}; trying way $dcgAttempt")
+                            status("DCG: one moment, trying again…")
                             handler.postDelayed({ previewSurface?.let { open(lens, it) } }, 800)
-                        } else status(if (dcgOn()) "Camera error $error in the DCG test (all 3 ways tried); switch the test off" else "Camera error $error")
+                        } else status(if (dcgOn()) "Camera error $error with DCG on (all 3 ways tried); switch DCG off" else "Camera error $error")
                     }
                 }, handler)
             } catch (e: Exception) {
@@ -313,7 +309,7 @@ class CameraController(
                     fallbackDirect = true
                     val surf = previewSurface!!
                     handler.post { open(lens, surf) }
-                } else status(if (dcgOn()) "The ${lens.name} refused the DCG test session; switch the DCG test off in settings" else "Session configuration failed for ${lens.name}")
+                } else status(if (dcgOn()) "The ${lens.name} refused the DCG session; switch DCG off" else "Session configuration failed for ${lens.name}")
             }
         })
         try {
@@ -327,7 +323,7 @@ class CameraController(
             }
             if (dcgOn()) {
                 val minNs = runCatching { physChars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)!!.getOutputMinFrameDuration(ImageFormat.RAW_SENSOR, rawSize) }.getOrDefault(0L)
-                log("DCG test way $dcgAttempt (${if (directOpen) "direct" else "via $logicalId"}${if (dcgAttempt == 2) ", fixed white balance and focus, plain requests" else ""}): opmode $DCG_OPMODE (0x${Integer.toHexString(DCG_OPMODE)}) + sensor mode $DCG_MODE, manual exposure, on the ${lens.name}, $dcgFps fps · RAW ${rawSize.width}x${rawSize.height}, " +
+                log("DCG way $dcgAttempt (${if (directOpen) "direct" else "via $logicalId"}${if (dcgAttempt == 2) ", fixed white balance and focus, plain requests" else ""}): opmode $DCG_OPMODE (0x${Integer.toHexString(DCG_OPMODE)}) + sensor mode $DCG_MODE, ${if (dcgAttempt == 0) "auto" else "manual"} exposure, on the ${lens.name}, $dcgFps fps · RAW ${rawSize.width}x${rawSize.height}, " +
                     "fastest RAW frame the lens reports ${"%.1f".format(minNs / 1e6)} ms (60 fps needs 16.7 ms or less)")
             }
             if (activeOpmode != 0) log("session opmode 0x${Integer.toHexString(activeOpmode)} (lens ${lens.physicalId})")
@@ -446,10 +442,10 @@ class CameraController(
         if (c.zoom > 1.001f && sensorMode(c) == null) b.set(CaptureRequest.CONTROL_ZOOM_RATIO, c.zoom)
         // Exposure
         val dcg = dcgOn(c)
-        // DCG as MotionCam runs it: a fixed frame rate and manual exposure (the shutter, ISO you set, or
-        // the last values auto exposure chose before the test went on).
+        // DCG: a fixed 30 fps. Way 0 lets auto exposure work inside it (so no shutter longer than 1/30 s);
+        // ways 1–2 are MotionCam's manual exposure (the shutter and ISO you set, or the last auto values).
         if (dcg) b.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, Range(dcgFps, dcgFps))
-        if (c.manualExposure || dcg) {
+        if (c.manualExposure || (dcg && dcgAttempt >= 1)) {
             val exp = (c.shutterNs ?: lastAutoShutterNs).let { if (dcg) minOf(it, dcgFrameNs) else it }
             val iso = c.iso ?: lastAutoIso
             b.set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_OFF)
@@ -512,7 +508,7 @@ class CameraController(
         override fun onCaptureCompleted(sess: CameraCaptureSession, req: CaptureRequest, result: TotalCaptureResult) {
             val r = metaFor(result)
             val c = controls
-            val dcg = dcgOn(c)
+            val dcg = dcgOn(c) && dcgAttempt >= 1     // DCG with manual exposure: keep the values from before
             r.get(CaptureResult.SENSOR_EXPOSURE_TIME)?.let { if (!c.manualExposure && !dcg) lastAutoShutterNs = it }
             r.get(CaptureResult.SENSOR_SENSITIVITY)?.let { if (!c.manualExposure && !dcg) lastAutoIso = it }
             if (!dcg) r.get(CaptureResult.LENS_FOCUS_DISTANCE)?.let { lastFocusD = it }
@@ -520,7 +516,7 @@ class CameraController(
                 r.get(CaptureResult.COLOR_CORRECTION_TRANSFORM)?.let { lastTransform = it }
                 r.get(CaptureResult.COLOR_CORRECTION_GAINS)?.let { lastGains = it }
             }
-            if (++frameCounter == 45 && Lenses.isXiaomi15Ultra && lens.isMain) logDcgFrame(if (dcgOn()) "preview, DCG test ON" else "preview, DCG test off", r)
+            if (++frameCounter == 45 && Lenses.isXiaomi15Ultra && lens.isMain) logDcgFrame(if (dcgOn()) "preview, DCG on" else "preview, DCG off", r)
             if (frameCounter % 6 == 0) {
                 val gains = lastGains
                 val af = when (r.get(CaptureResult.CONTROL_AF_STATE)) {
@@ -580,7 +576,7 @@ class CameraController(
 
     fun captureBurst(frames: Int = 16) = handler.post {
         val s = session ?: return@post
-        if (dcgOn()) { status("Bursts are off during the DCG test; tap for a single RAW"); return@post }
+        if (dcgOn()) { status("Bursts are off while DCG is on; tap for a single RAW"); return@post }
         if (burst != null || busy) { status("busy"); return@post }
         try {
             val job = BurstJob(frames, rawSize.width, rawSize.height, System.nanoTime())
@@ -720,7 +716,7 @@ class CameraController(
             val black = physChars.get(CameraCharacteristics.SENSOR_BLACK_LEVEL_PATTERN)?.getOffsetForIndex(0, 0) ?: -1
             val dynWhite = r.get(CaptureResult.SENSOR_DYNAMIC_WHITE_LEVEL)
             val dynBlack = r.get(CaptureResult.SENSOR_DYNAMIC_BLACK_LEVEL)?.firstOrNull()
-            log("raw stats ${if (dcgOn()) "[DCG test ON]" else "[DCG test off]"} ${lens.name} ${w}x$h: darkest 0.1% at $lo, brightest $max, 99.9% below $p999 · " +
+            log("raw stats ${if (dcgOn()) "[DCG on]" else "[DCG off]"} ${lens.name} ${w}x$h: darkest 0.1% at $lo, brightest $max, 99.9% below $p999 · " +
                 "white level ${white}${if (dcgOn()) " (DCG, as MotionCam)" else ""} (frame says ${dynWhite ?: "-"}), black ${black} (frame says ${dynBlack?.let { "%.0f".format(it) } ?: "-"}) · " +
                 "${"%.3f".format(100.0 * over / n)}% of pixels at or above white" + (if (max > white) " · ABOVE WHITE: the DNG would clip these" else ""))
             if (dcgOn()) logDcgFrame("shot", r)
@@ -741,11 +737,14 @@ class CameraController(
         val h = (img.height - DCG_SKIP_BOTTOM).coerceAtLeast(2) and 1.inv()
         val px = ShortArray(w * h)
         for (y in 0 until h) { sb.position(y * stride); sb.get(px, y * w, w) }
-        val meta = DngWriter.metaFrom(physChars, metaFor(result), w, h, black = DCG_BLACK, white = DCG_WHITE, orientation = 6,
-            description = "Celestial Darkroom DCG test RAW - ${lens.name} (opmode $DCG_OPMODE, sensor mode $DCG_MODE, way $dcgAttempt)")
+        val r = metaFor(result)
+        // The driver's own black level for this frame (it said 1024); its white level still reads 10-bit, so not that.
+        val black = r.get(CaptureResult.SENSOR_DYNAMIC_BLACK_LEVEL)?.average()?.let { Math.round(it).toInt() }?.takeIf { it in 512..2048 } ?: DCG_BLACK
+        val meta = DngWriter.metaFrom(physChars, r, w, h, black = black, white = DCG_WHITE, orientation = 6,
+            description = "Celestial Darkroom DCG RAW - ${lens.name} (opmode $DCG_OPMODE, sensor mode $DCG_MODE, way $dcgAttempt)")
         val t = System.nanoTime()
         saveTo(name) { DngWriter.write(it, meta, px) }
-        log("DCG test: saved $name as ${w}x$h, black $DCG_BLACK, white $DCG_WHITE (the bottom $DCG_SKIP_BOTTOM rows left out)")
+        log("DCG: saved $name as ${w}x$h, black $black, white $DCG_WHITE, 1/${"%.0f".format(1e9 / (meta.exposureNs ?: 1L))} s ISO ${meta.iso ?: "?"} (the bottom $DCG_SKIP_BOTTOM rows left out)")
         return (System.nanoTime() - t) / 1_000_000
     }
 

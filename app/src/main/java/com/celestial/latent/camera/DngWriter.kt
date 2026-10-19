@@ -37,6 +37,8 @@ object DngWriter {
         val orientation: Int,            // TIFF orientation (6 = rotate 90 CW)
         val uniqueModel: String,
         val description: String,
+        val exposureNs: Long? = null,    // ExposureTime / ISO, when the frame reports them
+        val iso: Int? = null,
     )
 
     fun metaFrom(ch: CameraCharacteristics, result: CaptureResult?, width: Int, height: Int, black: Int, white: Int, orientation: Int, description: String): Meta {
@@ -67,6 +69,7 @@ object DngWriter {
             ch.get(CameraCharacteristics.SENSOR_REFERENCE_ILLUMINANT2)?.toInt(),
             neutral, orientation,
             "${Build.MANUFACTURER} ${Build.MODEL}", description,
+            result?.get(CaptureResult.SENSOR_EXPOSURE_TIME), result?.get(CaptureResult.SENSOR_SENSITIVITY),
         )
     }
 
@@ -106,6 +109,11 @@ object DngWriter {
         ascii(305, "Celestial Darkroom")
         ascii(270, meta.description)
         shorts(33421, 2, 2)
+        meta.exposureNs?.let { ns ->               // ExposureTime as a rational in seconds
+            val b = ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN); b.putInt((ns / 1000).toInt()); b.putInt(1_000_000)
+            tags += Tag(33434, 5, 1, b.array())
+        }
+        meta.iso?.let { shorts(34855, it.coerceIn(1, 65535)) }
         bytes(33422, meta.cfaPattern)
         bytes(50706, byteArrayOf(1, 4, 0, 0))
         bytes(50707, byteArrayOf(1, 1, 0, 0))

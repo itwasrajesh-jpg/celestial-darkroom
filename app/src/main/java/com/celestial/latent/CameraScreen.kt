@@ -495,7 +495,7 @@ fun CameraScreen(
             }
             val modes = listOfNotNull(
                 if (settings.inSensorZoomJpeg && Lenses.isXiaomi15Ultra && controls.zoom > 1.001f) "ISZ" else null,
-                if (settings.dcgTest && Lenses.isXiaomi15Ultra && lens.physicalId == Lenses.MAIN_ID && controls.zoom <= 1.001f) "DCG TEST" else null,
+                if (settings.dcgTest && Lenses.isXiaomi15Ultra && lens.physicalId == Lenses.MAIN_ID && controls.zoom <= 1.001f) "DCG" else null,
                 if (settings.burstMode) "BURST" else null, if (settings.timerSeconds > 0) "${settings.timerSeconds}S" else null,
             )
             val tagLabels = remember(settings.vendorTags, lens) { if (controller.hasCharacteristics) controller.activeTagLabels() else emptyList() }
@@ -577,6 +577,14 @@ fun CameraScreen(
                         }
                         Tile("Portrait / Night", false, Modifier.weight(1f)) { drawerOpen = false; onOpenExtension() }
                         Tile("All settings", false, Modifier.weight(1f)) { drawerOpen = false; onOpenSettings() }
+                    }
+                    // DCG: the main lens's cleaner-shadow sensor mode (Xiaomi 15 Ultra only).
+                    if (Lenses.isXiaomi15Ultra) {
+                        Spacer(Modifier.height(6.dp))
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Tile("DCG · main lens", settings.dcgTest, Modifier.weight(1f)) { onSettingsChange(settings.copy(dcgTest = it)) }
+                            Spacer(Modifier.weight(1f))
+                        }
                     }
                     // Cinema: a motion-picture film and print, a Super 35 frame, a widescreen crop.
                     Spacer(Modifier.height(6.dp))
