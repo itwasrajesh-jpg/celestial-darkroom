@@ -332,7 +332,12 @@ fun CameraScreen(
         DevelopQueue.onDeveloped = { uri -> loadThumb(uri) }
         onDispose { DevelopQueue.onChanged = {}; DevelopQueue.onDeveloped = {} }
     }
-    LaunchedEffect(Unit) { controller.onVendorEcho = onVendorEcho; controller.onBurstFinished = { Haptics.click(context) }; onController(controller) }
+    LaunchedEffect(Unit) {
+        controller.onVendorEcho = onVendorEcho; controller.onBurstFinished = { Haptics.click(context) }
+        // A burst roll is not in the gallery, so its thumbnail is the sharpest frame's preview from the roll.
+        controller.onRollSaved = { _, jpeg -> jpeg?.let { j -> android.graphics.BitmapFactory.decodeByteArray(j, 0, j.size)?.let { thumb = it } } }
+        onController(controller)
+    }
     LaunchedEffect(settings.haptics) { Haptics.enabled = settings.haptics }
     var toast by remember { mutableStateOf("") }
     LaunchedEffect(status) {

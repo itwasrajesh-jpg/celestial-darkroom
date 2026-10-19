@@ -40,7 +40,7 @@ import java.util.concurrent.Executor
  * Camera2 controller for step 2b/2c:
  *  - opens logical camera 0 and routes preview + RAW to one physical lens,
  *  - single-frame DNG capture (Android's DngCreator, full metadata),
- *  - 16-frame RAW burst: measures sensor timing, saves frame 1 and the plain average.
+ *  - 16-frame RAW burst: every frame into one burst roll (68a), plus the aligned average.
  *
  * All camera callbacks run on one background thread; UI gets plain strings via [onStatus].
  */
@@ -104,8 +104,6 @@ class CameraController(
     private val DCG_BLACK = 1024
     private val DCG_WHITE = 16383
     private val DCG_SKIP_BOTTOM = 512
-    /** A DCG burst keeps only this square from the middle of each frame (~2 MB), so a whole burst fits one upload. */
-    private val DCG_BURST_PATCH = 1024
     private var lastFocusD = 0f
     private fun dcgOn(c: Controls = controls) = dcgTest && Lenses.isXiaomi15Ultra && lens.physicalId == Lenses.MAIN_ID && sensorMode(c) == null
     /** Open a tele lens directly while zoomed (stops the logical camera switching sensors). */
@@ -160,6 +158,8 @@ class CameraController(
     }
     @Volatile var onVendorEcho: (String) -> Unit = {}
     @Volatile var onBurstFinished: () -> Unit = {}
+    /** A burst roll was saved: its file and the sharpest frame's preview JPEG (for the last-shot thumbnail). */
+    @Volatile var onRollSaved: (android.net.Uri, ByteArray?) -> Unit = { _, _ -> }
     private lateinit var physChars: CameraCharacteristics
     private var rawSize = Size(4096, 3072)
 
@@ -169,7 +169,7 @@ class CameraController(
 
     // Burst state
     private var burst: BurstJob? = null
-    private var dcgBurst: DcgBurst? = null
+    private var roll: RollJob? = null
 
     // Control strip state
     @Volatile var controls: Controls = Controls(); private set
@@ -579,85 +579,177 @@ class CameraController(
 
     fun captureBurst(frames: Int = 16) = handler.post {
         val s = session ?: return@post
-        if (burst != null || dcgBurst != null || busy) { status("busy"); return@post }
-        if (dcgOn()) { captureDcgBurst(s, frames); return@post }
+        if (roll != null) { status("Still saving the last burst…"); return@post }
+        if (burst != null || busy) { status("busy"); return@post }
+        val dcg = dcgOn()
+        var rj: RollJob? = null
         try {
-            val job = BurstJob(frames, rawSize.width, rawSize.height, System.nanoTime())
+            // Every frame goes into one burst roll (68a). Without DCG the frames are also stacked into
+            // the cleaner STACK DNG as before; DCG frames (14-bit) are only kept, their merge is 68b.
+            // A spool left behind by a burst the app was closed during is no use now.
+            context.cacheDir.listFiles { f -> f.name.endsWith(".spool") }?.forEach { it.delete() }
+            rj = RollJob(frames, fileBase("BURST"), dcg, System.nanoTime())
+            roll = rj
+            val job = if (dcg) null else BurstJob(frames, rawSize.width, rawSize.height, System.nanoTime())
             burst = job
-            val reqs = List(frames) { i -> stillRequest(withJpeg = wantJpeg && !hdrJpegSequential && i == 0).build() }
+            // Exposure is locked for the burst so every frame matches (DCG way 0 is the only auto path here).
+            val reqs = List(frames) { i -> stillRequest(withJpeg = !dcg && wantJpeg && !hdrJpegSequential && i == 0)
+                .apply { if (dcg && dcgAttempt == 0) set(CaptureRequest.CONTROL_AE_LOCK, true) }.build() }
             s.captureBurst(reqs, object : CameraCaptureSession.CaptureCallback() {
                 override fun onCaptureCompleted(sess: CameraCaptureSession, req: CaptureRequest, result: TotalCaptureResult) { onResult(result, null) }
                 override fun onCaptureFailed(sess: CameraCaptureSession, req: CaptureRequest, failure: android.hardware.camera2.CaptureFailure) {
-                    log("burst frame failed reason=${failure.reason}"); job.failed++
-                    if (job.received + job.failed >= job.frames) finishBurst(job)
+                    log("burst frame failed reason=${failure.reason}")
+                    rj.failed.incrementAndGet(); rj.checkDone()
+                    if (job != null) { job.failed++; if (job.received + job.failed >= job.frames) finishBurst(job) }
                 }
             }, handler)
             status("Burst of $frames… hold still")
-        } catch (e: Exception) { burst = null; status("burst: ${e.message}") }
+            // A frame whose result never pairs up would leave the roll open; count the missing ones as failed.
+            handler.postDelayed({
+                val missing = frames - rj.received.get() - rj.failed.get()
+                if (missing > 0) { log("burst: $missing frames never arrived"); rj.failed.addAndGet(missing); rj.checkDone() }
+            }, 8000)
+        } catch (e: Exception) { burst = null; roll = null; rj?.abandon(); status("burst: ${e.message}") }
     }
 
     /**
-     * DCG burst (67f/67g): every frame is kept as its own 14-bit DNG, nothing is stacked; 67g keeps only the
-     * 1024x1024 middle of each frame (~2 MB) so a whole burst fits one upload. These are the raw
-     * material for testing burst super-resolution on a computer. Exposure is locked for the burst so every
-     * frame matches; at 30 fps 16 frames take about half a second.
+     * One burst roll being saved (68a): every full-size frame, lossless, in one file under
+     * Documents/Latent/Bursts (see [BurstRoll]). Frames are copied off the camera and written to a plain
+     * spool file at once, so the camera never waits and sixteen frames never sit in memory together; two
+     * background threads then compress them (plus a small preview each) and append them to the roll in
+     * order. About 21 MB per DCG frame before packing, about 10 MB after.
      */
-    private fun captureDcgBurst(s: CameraCaptureSession, frames: Int) {
-        try {
-            val job = DcgBurst(frames, fileBase("BURST_DCG"), System.nanoTime())
-            dcgBurst = job
-            val reqs = List(frames) { stillRequest().apply { if (dcgAttempt == 0) set(CaptureRequest.CONTROL_AE_LOCK, true) }.build() }
-            s.captureBurst(reqs, object : CameraCaptureSession.CaptureCallback() {
-                override fun onCaptureCompleted(sess: CameraCaptureSession, req: CaptureRequest, result: TotalCaptureResult) { onResult(result, null) }
-                override fun onCaptureFailed(sess: CameraCaptureSession, req: CaptureRequest, failure: android.hardware.camera2.CaptureFailure) {
-                    log("DCG burst frame failed reason=${failure.reason}"); job.failed++; job.checkDone()
-                }
-            }, handler)
-            status("DCG burst of $frames… hold still")
-            // A frame whose result never pairs up would leave the burst open; count the missing ones as failed.
-            handler.postDelayed({ if (dcgBurst === job && job.received + job.failed < frames) {
-                log("DCG burst: ${frames - job.received - job.failed} frames never arrived"); job.failed = frames - job.received; job.checkDone() } }, 8000)
-        } catch (e: Exception) { dcgBurst = null; status("DCG burst: ${e.message}") }
-    }
-
-    private inner class DcgBurst(val frames: Int, val base: String, val startNs: Long) {
-        var received = 0; var failed = 0
-        private val writtenN = java.util.concurrent.atomic.AtomicInteger()
-        private val skippedN = java.util.concurrent.atomic.AtomicInteger()
-        val written get() = writtenN.get()
-        val skipped get() = skippedN.get()
-        val tsList = ArrayList<Long>()
-        private val writer = java.util.concurrent.Executors.newSingleThreadExecutor()
+    private inner class RollJob(val frames: Int, val base: String, val dcg: Boolean, val startNs: Long) {
+        val received = java.util.concurrent.atomic.AtomicInteger()
+        val failed = java.util.concurrent.atomic.AtomicInteger()
+        private val metas = arrayOfNulls<BurstRoll.Frame>(frames)
+        private val previews = arrayOfNulls<ByteArray>(frames)
+        private var common: BurstRoll.Common? = null
+        private var w = 0; private var h = 0; private var firstTs = 0L; private var gain = 1f
+        private val spoolFile = java.io.File(context.cacheDir, "$base.spool")
+        private val spool = java.io.RandomAccessFile(spoolFile, "rw").channel
+        private val pool = java.util.concurrent.Executors.newFixedThreadPool(2)
+        private val lock = Object()
+        private val ready = HashMap<Int, Pair<BurstRoll.Encoded, ByteArray?>?>()
+        private var next = 0; private var written = 0
+        private var uri: android.net.Uri? = null
+        private var writer: BurstRoll.StreamWriter? = null
         private var finished = false
 
-        /** On the camera thread: copy the frame out and queue the write, so the camera never waits on storage. */
+        /** On the camera thread: copy the frame out, spool it, queue its compression. */
         fun accept(img: Image, result: TotalCaptureResult) {
-            val n = received + 1
-            tsList += img.timestamp
-            val copy = try { dcgPixels(img, DCG_BURST_PATCH) } catch (e: OutOfMemoryError) { null }
-            received++
-            if (copy == null) { skippedN.incrementAndGet(); log("DCG burst: frame $n skipped (out of memory)") }
-            else writer.execute {
-                try { writeDcgPixels(copy.first, copy.second, copy.third, result, "${base}_%02d.dng".format(n)); writtenN.incrementAndGet() }
-                catch (e: Exception) { skippedN.incrementAndGet(); log("DCG burst: frame $n not saved: ${e.message}") }
-                status("DCG burst: saved ${written}/$frames")
-                handler.post { checkDone() }
+            val k = received.get()
+            if (k >= frames) return
+            val (px, pw, ph) = if (dcg) dcgPixels(img) else plainPixels(img)
+            val r = metaFor(result)
+            val black: Int; val white: Int
+            if (dcg) {
+                black = r.get(CaptureResult.SENSOR_DYNAMIC_BLACK_LEVEL)?.average()?.let { Math.round(it).toInt() }?.takeIf { it in 512..2048 } ?: DCG_BLACK
+                white = DCG_WHITE
+            } else {
+                black = r.get(CaptureResult.SENSOR_DYNAMIC_BLACK_LEVEL)?.average()?.let { Math.round(it).toInt() }
+                    ?: physChars.get(CameraCharacteristics.SENSOR_BLACK_LEVEL_PATTERN)?.getOffsetForIndex(0, 0) ?: 64
+                white = r.get(CaptureResult.SENSOR_DYNAMIC_WHITE_LEVEL) ?: physChars.get(CameraCharacteristics.SENSOR_INFO_WHITE_LEVEL) ?: 1023
+            }
+            val m = DngWriter.metaFrom(physChars, r, pw, ph, black = black, white = white, orientation = 6, description = "")
+            if (k == 0) {
+                w = pw; h = ph; firstTs = img.timestamp
+                common = BurstRoll.Common(pw, ph, black, white, m.cfaPattern, m.colorMatrix1, m.colorMatrix2, m.forwardMatrix1,
+                    m.cameraCalibration1, m.illuminant1, m.illuminant2, 6, m.uniqueModel, lens.name, dcg)
+                gain = BurstRoll.previewGain(px, black, white)
+                val values = android.content.ContentValues().apply {
+                    put(MediaStore.MediaColumns.DISPLAY_NAME, "$base.${BurstRoll.EXT}")
+                    put(MediaStore.MediaColumns.MIME_TYPE, "application/octet-stream")
+                    put(MediaStore.MediaColumns.RELATIVE_PATH, BurstRoll.FOLDER)
+                    put(MediaStore.MediaColumns.IS_PENDING, 1)
+                }
+                val u = context.contentResolver.insert(MediaStore.Files.getContentUri("external"), values)
+                    ?: throw IllegalStateException("could not create the burst roll file")
+                uri = u
+                writer = BurstRoll.StreamWriter(java.io.BufferedOutputStream(context.contentResolver.openOutputStream(u)!!, 1 shl 20))
+            }
+            if (pw != w || ph != h) { log("burst: frame ${k + 1} has a different size, left out"); failed.incrementAndGet(); return }
+            metas[k] = BurstRoll.Frame(img.timestamp - firstTs, m.exposureNs, m.iso, m.asShotNeutral)
+            val bb = java.nio.ByteBuffer.allocate(px.size * 2).order(java.nio.ByteOrder.LITTLE_ENDIAN); bb.asShortBuffer().put(px)
+            var pos = k.toLong() * w * h * 2
+            while (bb.hasRemaining()) pos += spool.write(bb, pos)
+            received.incrementAndGet()
+            pool.execute { encode(k) }
+            status("Burst roll: frame ${k + 1}/$frames")
+        }
+
+        private fun encode(k: Int) {
+            var item: Pair<BurstRoll.Encoded, ByteArray?>? = null
+            try {
+                val bb = java.nio.ByteBuffer.allocate(w * h * 2).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                var pos = k.toLong() * w * h * 2
+                while (bb.hasRemaining()) { val n = spool.read(bb, pos); if (n < 0) break; pos += n }
+                bb.flip()
+                val px = ShortArray(w * h).also { bb.asShortBuffer().get(it) }
+                val f = metas[k]!!; val c = common!!
+                f.sharpness = BurstRoll.sharpness(px, w, h, c.cfa, c.black)
+                val (argb, pw, ph) = BurstRoll.previewArgb(px, c, f.neutral, gain)
+                val jpeg = java.io.ByteArrayOutputStream().also { o ->
+                    android.graphics.Bitmap.createBitmap(argb, pw, ph, android.graphics.Bitmap.Config.ARGB_8888)
+                        .compress(android.graphics.Bitmap.CompressFormat.JPEG, 85, o)
+                }.toByteArray()
+                previews[k] = jpeg
+                item = BurstRoll.encode(px, w, h) to jpeg
+            } catch (t: Throwable) { log("burst: frame ${k + 1} not saved: ${t.message}") }
+            synchronized(lock) {
+                ready[k] = item
+                try {
+                    while (ready.containsKey(next)) {
+                        val it = ready.remove(next)
+                        if (it != null) { writer!!.addFrame(metas[next]!!, it.first, it.second); written++ } else metas[next] = null
+                        next++
+                    }
+                } catch (e: Exception) { log("burst roll write failed: ${e.message}") }
+                status("Burst roll: saved $written/${received.get()}")
             }
             checkDone()
         }
 
-        /** Done when every frame has arrived (or failed) and every queued write is finished. */
-        fun checkDone() {
-            if (finished || received + failed < frames || written + skipped < received) return
+        /** Done when every frame has arrived (or failed) and every arrived frame is in the file. */
+        fun checkDone() = synchronized(lock) {
+            if (finished || received.get() + failed.get() < frames || next < received.get()) return@synchronized
             finished = true
-            writer.shutdown()
-            if (dcgBurst === this) dcgBurst = null
-            val span = if (tsList.size > 1) (tsList.last() - tsList.first()) / 1_000_000 else 0
-            val wall = (System.nanoTime() - startNs) / 1_000_000
-            status("DCG burst: $written/$frames frames saved as ${base}_01… ($failed failed, $skipped skipped) · sensor span $span ms · total $wall ms")
-            log("DCG burst frame times ms from first: " + tsList.joinToString { ((it - tsList.first()) / 1_000_000).toString() })
-            onBurstFinished()
+            pool.shutdown()
+            if (roll === this) handler.post { if (roll === this) roll = null }
+            try {
+                val u = uri
+                val wr = writer
+                if (u == null || wr == null || written == 0) { abandon(); status("Burst: no frames saved"); return@synchronized }
+                val kept = metas.filterNotNull()
+                val size = wr.finish(BurstRoll.Index(common!!, kept))
+                context.contentResolver.update(u, android.content.ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }, null, null)
+                val best = kept.indices.maxByOrNull { kept[it].sharpness } ?: 0
+                val wall = (System.nanoTime() - startNs) / 1_000_000
+                status("Burst roll saved · ${kept.size} frames · ${"%.0f".format(size / 1e6)} MB · sharpest #${best + 1} · ${wall / 1000.0} s")
+                log("burst roll $base: ${kept.size} frames ${w}x$h${if (dcg) " DCG" else ""}, ${"%.1f".format(size / 1e6)} MB " +
+                    "(${"%.0f".format(100.0 * size / (kept.size.toLong() * w * h * 2))}% of plain), sharpness " + kept.joinToString(" ") { "%.0f".format(it.sharpness) })
+                onRollSaved(u, previews.filterNotNull().getOrNull(best))
+                if (dcg) onBurstFinished()
+            } catch (e: Exception) { status("burst roll save failed: ${e.message}"); Log.e("Latent", "roll", e) }
+            finally { runCatching { spool.close() }; spoolFile.delete() }
         }
+
+        /** Nothing worth keeping: remove the half-written file and the spool. */
+        fun abandon() {
+            pool.shutdownNow()
+            runCatching { spool.close() }; spoolFile.delete()
+            uri?.let { u -> runCatching { context.contentResolver.delete(u, null, null) } }
+        }
+    }
+
+    /** A plain (non-DCG) RAW frame, copied so the camera buffer can go back at once. */
+    private fun plainPixels(img: Image): Triple<ShortArray, Int, Int> {
+        val plane = img.planes[0]
+        val sb = plane.buffer.duplicate().order(java.nio.ByteOrder.nativeOrder()).asShortBuffer()
+        val w = img.width; val h = img.height; val stride = plane.rowStride / 2
+        val px = ShortArray(w * h)
+        for (y in 0 until h) { sb.position(y * stride); sb.get(px, y * w, w) }
+        return Triple(px, w, h)
     }
 
     // ---- pairing ----------------------------------------------------------------
@@ -687,10 +779,12 @@ class CameraController(
 
     private fun handle(img: Image, result: TotalCaptureResult, t0: Long?) {
         val job = burst
-        val dj = dcgBurst
+        val rj = roll
         try {
-            if (dj != null) {
-                dj.accept(img, result)
+            // A burst frame goes into the roll first (a copy), then into the stack.
+            if (rj != null) try { rj.accept(img, result) } catch (e: Exception) { rj.failed.incrementAndGet(); rj.checkDone(); log("burst roll: ${e.message}") }
+            if (job == null && rj != null) {
+                // DCG burst: the roll is all there is
             } else if (job == null) {
                 val base = fileBase()
                 baseNames[img.timestamp] = base
@@ -727,7 +821,7 @@ class CameraController(
                 val t = System.nanoTime()
                 saveTo(avgName) { DngWriter.write(it, meta, pixels) }
                 val wms = (System.nanoTime() - t) / 1_000_000
-                status("Burst: ${job.received}/${job.frames} frames (${job.failed} failed) · sensor span $sensorMs ms · total $wallMs ms · saved ${job.firstName} + $avgName (write $wms ms)")
+                status("Burst: ${job.received}/${job.frames} frames (${job.failed} failed) · sensor span $sensorMs ms · total $wallMs ms · saved $avgName (write $wms ms) · every frame goes into the burst roll")
                 onBurstFinished()
                 log("burst frame timestamps ms from first: " + job.tsList.joinToString { ((it - job.firstTs) / 1_000_000).toString() })
                 log("alignment shifts px (accepted tiles): " + job.shifts.joinToString(" ") + " · overall ${job.tilesAccepted}/${job.tilesTotal} tiles used")
@@ -806,17 +900,13 @@ class CameraController(
     }
 
     /** The picture part of a DCG frame (the bottom rows left out), copied so the camera buffer can go back at once. */
-    private fun dcgPixels(img: Image, patch: Int = 0): Triple<ShortArray, Int, Int> {
+    private fun dcgPixels(img: Image): Triple<ShortArray, Int, Int> {
         val plane = img.planes[0]
         val sb = plane.buffer.duplicate().order(java.nio.ByteOrder.nativeOrder()).asShortBuffer()
-        val fullW = img.width; val stride = plane.rowStride / 2
-        val fullH = (img.height - DCG_SKIP_BOTTOM).coerceAtLeast(2) and 1.inv()
-        // patch > 0: only a square from the middle, starting on even pixels so the colour pattern stays the same.
-        val w = if (patch > 0) minOf(patch, fullW) and 1.inv() else fullW
-        val h = if (patch > 0) minOf(patch, fullH) and 1.inv() else fullH
-        val x0 = ((fullW - w) / 2) and 1.inv(); val y0 = ((fullH - h) / 2) and 1.inv()
+        val w = img.width; val stride = plane.rowStride / 2
+        val h = (img.height - DCG_SKIP_BOTTOM).coerceAtLeast(2) and 1.inv()
         val px = ShortArray(w * h)
-        for (y in 0 until h) { sb.position((y0 + y) * stride + x0); sb.get(px, y * w, w) }
+        for (y in 0 until h) { sb.position(y * stride); sb.get(px, y * w, w) }
         return Triple(px, w, h)
     }
 
@@ -1067,7 +1157,6 @@ class CameraController(
         baseNames.clear(); pendingJpegs.clear()
         pendingImages.values.forEach { it.close() }; pendingImages.clear(); pendingResults.clear()
         burst = null
-        dcgBurst = null
     }
 
     fun destroy() { close(); handler.post { thread.quitSafely() } }
@@ -1105,8 +1194,7 @@ class CameraController(
                 val base = fileBase("BURST1")
                 firstName = "$base.dng"
                 baseNames[ts] = base
-                flushPendingJpeg(ts, base)
-                writeDngCreator(img, result, firstName)
+                flushPendingJpeg(ts, base)   // a JPEG of the first frame, if JPEGs are on (the RAW is in the burst roll)
                 val r = ShortArray(w * h); readInto(img, r); ref = r
                 refPyr = Align.pyramid(r, w, h)
                 // Reference counts as the first accepted sample everywhere.

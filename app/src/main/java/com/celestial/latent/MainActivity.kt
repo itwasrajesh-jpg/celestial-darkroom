@@ -71,6 +71,8 @@ private fun Root() {
     val askPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok -> granted = ok }
     var darkroomSource by remember { mutableStateOf<android.net.Uri?>(null) }
     var darkroomIsRaw by remember { mutableStateOf(true) }
+    var burstRoll by remember { mutableStateOf<android.net.Uri?>(null) }
+    var darkroomBack by remember { mutableStateOf("roll") }   // where Back leaves the darkroom to
     var crash by remember { mutableStateOf(CrashLog.read(context)) }
     var screen by remember { mutableStateOf("camera") }
     crash?.let { text ->
@@ -115,7 +117,7 @@ private fun Root() {
     }
     // System back gesture: always one step up, never out of the app while inside a sub-screen.
     BackHandler(enabled = screen != "camera") {
-        screen = when (screen) { "settings", "extension", "roll" -> "camera"; "darkroom" -> "roll"; else -> "settings" }
+        screen = when (screen) { "settings", "extension", "roll" -> "camera"; "darkroom" -> darkroomBack; "burst" -> "roll"; else -> "settings" }
     }
 
     // The overlay is drawn after the screens, so it covers them while the camera starts behind.
@@ -137,8 +139,9 @@ private fun Root() {
         "look" -> LookScreen(settings = settings, onBack = { screen = "roll" })
         "roll" -> RollScreen(
             settings = settings, onSettingsChange = { s -> settings = s; AppSettings.save(context, s) },
-            onOpenDarkroom = { uri, isRaw -> darkroomSource = uri; darkroomIsRaw = isRaw; screen = "darkroom" },
+            onOpenDarkroom = { uri, isRaw -> darkroomSource = uri; darkroomIsRaw = isRaw; darkroomBack = "roll"; screen = "darkroom" },
             onOpenLookBuilder = { screen = "look" },
+            onOpenBurst = { uri -> burstRoll = uri; screen = "burst" },
             onBack = { screen = "camera" },
         )
         "darkroom" -> darkroomSource?.let { src ->
@@ -146,6 +149,13 @@ private fun Root() {
                 source = src, isRaw = darkroomIsRaw,
                 initial = com.celestial.latent.develop.Recipes.current(context).copy(film = settings.film),
                 onRecipeChanged = { r -> if (r.film != settings.film) { settings = settings.copy(film = r.film); AppSettings.save(context, settings) } },
+                onBack = { screen = darkroomBack },
+            )
+        } ?: run { screen = "roll" }
+        "burst" -> burstRoll?.let { b ->
+            BurstScreen(
+                roll = b,
+                onOpenDarkroom = { uri -> darkroomSource = uri; darkroomIsRaw = true; darkroomBack = "burst"; screen = "darkroom" },
                 onBack = { screen = "roll" },
             )
         } ?: run { screen = "roll" }
@@ -170,7 +180,7 @@ private fun Root() {
             settings = settings,
             onSettingsChange = { s -> settings = s; AppSettings.save(context, s) },
             onOpenRoll = { screen = "roll" },
-            onOpenDarkroom = { uri, isRaw -> darkroomSource = uri; darkroomIsRaw = isRaw; screen = "darkroom" },
+            onOpenDarkroom = { uri, isRaw -> darkroomSource = uri; darkroomIsRaw = isRaw; darkroomBack = "roll"; screen = "darkroom" },
             onOpenSettings = { screen = "settings" },
             onOpenExtension = { screen = "extension" },
             onLensChanged = { l -> if (settings.rememberLens) { settings = settings.copy(defaultLensId = l.physicalId); AppSettings.save(context, settings) } },

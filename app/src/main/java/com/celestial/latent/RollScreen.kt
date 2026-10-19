@@ -53,7 +53,7 @@ import com.celestial.latent.develop.Develop
 import com.celestial.latent.develop.DevelopQueue
 import com.celestial.latent.ui.LatentColors
 
-private data class Frame(val uri: Uri, val name: String, val isRaw: Boolean, val developed: Boolean)
+private data class Frame(val uri: Uri, val name: String, val isRaw: Boolean, val developed: Boolean, val date: Long = 0, val isBurst: Boolean = false)
 
 /** The roll: every capture in DCIM/Latent, developed ones in colour, undeveloped ones waiting. */
 @Composable
@@ -62,6 +62,7 @@ fun RollScreen(
     onSettingsChange: (AppSettings) -> Unit,
     onOpenDarkroom: (Uri, Boolean) -> Unit = { _, _ -> },
     onOpenLookBuilder: () -> Unit = {},
+    onOpenBurst: (Uri) -> Unit = {},
     onBack: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -75,25 +76,29 @@ fun RollScreen(
         val developedStems = HashSet<String>()
         context.contentResolver.query(
             MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-            arrayOf(MediaStore.Images.Media._ID, MediaStore.Images.Media.DISPLAY_NAME),
+            arrayOf(MediaStore.Images.Media._ID, MediaStore.Images.Media.DISPLAY_NAME, MediaStore.Images.Media.DATE_ADDED),
             "${MediaStore.Images.Media.RELATIVE_PATH} LIKE ?", arrayOf("DCIM/Latent%"),
             "${MediaStore.Images.Media.DATE_ADDED} DESC",
         )?.use { c ->
             val all = ArrayList<Pair<Uri, String>>()
-            while (c.moveToNext()) all += ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, c.getLong(0)) to c.getString(1)
+            val dates = HashMap<Uri, Long>()
+            while (c.moveToNext()) { val u = ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, c.getLong(0)); all += u to c.getString(1); dates[u] = c.getLong(2) }
             // A developed file is named <capture>_<film>.jpg, so its stem identifies the capture.
             all.forEach { (_, n) -> if (n.endsWith(".jpg", true) && n.contains('_')) developedStems += n.substringBeforeLast('.').substringBeforeLast('_') }
             all.forEach { (u, n) ->
                 val stem = n.substringBeforeLast('.')
                 val isRaw = n.endsWith(".dng", true)
                 if (isRaw || !developedStems.contains(stem.substringBeforeLast('_')))
-                    raws += Frame(u, n, isRaw, developed = developedStems.contains(stem))
+                    raws += Frame(u, n, isRaw, developed = developedStems.contains(stem), date = dates[u] ?: 0)
             }
         }
+        // Burst rolls (68a) live outside the gallery, one tile per burst, in date order with the rest.
+        com.celestial.latent.camera.BurstRollFiles.list(context).forEach { b -> raws += Frame(b.uri, b.name, isRaw = true, developed = false, date = b.dateAdded, isBurst = true) }
+        raws.sortByDescending { it.date }
         frames = raws
     }
 
-    LaunchedEffect(Unit) { scan() }
+    LaunchedEffect(Unit) { kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { scan() } }
     DisposableEffect(Unit) {
         val prevChanged = DevelopQueue.onChanged; val prevDone = DevelopQueue.onDeveloped
         DevelopQueue.onChanged = { queued = DevelopQueue.queued }
@@ -118,7 +123,7 @@ fun RollScreen(
     }
 
     val shown = frames.filter {
-        when (filter) { "developed" -> it.developed; "latent" -> it.isRaw && !it.developed; else -> true }
+        when (filter) { "developed" -> it.developed; "latent" -> it.isRaw && !it.developed && !it.isBurst; "bursts" -> it.isBurst; else -> true }
     }
 
     Column(Modifier.fillMaxSize().background(LatentColors.Background).statusBarsPadding().navigationBarsPadding().padding(horizontal = 14.dp)) {
@@ -135,7 +140,8 @@ fun RollScreen(
             }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(bottom = 10.dp)) {
-            listOf("all" to "ALL ${frames.size}", "developed" to "DEVELOPED ${frames.count { it.developed }}", "latent" to "LATENT ${frames.count { it.isRaw && !it.developed }}").forEach { (id, label) ->
+            listOf("all" to "ALL ${frames.size}", "developed" to "DEVELOPED ${frames.count { it.developed }}", "latent" to "LATENT ${frames.count { it.isRaw && !it.developed && !it.isBurst }}",
+                "bursts" to "BURSTS ${frames.count { it.isBurst }}").forEach { (id, label) ->
                 val on = id == filter
                 Text(label, color = if (on) LatentColors.AmberInk else LatentColors.Text, fontSize = 11.sp, letterSpacing = 1.sp,
                     modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(if (on) LatentColors.Amber else LatentColors.Surface)
@@ -146,19 +152,27 @@ fun RollScreen(
             items(shown, key = { it.uri.toString() }) { frame ->
                 LaunchedEffect(frame.uri) {
                     if (!thumbs.containsKey(frame.uri)) {
-                        val b = runCatching { context.contentResolver.loadThumbnail(frame.uri, Size(300, 300), null) }.getOrNull()
+                        val b = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                            if (frame.isBurst) com.celestial.latent.camera.BurstRollFiles.sharpestPreview(context, frame.uri)
+                                ?.let { j -> android.graphics.BitmapFactory.decodeByteArray(j, 0, j.size, android.graphics.BitmapFactory.Options().apply { inSampleSize = 2 }) }
+                            else runCatching { context.contentResolver.loadThumbnail(frame.uri, Size(300, 300), null) }.getOrNull()
+                        }
                         if (b != null) thumbs = thumbs + (frame.uri to b)
                     }
                 }
                 Box(Modifier.aspectRatio(3f / 4f).clip(RoundedCornerShape(4.dp)).background(LatentColors.Surface)
                     .combinedClickable(onClick = {
-                        Haptics.tick(context); onOpenDarkroom(frame.uri, frame.isRaw)
+                        Haptics.tick(context); if (frame.isBurst) onOpenBurst(frame.uri) else onOpenDarkroom(frame.uri, frame.isRaw)
                     }, onLongClick = {
+                        if (frame.isBurst) return@combinedClickable
                         Haptics.click(context)
                         runCatching { context.startActivity(Intent(Intent.ACTION_VIEW).apply { setDataAndType(frame.uri, context.contentResolver.getType(frame.uri) ?: "image/*"); addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION) }) }
                     })) {
                     thumbs[frame.uri]?.let { Image(it.asImageBitmap(), contentDescription = frame.name, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize()) }
-                    if (frame.isRaw && !frame.developed) {
+                    if (frame.isBurst) {
+                        Text("BURST", color = LatentColors.AmberInk, fontSize = 9.sp, letterSpacing = 1.sp,
+                            modifier = Modifier.align(Alignment.TopEnd).padding(4.dp).clip(RoundedCornerShape(999.dp)).background(LatentColors.Amber).padding(horizontal = 6.dp, vertical = 2.dp))
+                    } else if (frame.isRaw && !frame.developed) {
                         Box(Modifier.fillMaxSize().background(androidx.compose.ui.graphics.Color(0xAA161615)), contentAlignment = Alignment.Center) {
                             Text("RAW", color = LatentColors.Text, fontSize = 10.sp, letterSpacing = 1.sp)
                         }
@@ -169,7 +183,7 @@ fun RollScreen(
         Row(Modifier.fillMaxWidth().padding(vertical = 12.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             val filmLabel = Develop.FILMS.firstOrNull { it.first == settings.film }?.second?.uppercase() ?: ""
             Text(if (queued > 0) "$queued DEVELOPING · $filmLabel" else "$filmLabel · TAP A FRAME FOR THE DARKROOM", color = LatentColors.Line, fontSize = 9.sp, letterSpacing = 1.5.sp)
-            val undeveloped = frames.filter { it.isRaw && !it.developed }
+            val undeveloped = frames.filter { it.isRaw && !it.developed && !it.isBurst }
             Text("Develop all", color = if (undeveloped.isEmpty()) LatentColors.TextDim else LatentColors.AmberInk, fontSize = 12.sp,
                 modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(if (undeveloped.isEmpty()) LatentColors.Surface else LatentColors.Amber)
                     .combinedClickable(enabled = undeveloped.isNotEmpty(), onClick = {
