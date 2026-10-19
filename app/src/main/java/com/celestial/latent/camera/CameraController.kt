@@ -104,6 +104,8 @@ class CameraController(
     private val DCG_BLACK = 1024
     private val DCG_WHITE = 16383
     private val DCG_SKIP_BOTTOM = 512
+    /** A DCG burst keeps only this square from the middle of each frame (~2 MB), so a whole burst fits one upload. */
+    private val DCG_BURST_PATCH = 1024
     private var lastFocusD = 0f
     private fun dcgOn(c: Controls = controls) = dcgTest && Lenses.isXiaomi15Ultra && lens.physicalId == Lenses.MAIN_ID && sensorMode(c) == null
     /** Open a tele lens directly while zoomed (stops the logical camera switching sensors). */
@@ -595,9 +597,10 @@ class CameraController(
     }
 
     /**
-     * DCG burst (67f): every frame is kept as its own 14-bit DNG, nothing is stacked. These are the raw
+     * DCG burst (67f/67g): every frame is kept as its own 14-bit DNG, nothing is stacked; 67g keeps only the
+     * 1024x1024 middle of each frame (~2 MB) so a whole burst fits one upload. These are the raw
      * material for testing burst super-resolution on a computer. Exposure is locked for the burst so every
-     * frame matches; at 30 fps 16 frames take about half a second. Each frame is about 21 MB.
+     * frame matches; at 30 fps 16 frames take about half a second.
      */
     private fun captureDcgBurst(s: CameraCaptureSession, frames: Int) {
         try {
@@ -631,7 +634,7 @@ class CameraController(
         fun accept(img: Image, result: TotalCaptureResult) {
             val n = received + 1
             tsList += img.timestamp
-            val copy = try { dcgPixels(img) } catch (e: OutOfMemoryError) { null }
+            val copy = try { dcgPixels(img, DCG_BURST_PATCH) } catch (e: OutOfMemoryError) { null }
             received++
             if (copy == null) { skippedN.incrementAndGet(); log("DCG burst: frame $n skipped (out of memory)") }
             else writer.execute {
@@ -803,13 +806,17 @@ class CameraController(
     }
 
     /** The picture part of a DCG frame (the bottom rows left out), copied so the camera buffer can go back at once. */
-    private fun dcgPixels(img: Image): Triple<ShortArray, Int, Int> {
+    private fun dcgPixels(img: Image, patch: Int = 0): Triple<ShortArray, Int, Int> {
         val plane = img.planes[0]
         val sb = plane.buffer.duplicate().order(java.nio.ByteOrder.nativeOrder()).asShortBuffer()
-        val w = img.width; val stride = plane.rowStride / 2
-        val h = (img.height - DCG_SKIP_BOTTOM).coerceAtLeast(2) and 1.inv()
+        val fullW = img.width; val stride = plane.rowStride / 2
+        val fullH = (img.height - DCG_SKIP_BOTTOM).coerceAtLeast(2) and 1.inv()
+        // patch > 0: only a square from the middle, starting on even pixels so the colour pattern stays the same.
+        val w = if (patch > 0) minOf(patch, fullW) and 1.inv() else fullW
+        val h = if (patch > 0) minOf(patch, fullH) and 1.inv() else fullH
+        val x0 = ((fullW - w) / 2) and 1.inv(); val y0 = ((fullH - h) / 2) and 1.inv()
         val px = ShortArray(w * h)
-        for (y in 0 until h) { sb.position(y * stride); sb.get(px, y * w, w) }
+        for (y in 0 until h) { sb.position((y0 + y) * stride + x0); sb.get(px, y * w, w) }
         return Triple(px, w, h)
     }
 
