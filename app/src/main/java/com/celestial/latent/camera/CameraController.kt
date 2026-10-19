@@ -167,6 +167,7 @@ class CameraController(
 
     // Burst state
     private var burst: BurstJob? = null
+    private var dcgBurst: DcgBurst? = null
 
     // Control strip state
     @Volatile var controls: Controls = Controls(); private set
@@ -576,8 +577,8 @@ class CameraController(
 
     fun captureBurst(frames: Int = 16) = handler.post {
         val s = session ?: return@post
-        if (dcgOn()) { status("Bursts are off while DCG is on; tap for a single RAW"); return@post }
-        if (burst != null || busy) { status("busy"); return@post }
+        if (burst != null || dcgBurst != null || busy) { status("busy"); return@post }
+        if (dcgOn()) { captureDcgBurst(s, frames); return@post }
         try {
             val job = BurstJob(frames, rawSize.width, rawSize.height, System.nanoTime())
             burst = job
@@ -591,6 +592,69 @@ class CameraController(
             }, handler)
             status("Burst of $frames… hold still")
         } catch (e: Exception) { burst = null; status("burst: ${e.message}") }
+    }
+
+    /**
+     * DCG burst (67f): every frame is kept as its own 14-bit DNG, nothing is stacked. These are the raw
+     * material for testing burst super-resolution on a computer. Exposure is locked for the burst so every
+     * frame matches; at 30 fps 16 frames take about half a second. Each frame is about 21 MB.
+     */
+    private fun captureDcgBurst(s: CameraCaptureSession, frames: Int) {
+        try {
+            val job = DcgBurst(frames, fileBase("BURST_DCG"), System.nanoTime())
+            dcgBurst = job
+            val reqs = List(frames) { stillRequest().apply { if (dcgAttempt == 0) set(CaptureRequest.CONTROL_AE_LOCK, true) }.build() }
+            s.captureBurst(reqs, object : CameraCaptureSession.CaptureCallback() {
+                override fun onCaptureCompleted(sess: CameraCaptureSession, req: CaptureRequest, result: TotalCaptureResult) { onResult(result, null) }
+                override fun onCaptureFailed(sess: CameraCaptureSession, req: CaptureRequest, failure: android.hardware.camera2.CaptureFailure) {
+                    log("DCG burst frame failed reason=${failure.reason}"); job.failed++; job.checkDone()
+                }
+            }, handler)
+            status("DCG burst of $frames… hold still")
+            // A frame whose result never pairs up would leave the burst open; count the missing ones as failed.
+            handler.postDelayed({ if (dcgBurst === job && job.received + job.failed < frames) {
+                log("DCG burst: ${frames - job.received - job.failed} frames never arrived"); job.failed = frames - job.received; job.checkDone() } }, 8000)
+        } catch (e: Exception) { dcgBurst = null; status("DCG burst: ${e.message}") }
+    }
+
+    private inner class DcgBurst(val frames: Int, val base: String, val startNs: Long) {
+        var received = 0; var failed = 0
+        private val writtenN = java.util.concurrent.atomic.AtomicInteger()
+        private val skippedN = java.util.concurrent.atomic.AtomicInteger()
+        val written get() = writtenN.get()
+        val skipped get() = skippedN.get()
+        val tsList = ArrayList<Long>()
+        private val writer = java.util.concurrent.Executors.newSingleThreadExecutor()
+        private var finished = false
+
+        /** On the camera thread: copy the frame out and queue the write, so the camera never waits on storage. */
+        fun accept(img: Image, result: TotalCaptureResult) {
+            val n = received + 1
+            tsList += img.timestamp
+            val copy = try { dcgPixels(img) } catch (e: OutOfMemoryError) { null }
+            received++
+            if (copy == null) { skippedN.incrementAndGet(); log("DCG burst: frame $n skipped (out of memory)") }
+            else writer.execute {
+                try { writeDcgPixels(copy.first, copy.second, copy.third, result, "${base}_%02d.dng".format(n)); writtenN.incrementAndGet() }
+                catch (e: Exception) { skippedN.incrementAndGet(); log("DCG burst: frame $n not saved: ${e.message}") }
+                status("DCG burst: saved ${written}/$frames")
+                handler.post { checkDone() }
+            }
+            checkDone()
+        }
+
+        /** Done when every frame has arrived (or failed) and every queued write is finished. */
+        fun checkDone() {
+            if (finished || received + failed < frames || written + skipped < received) return
+            finished = true
+            writer.shutdown()
+            if (dcgBurst === this) dcgBurst = null
+            val span = if (tsList.size > 1) (tsList.last() - tsList.first()) / 1_000_000 else 0
+            val wall = (System.nanoTime() - startNs) / 1_000_000
+            status("DCG burst: $written/$frames frames saved as ${base}_01… ($failed failed, $skipped skipped) · sensor span $span ms · total $wall ms")
+            log("DCG burst frame times ms from first: " + tsList.joinToString { ((it - tsList.first()) / 1_000_000).toString() })
+            onBurstFinished()
+        }
     }
 
     // ---- pairing ----------------------------------------------------------------
@@ -620,8 +684,11 @@ class CameraController(
 
     private fun handle(img: Image, result: TotalCaptureResult, t0: Long?) {
         val job = burst
+        val dj = dcgBurst
         try {
-            if (job == null) {
+            if (dj != null) {
+                dj.accept(img, result)
+            } else if (job == null) {
                 val base = fileBase()
                 baseNames[img.timestamp] = base
                 flushPendingJpeg(img.timestamp, base)
@@ -731,12 +798,22 @@ class CameraController(
      * the bottom rows that are not picture.
      */
     private fun writeDcgDng(img: Image, result: TotalCaptureResult, name: String): Long {
+        val (px, w, h) = dcgPixels(img)
+        return writeDcgPixels(px, w, h, result, name)
+    }
+
+    /** The picture part of a DCG frame (the bottom rows left out), copied so the camera buffer can go back at once. */
+    private fun dcgPixels(img: Image): Triple<ShortArray, Int, Int> {
         val plane = img.planes[0]
         val sb = plane.buffer.duplicate().order(java.nio.ByteOrder.nativeOrder()).asShortBuffer()
         val w = img.width; val stride = plane.rowStride / 2
         val h = (img.height - DCG_SKIP_BOTTOM).coerceAtLeast(2) and 1.inv()
         val px = ShortArray(w * h)
         for (y in 0 until h) { sb.position(y * stride); sb.get(px, y * w, w) }
+        return Triple(px, w, h)
+    }
+
+    private fun writeDcgPixels(px: ShortArray, w: Int, h: Int, result: TotalCaptureResult, name: String): Long {
         val r = metaFor(result)
         // The driver's own black level for this frame (it said 1024); its white level still reads 10-bit, so not that.
         val black = r.get(CaptureResult.SENSOR_DYNAMIC_BLACK_LEVEL)?.average()?.let { Math.round(it).toInt() }?.takeIf { it in 512..2048 } ?: DCG_BLACK
@@ -983,6 +1060,7 @@ class CameraController(
         baseNames.clear(); pendingJpegs.clear()
         pendingImages.values.forEach { it.close() }; pendingImages.clear(); pendingResults.clear()
         burst = null
+        dcgBurst = null
     }
 
     fun destroy() { close(); handler.post { thread.quitSafely() } }
