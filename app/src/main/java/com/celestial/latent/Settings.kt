@@ -36,6 +36,7 @@ data class AppSettings(
     val dcgTest: Boolean = false,           // 67a test: main lens DCG mode (opmode 37379 + sensor mode 24, 60 fps)
     val timerSeconds: Int = 0,              // 0 / 3 / 10
     val burstMode: Boolean = false,         // tap = 16-frame burst (hold = single)
+    val focusStack: Boolean = false,        // 69a: tap = 12-frame focus bracket (hold = single); never on with burstMode
     val haptics: Boolean = true,
     val film: String = "kodak_portra_400",   // film used for the live preview and auto-develop
     val preset: String = "portra400_endura_wedding",  // the authored look; carries per-stock grain etc.
@@ -90,6 +91,7 @@ data class AppSettings(
                 dcgTest = p.getBoolean("dcgTest", false),
                 timerSeconds = p.getInt("timerSeconds", 0),
                 burstMode = p.getBoolean("burstMode", false),
+                focusStack = p.getBoolean("focusStack", false),
                 haptics = p.getBoolean("haptics", true),
                 film = p.getString("film", "kodak_portra_400") ?: "kodak_portra_400",
                 preset = p.getString("preset", "portra400_endura_wedding") ?: "portra400_endura_wedding",
@@ -125,6 +127,7 @@ data class AppSettings(
                 .putBoolean("dcgTest", s.dcgTest)
                 .putInt("timerSeconds", s.timerSeconds)
                 .putBoolean("burstMode", s.burstMode)
+                .putBoolean("focusStack", s.focusStack)
                 .putBoolean("haptics", s.haptics)
                 .putString("film", s.film)
                 .putString("preset", s.preset)

@@ -170,7 +170,7 @@ fun RollScreen(
                     })) {
                     thumbs[frame.uri]?.let { Image(it.asImageBitmap(), contentDescription = frame.name, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize()) }
                     if (frame.isBurst) {
-                        Text("BURST", color = LatentColors.AmberInk, fontSize = 9.sp, letterSpacing = 1.sp,
+                        Text(if (frame.name.contains("_FOCUS")) "FOCUS" else "BURST", color = LatentColors.AmberInk, fontSize = 9.sp, letterSpacing = 1.sp,
                             modifier = Modifier.align(Alignment.TopEnd).padding(4.dp).clip(RoundedCornerShape(999.dp)).background(LatentColors.Amber).padding(horizontal = 6.dp, vertical = 2.dp))
                     } else if (frame.isRaw && !frame.developed) {
                         Box(Modifier.fillMaxSize().background(androidx.compose.ui.graphics.Color(0xAA161615)), contentAlignment = Alignment.Center) {

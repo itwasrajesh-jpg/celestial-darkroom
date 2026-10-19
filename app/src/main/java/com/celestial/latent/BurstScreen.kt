@@ -85,6 +85,7 @@ fun BurstScreen(
     LaunchedEffect(r) { if (r != null) pager.scrollToPage(r.sharpest) }
     val page = pager.currentPage.coerceAtMost((frames.size - 1).coerceAtLeast(0))
     val rollName = item?.name ?: "LATENT_BURST.${BurstRoll.EXT}"
+    val focusStack = r?.index?.common?.kind == BurstRoll.KIND_FOCUS
 
     fun runBusy(label: String, work: suspend () -> Unit) {
         if (busy != null) return
@@ -98,7 +99,7 @@ fun BurstScreen(
     Column(Modifier.fillMaxSize().background(LatentColors.Background).statusBarsPadding().navigationBarsPadding().padding(horizontal = 14.dp)) {
         Row(Modifier.fillMaxWidth().padding(vertical = 10.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             Text("‹", color = LatentColors.Text, fontSize = 22.sp, modifier = Modifier.combinedClickable(onClick = onBack).padding(horizontal = 6.dp))
-            Text("BURST" + (if (frames.isNotEmpty()) " · ${frames.size} FRAMES" else "") + (r?.index?.common?.let { if (it.dcg) " · DCG" else "" } ?: ""),
+            Text((if (focusStack) "FOCUS STACK" else "BURST") + (if (frames.isNotEmpty()) " · ${frames.size} FRAMES" else "") + (r?.index?.common?.let { if (it.dcg) " · DCG" else "" } ?: ""),
                 color = LatentColors.Text, fontSize = 12.sp, letterSpacing = 3.sp)
             Text(item?.let { "%.0f MB".format(it.sizeBytes / 1e6) } ?: "", color = LatentColors.TextDim, fontSize = 11.sp, modifier = Modifier.padding(6.dp))
         }
@@ -123,7 +124,7 @@ fun BurstScreen(
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 previews[i]?.let { Image(it.asImageBitmap(), contentDescription = "Frame ${i + 1}", contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize()) }
                     ?: CircularProgressIndicator(color = LatentColors.Amber)
-                if (i == sharpest) Text("SHARPEST", color = LatentColors.AmberInk, fontSize = 10.sp, letterSpacing = 1.5.sp,
+                if (i == sharpest && !focusStack) Text("SHARPEST", color = LatentColors.AmberInk, fontSize = 10.sp, letterSpacing = 1.5.sp,
                     modifier = Modifier.align(Alignment.TopStart).padding(8.dp).clip(RoundedCornerShape(999.dp)).background(LatentColors.Amber).padding(horizontal = 8.dp, vertical = 3.dp))
             }
         }
@@ -132,7 +133,9 @@ fun BurstScreen(
         val f = frames.getOrNull(page)
         if (f != null) {
             val shutter = f.exposureNs?.let { ns -> if (ns >= 1_000_000_000L) "%.1f s".format(ns / 1e9) else "1/${Math.round(1e9 / ns)} s" } ?: "–"
-            Text("${page + 1} / ${frames.size} · $shutter · ISO ${f.iso ?: "–"} · +${f.tOffsetNs / 1_000_000} ms",
+            // A focus stack shows where each frame was focused (dioptres → cm; 0 is far away).
+            val focus = if (!focusStack || f.focusD < 0) "" else " · focus " + (if (f.focusD < 0.05f) "far" else "${Math.round(100 / f.focusD)} cm") + if (f.lensMoving) " (lens moving)" else ""
+            Text("${page + 1} / ${frames.size} · $shutter · ISO ${f.iso ?: "–"} · +${f.tOffsetNs / 1_000_000} ms$focus",
                 color = LatentColors.TextBright, fontSize = 13.sp, modifier = Modifier.padding(top = 8.dp))
         }
 

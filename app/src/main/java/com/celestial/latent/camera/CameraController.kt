@@ -577,24 +577,38 @@ class CameraController(
         } catch (e: Exception) { busy = false; status("capture: ${e.message}") }
     }
 
-    fun captureBurst(frames: Int = 16) = handler.post {
+    /**
+     * A burst. With [focus] (69a) it is a focus bracket instead: autofocus off, each frame focused a
+     * little farther away, centred on where the focus is now, so the frames can later be stacked into
+     * one picture that is sharp from front to back. A focus bracket goes into the roll only (no STACK).
+     */
+    fun captureBurst(frames: Int = 16, focus: Boolean = false) = handler.post {
         val s = session ?: return@post
         if (roll != null) { status("Still saving the last burst…"); return@post }
         if (burst != null || busy) { status("busy"); return@post }
         val dcg = dcgOn()
         var rj: RollJob? = null
         try {
+            val focusAt = if (focus) focusBracket(frames) else null
             // Every frame goes into one burst roll (68a). Without DCG the frames are also stacked into
             // the cleaner STACK DNG as before; DCG frames (14-bit) are only kept, their merge is 68b.
             // A spool left behind by a burst the app was closed during is no use now.
             context.cacheDir.listFiles { f -> f.name.endsWith(".spool") }?.forEach { it.delete() }
-            rj = RollJob(frames, fileBase("BURST"), dcg, System.nanoTime())
+            val job = if (dcg || focus) null else BurstJob(frames, rawSize.width, rawSize.height, System.nanoTime())
+            rj = RollJob(frames, fileBase(if (focus) "FOCUS" else "BURST"), dcg, System.nanoTime(),
+                kind = if (focus) BurstRoll.KIND_FOCUS else BurstRoll.KIND_BURST, rollOnly = job == null)
             roll = rj
-            val job = if (dcg) null else BurstJob(frames, rawSize.width, rawSize.height, System.nanoTime())
             burst = job
             // Exposure is locked for the burst so every frame matches (DCG way 0 is the only auto path here).
-            val reqs = List(frames) { i -> stillRequest(withJpeg = !dcg && wantJpeg && !hdrJpegSequential && i == 0)
-                .apply { if (dcg && dcgAttempt == 0) set(CaptureRequest.CONTROL_AE_LOCK, true) }.build() }
+            // A focus bracket also locks white balance, and sets each frame's focus by hand.
+            val reqs = List(frames) { i -> stillRequest(withJpeg = job != null && wantJpeg && !hdrJpegSequential && i == 0).apply {
+                if ((dcg && dcgAttempt == 0) || focus) set(CaptureRequest.CONTROL_AE_LOCK, true)
+                if (focusAt != null) {
+                    set(CaptureRequest.CONTROL_AWB_LOCK, true)
+                    set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_OFF)
+                    set(CaptureRequest.LENS_FOCUS_DISTANCE, focusAt[i])
+                }
+            }.build() }
             s.captureBurst(reqs, object : CameraCaptureSession.CaptureCallback() {
                 override fun onCaptureCompleted(sess: CameraCaptureSession, req: CaptureRequest, result: TotalCaptureResult) { onResult(result, null) }
                 override fun onCaptureFailed(sess: CameraCaptureSession, req: CaptureRequest, failure: android.hardware.camera2.CaptureFailure) {
@@ -603,7 +617,7 @@ class CameraController(
                     if (job != null) { job.failed++; if (job.received + job.failed >= job.frames) finishBurst(job) }
                 }
             }, handler)
-            status("Burst of $frames… hold still")
+            status(if (focus) "Focus stack of $frames… hold still" else "Burst of $frames… hold still")
             // A frame whose result never pairs up would leave the roll open; count the missing ones as failed.
             handler.postDelayed({
                 val missing = frames - rj.received.get() - rj.failed.get()
@@ -619,7 +633,8 @@ class CameraController(
      * background threads then compress them (plus a small preview each) and append them to the roll in
      * order. About 21 MB per DCG frame before packing, about 10 MB after.
      */
-    private inner class RollJob(val frames: Int, val base: String, val dcg: Boolean, val startNs: Long) {
+    private inner class RollJob(val frames: Int, val base: String, val dcg: Boolean, val startNs: Long,
+                                val kind: Int = BurstRoll.KIND_BURST, val rollOnly: Boolean = dcg) {
         val received = java.util.concurrent.atomic.AtomicInteger()
         val failed = java.util.concurrent.atomic.AtomicInteger()
         private val metas = arrayOfNulls<BurstRoll.Frame>(frames)
@@ -655,7 +670,7 @@ class CameraController(
             if (k == 0) {
                 w = pw; h = ph; firstTs = img.timestamp
                 common = BurstRoll.Common(pw, ph, black, white, m.cfaPattern, m.colorMatrix1, m.colorMatrix2, m.forwardMatrix1,
-                    m.cameraCalibration1, m.illuminant1, m.illuminant2, 6, m.uniqueModel, lens.name, dcg)
+                    m.cameraCalibration1, m.illuminant1, m.illuminant2, 6, m.uniqueModel, lens.name, dcg, kind)
                 gain = BurstRoll.previewGain(px, black, white)
                 val values = android.content.ContentValues().apply {
                     put(MediaStore.MediaColumns.DISPLAY_NAME, "$base.${BurstRoll.EXT}")
@@ -669,7 +684,9 @@ class CameraController(
                 writer = BurstRoll.StreamWriter(java.io.BufferedOutputStream(context.contentResolver.openOutputStream(u)!!, 1 shl 20))
             }
             if (pw != w || ph != h) { log("burst: frame ${k + 1} has a different size, left out"); failed.incrementAndGet(); return }
-            metas[k] = BurstRoll.Frame(img.timestamp - firstTs, m.exposureNs, m.iso, m.asShotNeutral)
+            metas[k] = BurstRoll.Frame(img.timestamp - firstTs, m.exposureNs, m.iso, m.asShotNeutral,
+                focusD = r.get(CaptureResult.LENS_FOCUS_DISTANCE) ?: -1f,
+                lensMoving = r.get(CaptureResult.LENS_STATE) == CameraMetadata.LENS_STATE_MOVING)
             val bb = java.nio.ByteBuffer.allocate(px.size * 2).order(java.nio.ByteOrder.LITTLE_ENDIAN); bb.asShortBuffer().put(px)
             var pos = k.toLong() * w * h * 2
             while (bb.hasRemaining()) pos += spool.write(bb, pos)
@@ -728,8 +745,10 @@ class CameraController(
                 status("Burst roll saved · ${kept.size} frames · ${"%.0f".format(size / 1e6)} MB · sharpest #${best + 1} · ${wall / 1000.0} s")
                 log("burst roll $base: ${kept.size} frames ${w}x$h${if (dcg) " DCG" else ""}, ${"%.1f".format(size / 1e6)} MB " +
                     "(${"%.0f".format(100.0 * size / (kept.size.toLong() * w * h * 2))}% of plain), sharpness " + kept.joinToString(" ") { "%.0f".format(it.sharpness) })
+                if (kind == BurstRoll.KIND_FOCUS) log("focus stack $base: focus (dioptres, * = lens moving) " +
+                    kept.joinToString(" ") { "%.2f".format(it.focusD) + if (it.lensMoving) "*" else "" })
                 onRollSaved(u, previews.filterNotNull().getOrNull(best))
-                if (dcg) onBurstFinished()
+                if (rollOnly) onBurstFinished()
             } catch (e: Exception) { status("burst roll save failed: ${e.message}"); Log.e("Latent", "roll", e) }
             finally { runCatching { spool.close() }; spoolFile.delete() }
         }
@@ -740,6 +759,32 @@ class CameraController(
             runCatching { spool.close() }; spoolFile.delete()
             uri?.let { u -> runCatching { context.contentResolver.delete(u, null, null) } }
         }
+    }
+
+    /**
+     * Focus distances (dioptres, 1 / metres) for a focus bracket of [n] frames, nearest first, centred on
+     * the current focus. The step is about one depth of field (2·N·c / f², with c = two pixels), so the
+     * sharp zones of neighbouring frames overlap a little. On the main lens that is about 0.23 dioptres,
+     * so 12 frames cover roughly 16-27 cm when focused at 20 cm. If the lens does not report real
+     * dioptres (calibration "uncalibrated"), it falls back to 1/40 of the focus range.
+     */
+    private fun focusBracket(n: Int): FloatArray {
+        val maxD = minFocusDiopters
+        val cal = physChars.get(CameraCharacteristics.LENS_INFO_FOCUS_DISTANCE_CALIBRATION)
+        val f = physChars.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)?.firstOrNull()
+        val aperture = physChars.get(CameraCharacteristics.LENS_INFO_AVAILABLE_APERTURES)?.firstOrNull()
+        val sensorMm = physChars.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE)?.width
+        val step = if (cal != CameraMetadata.LENS_INFO_FOCUS_DISTANCE_CALIBRATION_UNCALIBRATED && f != null && aperture != null && sensorMm != null) {
+            val c = 2f * sensorMm / rawSize.width                       // mm
+            (0.8f * 2f * aperture * c / (f * f) * 1000f).coerceIn(0.05f, 1f)
+        } else (maxD / 40f).coerceAtLeast(0.05f)
+        val centre = controls.focusDiopters ?: lastFocusD
+        val span = step * (n - 1)
+        val near = (centre + span / 2).coerceAtMost(maxD).coerceAtLeast(span.coerceAtMost(maxD))
+        val at = FloatArray(n) { i -> (near - i * step).coerceIn(0f, maxD) }
+        log("focus stack: ${lens.name}, calibration $cal, f=$f mm, f/$aperture, sensor $sensorMm mm, step ${"%.3f".format(step)} D, " +
+            "centre ${"%.2f".format(centre)} D, frames " + at.joinToString(" ") { "%.2f".format(it) } + " D (closest focus ${"%.2f".format(maxD)} D)")
+        return at
     }
 
     /** A plain (non-DCG) RAW frame, copied so the camera buffer can go back at once. */

@@ -230,15 +230,15 @@ fun CameraScreen(
 
     fun shoot(single: Boolean) {
         Haptics.heavy(context)
-        val fire = { if (single) controller.captureSingle() else controller.captureBurst(16) }
+        val fire = { if (single) controller.captureSingle() else if (settings.focusStack) controller.captureBurst(FOCUS_FRAMES, focus = true) else controller.captureBurst(16) }
         if (settings.timerSeconds > 0) countdown = settings.timerSeconds else fire()
     }
     LaunchedEffect(countdown) {
-        if (countdown > 0) { delay(1000); countdown -= 1; if (countdown == 0) { if (settings.burstMode) controller.captureBurst(16) else controller.captureSingle() } }
+        if (countdown > 0) { delay(1000); countdown -= 1; if (countdown == 0) { if (settings.focusStack) controller.captureBurst(FOCUS_FRAMES, focus = true) else if (settings.burstMode) controller.captureBurst(16) else controller.captureSingle() } }
     }
 
     DisposableEffect(Unit) {
-        ShutterBus.onShutter = { if (settings.volumeShutter) shoot(single = !settings.burstMode) }
+        ShutterBus.onShutter = { if (settings.volumeShutter) shoot(single = !settings.burstMode && !settings.focusStack) }
         onDispose { ShutterBus.onShutter = null; controller.destroy(); glPreview?.release(); glPreview = null }
     }
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -501,7 +501,7 @@ fun CameraScreen(
             val modes = listOfNotNull(
                 if (settings.inSensorZoomJpeg && Lenses.isXiaomi15Ultra && controls.zoom > 1.001f) "ISZ" else null,
                 if (settings.dcgTest && Lenses.isXiaomi15Ultra && lens.physicalId == Lenses.MAIN_ID && controls.zoom <= 1.001f) "DCG" else null,
-                if (settings.burstMode) "BURST" else null, if (settings.timerSeconds > 0) "${settings.timerSeconds}S" else null,
+                if (settings.burstMode) "BURST" else null, if (settings.focusStack) "FOCUS STACK" else null, if (settings.timerSeconds > 0) "${settings.timerSeconds}S" else null,
             )
             val tagLabels = remember(settings.vendorTags, lens) { if (controller.hasCharacteristics) controller.activeTagLabels() else emptyList() }
             val allLabels = modes + tagLabels
@@ -655,6 +655,7 @@ fun CameraScreen(
         }
 
         // ---- Shutter row: thumbnail · shutter · burst toggle ----
+        val multi = settings.burstMode || settings.focusStack
         Row(Modifier.fillMaxWidth().padding(horizontal = 30.dp, vertical = 6.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.size(46.dp).clip(RoundedCornerShape(10.dp)).background(LatentColors.Surface)
                 .combinedClickable(onClick = { Haptics.tick(context); onOpenRoll() })) {
@@ -664,16 +665,24 @@ fun CameraScreen(
             }
             Box(
                 Modifier.size(78.dp).clip(CircleShape).border(2.dp, LatentColors.TextBright, CircleShape)
-                    .combinedClickable(onClick = { shoot(single = !settings.burstMode) }, onLongClick = { shoot(single = settings.burstMode) }),
+                    .combinedClickable(onClick = { shoot(single = !multi) }, onLongClick = { shoot(single = multi) }),
                 contentAlignment = Alignment.Center,
-            ) { Box(Modifier.size(62.dp).clip(CircleShape).background(if (settings.burstMode) LatentColors.Amber else LatentColors.TextBright)) }
-            Box(Modifier.size(46.dp).clip(CircleShape).border(0.5.dp, if (settings.burstMode) LatentColors.Amber else LatentColors.Line, CircleShape)
-                .combinedClickable(onClick = { Haptics.tick(context); onSettingsChange(settings.copy(burstMode = !settings.burstMode)) }), contentAlignment = Alignment.Center) {
-                Text("16", color = if (settings.burstMode) LatentColors.Amber else LatentColors.Text, fontSize = 13.sp, fontWeight = FontWeight.Light)
+            ) { Box(Modifier.size(62.dp).clip(CircleShape).background(if (multi) LatentColors.Amber else LatentColors.TextBright)) }
+            // Tap cycles: off → 16 (burst) → FS (focus stack, 69a) → off.
+            Box(Modifier.size(46.dp).clip(CircleShape).border(0.5.dp, if (multi) LatentColors.Amber else LatentColors.Line, CircleShape)
+                .combinedClickable(onClick = {
+                    Haptics.tick(context)
+                    onSettingsChange(when {
+                        settings.focusStack -> settings.copy(burstMode = false, focusStack = false)
+                        settings.burstMode -> settings.copy(burstMode = false, focusStack = true)
+                        else -> settings.copy(burstMode = true, focusStack = false)
+                    })
+                }), contentAlignment = Alignment.Center) {
+                Text(if (settings.focusStack) "FS" else "16", color = if (multi) LatentColors.Amber else LatentColors.Text, fontSize = 13.sp, fontWeight = FontWeight.Light)
             }
         }
         val filmLabel = Develop.FILMS.firstOrNull { it.first == settings.film }?.second?.uppercase() ?: "FILM"
-        Text(filmLabel + (if (developing > 0) " · DEVELOPING $developing" else if (settings.burstMode) " · BURST" else ""), color = LatentColors.Line, fontSize = 9.sp, letterSpacing = 1.5.sp,
+        Text(filmLabel + (if (developing > 0) " · DEVELOPING $developing" else if (settings.focusStack) " · FOCUS STACK" else if (settings.burstMode) " · BURST" else ""), color = LatentColors.Line, fontSize = 9.sp, letterSpacing = 1.5.sp,
             modifier = Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 12.dp), textAlign = androidx.compose.ui.text.style.TextAlign.Center)
     }
 }
@@ -776,3 +785,6 @@ internal fun FocusEvOverlay(
             modifier = Modifier.offset { IntOffset((tx + with(density) { 12.dp.toPx() }).toInt(), (p.y - trackPx / 2 - with(density) { 18.dp.toPx() }).toInt()) })
     }
 }
+
+/** Frames in a focus stack (69a): about 2.5 dioptres of depth on the main lens, e.g. 16-27 cm when focused at 20 cm. */
+private const val FOCUS_FRAMES = 12

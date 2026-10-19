@@ -39,6 +39,7 @@ object BurstRoll {
         val forwardMatrix1: DoubleArray?, val calibration1: DoubleArray?,
         val illuminant1: Int, val illuminant2: Int?, val orientation: Int,
         val model: String, val lens: String, val dcg: Boolean,
+        val kind: Int = KIND_BURST,
     )
 
     /** One frame: its own exposure and white balance, where its data sits, and how sharp it is. */
@@ -47,16 +48,21 @@ object BurstRoll {
         var sharpness: Float = 0f, var mode: Int = MODE_DELTA,
         var hiOff: Long = 0, var hiLen: Int = 0, var loOff: Long = 0, var loLen: Int = 0,
         var prevOff: Long = 0, var prevLen: Int = 0,
+        val focusD: Float = -1f, val lensMoving: Boolean = false,
     )
 
     const val MODE_DELTA = 1   // same-colour left difference, zig-zag, byte planes
     const val MODE_PLAIN = 0   // plain values, byte planes (only if a difference would not fit 16 bits)
 
+    const val KIND_BURST = 0   // every frame at the same focus (68a)
+    const val KIND_FOCUS = 1   // a focus bracket: each frame focused a little farther away (69a)
+
     class Index(val common: Common, val frames: List<Frame>) {
         fun write(out: DataOutputStream) {
             val c = common
-            out.writeInt(1)
-            out.writeUTF(c.model); out.writeUTF(c.lens); out.writeBoolean(c.dcg)
+            // Version 2 (69a) adds the kind of roll, and each frame's focus distance and whether the lens was moving.
+            out.writeInt(2)
+            out.writeUTF(c.model); out.writeUTF(c.lens); out.writeBoolean(c.dcg); out.writeInt(c.kind)
             out.writeInt(c.width); out.writeInt(c.height); out.writeInt(c.black); out.writeInt(c.white); out.writeInt(c.orientation)
             out.write(c.cfa, 0, 4)
             fun mat(m: DoubleArray?) { out.writeBoolean(m != null); m?.forEach { out.writeDouble(it) } }
@@ -69,13 +75,16 @@ object BurstRoll {
                 out.writeFloat(f.sharpness); out.writeInt(f.mode)
                 out.writeLong(f.hiOff); out.writeInt(f.hiLen); out.writeLong(f.loOff); out.writeInt(f.loLen)
                 out.writeLong(f.prevOff); out.writeInt(f.prevLen)
+                out.writeFloat(f.focusD); out.writeBoolean(f.lensMoving)
             }
         }
 
         companion object {
             fun read(inp: DataInputStream): Index {
-                require(inp.readInt() == 1) { "unknown burst roll version" }
+                val version = inp.readInt()
+                require(version == 1 || version == 2) { "unknown burst roll version" }
                 val model = inp.readUTF(); val lens = inp.readUTF(); val dcg = inp.readBoolean()
+                val kind = if (version >= 2) inp.readInt() else KIND_BURST
                 val w = inp.readInt(); val h = inp.readInt(); val black = inp.readInt(); val white = inp.readInt(); val orientation = inp.readInt()
                 val cfa = ByteArray(4).also { inp.readFully(it) }
                 fun mat(): DoubleArray? = if (inp.readBoolean()) DoubleArray(9) { inp.readDouble() } else null
@@ -83,10 +92,15 @@ object BurstRoll {
                 val ill1 = inp.readInt(); val ill2 = inp.readInt().takeIf { it >= 0 }
                 val n = inp.readInt()
                 val frames = List(n) {
-                    Frame(inp.readLong(), inp.readLong().takeIf { it >= 0 }, inp.readInt().takeIf { it >= 0 }, DoubleArray(3) { inp.readDouble() },
-                        inp.readFloat(), inp.readInt(), inp.readLong(), inp.readInt(), inp.readLong(), inp.readInt(), inp.readLong(), inp.readInt())
+                    val t = inp.readLong(); val exp = inp.readLong().takeIf { it >= 0 }; val iso = inp.readInt().takeIf { it >= 0 }
+                    val neutral = DoubleArray(3) { inp.readDouble() }
+                    val sharp = inp.readFloat(); val mode = inp.readInt()
+                    val hiOff = inp.readLong(); val hiLen = inp.readInt(); val loOff = inp.readLong(); val loLen = inp.readInt()
+                    val prevOff = inp.readLong(); val prevLen = inp.readInt()
+                    val focusD = if (version >= 2) inp.readFloat() else -1f; val moving = if (version >= 2) inp.readBoolean() else false
+                    Frame(t, exp, iso, neutral, sharp, mode, hiOff, hiLen, loOff, loLen, prevOff, prevLen, focusD, moving)
                 }
-                return Index(Common(w, h, black, white, cfa, cm1, cm2, fm1, cal1, ill1, ill2, orientation, model, lens, dcg), frames)
+                return Index(Common(w, h, black, white, cfa, cm1, cm2, fm1, cal1, ill1, ill2, orientation, model, lens, dcg, kind), frames)
             }
         }
     }
