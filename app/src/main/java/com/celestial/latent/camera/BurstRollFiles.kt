@@ -57,6 +57,40 @@ object BurstRollFiles {
         return uri
     }
 
+    /**
+     * The whole roll merged into one RAW (68b) in DCIM/Latent: a burst averaged on its sharpest frame
+     * (`<stem>_MERGED.dng`), or a focus stack blended front to back (`<stem>_STACKED.dng`). Values
+     * are kept at higher precision (x16 for 10-bit, x4 for 14-bit DCG) with black and white scaled the same.
+     */
+    fun merge(context: Context, reader: BurstRoll.Reader, rollName: String, progress: (String) -> Unit): Uri {
+        val c = reader.index.common; val n = reader.index.frames.size
+        val focus = c.kind == BurstRoll.KIND_FOCUS
+        val t0 = System.nanoTime()
+        val r = if (focus) BurstMerge.focus(n, reader::pixels, c.width, c.height, c.black, c.white, c.cfa, progress)
+                else BurstMerge.burst(n, reader::pixels, c.width, c.height, c.black, c.white, c.cfa, reader.sharpest, progress)
+        val secs = (System.nanoTime() - t0) / 1e9
+        val desc = if (focus) "Celestial Darkroom focus stack of $n frames - ${c.lens}${if (c.dcg) " (DCG)" else ""}"
+                   else "Celestial Darkroom merge of ${r.used} of $n frames on frame ${r.ref + 1} - ${c.lens}${if (c.dcg) " (DCG)" else ""}"
+        val m = reader.dngMeta(r.ref, desc)
+        val meta = DngWriter.Meta(m.width, m.height, m.blackLevel * r.scale, m.whiteLevel * r.scale, m.cfaPattern, m.colorMatrix1, m.colorMatrix2,
+            m.forwardMatrix1, m.cameraCalibration1, m.illuminant1, m.illuminant2, m.asShotNeutral, m.orientation, m.uniqueModel, desc, m.exposureNs, m.iso)
+        android.util.Log.i("Latent", "burst merge $rollName: ${if (focus) "focus stack" else "merge"} of ${r.used}/$n, ref #${r.ref + 1}, ${"%.1f".format(secs)} s. ${r.note}")
+        progress("Saving…")
+        val name = "${stem(rollName)}_${if (focus) "STACKED" else "MERGED"}.dng"
+        val values = ContentValues().apply {
+            put(MediaStore.Images.Media.DISPLAY_NAME, name)
+            put(MediaStore.Images.Media.MIME_TYPE, "image/x-adobe-dng")
+            put(MediaStore.Images.Media.RELATIVE_PATH, "DCIM/Latent")
+            put(MediaStore.Images.Media.IS_PENDING, 1)
+        }
+        val resolver = context.contentResolver
+        val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values) ?: throw IllegalStateException("MediaStore insert failed")
+        resolver.openOutputStream(uri)!!.buffered(1 shl 20).use { DngWriter.write(it, meta, r.pixels) }
+        values.clear(); values.put(MediaStore.Images.Media.IS_PENDING, 0)
+        resolver.update(uri, values, null, null)
+        return uri
+    }
+
     /** The DNG already exported for frame [i], if any (so Develop does not make a second copy). */
     fun exported(context: Context, rollName: String, i: Int): Uri? {
         val name = "${stem(rollName)}_%02d.dng".format(i + 1)

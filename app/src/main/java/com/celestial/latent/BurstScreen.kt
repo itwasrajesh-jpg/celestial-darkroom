@@ -68,6 +68,7 @@ fun BurstScreen(
     var busy by remember { mutableStateOf<String?>(null) }
     var note by remember { mutableStateOf("") }
     var armDelete by remember { mutableStateOf(false) }
+    var merged by remember { mutableStateOf<Uri?>(null) }
 
     LaunchedEffect(roll) {
         withContext(Dispatchers.IO) {
@@ -152,14 +153,25 @@ fun BurstScreen(
         Text("SHARPNESS · TAP A BAR", color = LatentColors.Line, fontSize = 9.sp, letterSpacing = 1.5.sp)
 
         // Actions
-        Row(Modifier.fillMaxWidth().padding(vertical = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            @Composable
-            fun Action(label: String, primary: Boolean = false, onClick: () -> Unit) {
-                Text(label, color = if (primary) LatentColors.AmberInk else LatentColors.TextBright, fontSize = 12.sp,
-                    modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(if (primary) LatentColors.Amber else LatentColors.Surface)
-                        .combinedClickable(enabled = busy == null, onClick = { Haptics.tick(context); onClick() }).padding(horizontal = 12.dp, vertical = 8.dp))
+        @Composable
+        fun Action(label: String, primary: Boolean = false, onClick: () -> Unit) {
+            Text(label, color = if (primary) LatentColors.AmberInk else LatentColors.TextBright, fontSize = 12.sp,
+                modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(if (primary) LatentColors.Amber else LatentColors.Surface)
+                    .combinedClickable(enabled = busy == null, onClick = { Haptics.tick(context); onClick() }).padding(horizontal = 12.dp, vertical = 8.dp))
+        }
+        // 68b: the whole roll in one RAW. A burst is merged for less noise; a focus stack is blended front to back.
+        Row(Modifier.fillMaxWidth().padding(top = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Action(if (focusStack) "Stack all frames" else "Merge all frames", primary = true) {
+                runBusy(if (focusStack) "Stacking…" else "Merging…") {
+                    val uri = withContext(Dispatchers.Default) { BurstRollFiles.merge(context, r, rollName) { busy = it } }
+                    merged = uri
+                    note = (if (focusStack) "Stacked" else "Merged") + " · saved to DCIM/Latent"
+                }
             }
-            Action("Develop", primary = true) {
+            merged?.let { u -> Action("Develop it") { onOpenDarkroom(u) } }
+        }
+        Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Action("Develop") {
                 runBusy("Unpacking frame ${page + 1}…") {
                     val uri = withContext(Dispatchers.IO) { BurstRollFiles.exported(context, rollName, page) ?: BurstRollFiles.exportFrame(context, r, rollName, page) }
                     onOpenDarkroom(uri)

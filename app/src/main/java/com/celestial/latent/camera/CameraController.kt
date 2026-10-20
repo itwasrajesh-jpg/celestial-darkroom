@@ -776,7 +776,7 @@ class CameraController(
         val sensorMm = physChars.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE)?.width
         val step = if (cal != CameraMetadata.LENS_INFO_FOCUS_DISTANCE_CALIBRATION_UNCALIBRATED && f != null && aperture != null && sensorMm != null) {
             val c = 2f * sensorMm / rawSize.width                       // mm
-            (0.8f * 2f * aperture * c / (f * f) * 1000f).coerceIn(0.05f, 1f)
+            (0.8f * 2f * aperture * c / (f * f) * 1000f).coerceIn(0.02f, 1f)
         } else (maxD / 40f).coerceAtLeast(0.05f)
         val centre = controls.focusDiopters ?: lastFocusD
         val span = step * (n - 1)
