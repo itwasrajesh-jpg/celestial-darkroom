@@ -63,6 +63,11 @@ data class AppSettings(
     val cinemaAspect: Float = 2.39f,
     val cinemaBars: Boolean = false,
     val cinema85b: Boolean = false,
+    /**
+     * 70b: the cinema looks' glow around lights. false = Classic, as they always glowed; true = true to
+     * film, lower, because Vision3 and Verita carry rem-jet (Akshay's datasheet correction).
+     */
+    val trueCinemaGlow: Boolean = false,
 ) {
     companion object {
         const val ANTIBANDING_OFF = 0
@@ -106,6 +111,7 @@ data class AppSettings(
                 cinemaAspect = p.getFloat("cinemaAspect", 2.39f),
                 cinemaBars = p.getBoolean("cinemaBars", false),
                 cinema85b = p.getBoolean("cinema85b", false),
+                trueCinemaGlow = p.getBoolean("trueCinemaGlow", false),
             )
         }
 
@@ -142,6 +148,7 @@ data class AppSettings(
                 .putFloat("cinemaAspect", s.cinemaAspect)
                 .putBoolean("cinemaBars", s.cinemaBars)
                 .putBoolean("cinema85b", s.cinema85b)
+                .putBoolean("trueCinemaGlow", s.trueCinemaGlow)
                 .apply()
         }
     }

@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
+import com.celestial.latent.AppSettings
 
 /**
  * The 28 authored looks the engine ships in `spektra/presets.json`.
@@ -16,22 +17,25 @@ object Presets {
 
     data class Preset(val id: String, val name: String, val group: String, val description: String, val recipe: Recipe)
 
-    @Volatile private var loaded: List<Preset>? = null
+    /** The looks as last read, and which cinema glow they were read with. */
+    @Volatile private var loaded: Pair<Boolean, List<Preset>>? = null
 
     fun all(context: Context): List<Preset> {
-        loaded?.let { return it }
+        val trueGlow = AppSettings.load(context).trueCinemaGlow
+        loaded?.let { if (it.first == trueGlow) return it.second }
         val list = try {
             val text = context.assets.open("spektra/presets.json").bufferedReader().use { it.readText() }
             val root = JSONObject(text)
-            val presets = root.optJSONArray("presets") ?: JSONArray()
+            val presets = withHalationGlow(root.optJSONArray("presets") ?: JSONArray())
             (0 until presets.length()).mapNotNull { i ->
                 val p = presets.optJSONObject(i) ?: return@mapNotNull null
-                val params = p.optJSONObject("params") ?: return@mapNotNull null
+                val id = p.optString("id")
+                val params = corrected(id, p.optJSONObject("params") ?: return@mapNotNull null, trueGlow)
                 Preset(
-                    id = p.optString("id"),
-                    name = p.optString("name"),
+                    id = id,
+                    name = NAMES[id] ?: p.optString("name"),
                     group = p.optString("group", "Other"),
-                    description = p.optString("description"),
+                    description = (if (trueGlow) TRUE_GLOW_TEXT[id] else null) ?: TEXTS[id] ?: p.optString("description"),
                     recipe = apply(params, Recipe()),
                 )
             }
@@ -39,9 +43,101 @@ object Presets {
             Log.e("Latent", "could not read the built-in presets", t)
             emptyList()
         }
-        Log.i("Latent", "presets: ${list.size} looks loaded")
-        loaded = list
+        Log.i("Latent", "presets: ${list.size} looks loaded" + if (trueGlow) " (cinema glow true to film)" else "")
+        loaded = trueGlow to list
         return list
+    }
+
+    // ---- Akshay's corrections (Spektrafilm-android 1542b1f, 11 Sep 2026), read against the makers' datasheets ----
+    //
+    // Written out whole rather than taken from the engine's file, so that moving the engine pin later
+    // (whose file carries them) changes nothing here, and the classic cinema glow stays available.
+
+    /** Grain: Gold 200 is grainier than Portra 400 by Kodak's own index; Provia matches Velvia and E100; both Superia looks share their film's grain. */
+    private val GRAIN = mapOf(
+        "gold200_ektacolor_goldenhour" to """{"agxParticleScale": [0.96, 1.2, 2.3]}""",
+        "provia100f_chrome_natural" to """{"agxParticleScale": [0.6, 0.8, 1.6]}""",
+        "superia400_crystalarchive_cool" to """{"blur": 0.72, "agxParticleScale": [0.85, 1.05, 2.1]}""",
+    )
+
+    /**
+     * The cinema glow, both ways. Vision3 and Verita carry rem-jet, a backing that stops most light
+     * bouncing back through the film, so "true to film" puts them with the other professional
+     * negatives (0.9). "Classic" is how these looks glowed before 70b, and stays the default.
+     */
+    private val CLASSIC_GLOW = mapOf(
+        "vision3_250d_2383_daycinema" to """{"active": true, "halationAmount": 1.1, "scatterAmount": 1.0}""",
+        "vision3_200t_2383_interior" to """{"active": true, "halationAmount": 1.15, "scatterAmount": 1.05, "boostEv": 0.3}""",
+        "verita200d_2383_warmcine" to """{"active": true, "halationAmount": 1.2, "scatterAmount": 1.1, "boostEv": 0.4}""",
+        "vision3_500t_2383_night" to """{"active": true, "halationAmount": 1.6, "scatterAmount": 1.3, "scatterCoreUm": [2.6, 2.3, 1.9], "boostEv": 1.0, "boostRange": 0.35, "protectEv": 3.5}""",
+    )
+    private val TRUE_GLOW = mapOf(
+        "vision3_250d_2383_daycinema" to """{"active": true, "halationAmount": 0.9, "scatterAmount": 1.0}""",
+        "vision3_200t_2383_interior" to """{"active": true, "halationAmount": 0.9, "scatterAmount": 0.9, "boostEv": 0.0}""",
+        "verita200d_2383_warmcine" to """{"active": true, "halationAmount": 0.9, "scatterAmount": 1.0, "boostEv": 0.0}""",
+        "vision3_500t_2383_night" to """{"active": true, "halationAmount": 0.9, "scatterAmount": 1.1, "scatterCoreUm": [2.6, 2.3, 1.9], "boostEv": 0.4, "boostRange": 0.35, "protectEv": 3.5}""",
+    )
+    private val TRUE_GLOW_TEXT = mapOf(
+        "vision3_500t_2383_night" to "The fast tungsten workhorse on 2383: low-light latitude, neutral tungsten balance, and clean rem-jet-suppressed highlights around practicals.",
+    )
+    private val NAMES = mapOf("c200_crystalarchive_budget" to "Fujicolor C200 — Everyday Budget")
+    private val TEXTS = mapOf(
+        "c200_crystalarchive_budget" to "The Japan-made Fujicolor C200, now discontinued: economical, crisp, slightly cool color on Crystal Archive. Not today's \"Fujifilm 200\", which is rebadged Kodak Gold 200.",
+        "portra800_push1_endura_night" to "Portra 800 rated EI 1600, pushed a stop: more contrast and a coarser, livelier grain, with thinner shadows.",
+        "superia400_crystalarchive_cool" to "Fuji's cooler consumer 400, with clean mixed-light greens and blues on Crystal Archive.",
+    )
+
+    /** The 500T Halation Glow look, which newer engine files drop; kept as ours, exactly as it was. */
+    private const val HALATION_GLOW_ID = "vision3_500t_halation_glow"
+    private const val HALATION_GLOW = """{"id": "vision3_500t_halation_glow", "name": "Vision3 500T — Halation Glow", "group": "Low Light", "description": "A neon-night look on 500T: halation pushed hard around highlights with a warm scatter bloom and lifted print.", "params": {"filmProfile": "kodak_vision3_500t", "printProfile": "kodak_2383", "io": {"scanFilm": false, "outputColorSpace": "SRGB"}, "camera": {"exposureCompensationEv": 0.0}, "enlarger": {"preflashExposure": 0.04}, "filmRender": {"densityCurveGamma": 1.0, "grain": {"active": true, "sublayersActive": true, "blur": 0.75, "agxParticleScale": [0.95, 1.15, 2.3], "uniformity": [0.96, 0.96, 0.98], "microStructure": [0.28, 30]}, "halation": {"active": true, "halationAmount": 2.4, "scatterAmount": 1.5, "scatterCoreUm": [3.0, 2.6, 2.1], "scatterTailUm": [11.0, 10.5, 9.8], "boostEv": 1.2, "boostRange": 0.45, "protectEv": 3.0, "halationBounceDecay": 0.55}, "dirCouplers": {"active": true, "amount": 1.05}}, "scanner": {"unsharpMask": [0.5, 0.7]}}}"""
+
+    private fun withHalationGlow(presets: JSONArray): JSONArray {
+        if ((0 until presets.length()).any { presets.optJSONObject(it)?.optString("id") == HALATION_GLOW_ID }) return presets
+        // where it used to sit: after the pushed Portra 800s
+        val after = (0 until presets.length()).lastOrNull { presets.optJSONObject(it)?.optString("id")?.startsWith("portra800_push") == true }
+        val out = JSONArray()
+        for (i in 0 until presets.length()) {
+            out.put(presets.get(i))
+            if (i == after) out.put(JSONObject(HALATION_GLOW))
+        }
+        if (after == null) out.put(JSONObject(HALATION_GLOW))
+        return out
+    }
+
+    /** [params] with the corrections above laid over it. */
+    private fun corrected(id: String, params: JSONObject, trueGlow: Boolean): JSONObject {
+        val grain = GRAIN[id]
+        val glow = (if (trueGlow) TRUE_GLOW else CLASSIC_GLOW)[id]
+        if (grain == null && glow == null) return params
+        val p = JSONObject(params.toString())
+        val film = p.optJSONObject("filmRender") ?: JSONObject().also { p.put("filmRender", it) }
+        if (grain != null) {
+            val g = film.optJSONObject("grain") ?: JSONObject().also { film.put("grain", it) }
+            val fix = JSONObject(grain)
+            fix.keys().forEach { k -> g.put(k, fix.get(k)) }
+        }
+        if (glow != null) film.put("halation", JSONObject(glow))
+        return p
+    }
+
+    /**
+     * After the cinema glow switch changes: if the film in use is one of those looks and still has
+     * the glow it was given, it takes the other one. A glow changed by hand is left alone.
+     */
+    fun cinemaGlowChanged(context: Context, presetId: String, trueGlow: Boolean) {
+        val from = (if (trueGlow) CLASSIC_GLOW else TRUE_GLOW)[presetId] ?: return
+        val to = (if (trueGlow) TRUE_GLOW else CLASSIC_GLOW)[presetId] ?: return
+        fun halation(h: String) = apply(JSONObject().put("filmRender", JSONObject().put("halation", JSONObject(h))), Recipe())
+        val before = halation(from); val after = halation(to)
+        val r = Recipes.current(context)
+        val same = r.halationAmount == before.halationAmount && r.scatterAmount == before.scatterAmount &&
+            r.halationBoostEv == before.halationBoostEv && r.halationBoostRange == before.halationBoostRange &&
+            r.halationProtectEv == before.halationProtectEv && r.scatterCoreUm == before.scatterCoreUm
+        if (!same) return
+        Recipes.setCurrent(context, r.copy(halationAmount = after.halationAmount, scatterAmount = after.scatterAmount,
+            halationBoostEv = after.halationBoostEv, halationBoostRange = after.halationBoostRange,
+            halationProtectEv = after.halationProtectEv, scatterCoreUm = after.scatterCoreUm))
+        LookBaker.invalidate()
     }
 
     /** The presets for one film, if any. */

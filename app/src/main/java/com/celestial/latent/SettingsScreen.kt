@@ -87,6 +87,18 @@ fun SettingsScreen(settings: AppSettings, onChange: (AppSettings) -> Unit, onOpe
         ToggleRow("Film in the viewfinder", "Draws the preview through the film look. Turn off to use the plain camera preview.", settings.filmPreview) { onChange(settings.copy(filmPreview = it)) }
         ToggleRow("Let the film level the exposure", "Off: the camera decides brightness — what you expose is what develops. On: the engine brightens or darkens every shot to its own target, which cancels out the EV dial.", settings.engineAutoExposure) { onChange(settings.copy(engineAutoExposure = it)) }
         ToggleRow("Develop every photo", "Single shots are developed with the selected film in the background. Bursts are never auto-developed.", settings.autoDevelop) { onChange(settings.copy(autoDevelop = it)) }
+        val context = LocalContext.current
+        OptionRow(
+            title = "Cinema glow",
+            subtitle = "How much the cinema films (Vision3 250D, 200T, 500T, Verita 200D) glow around lights. Classic: as they always have. True to film: less, because the real films carry a backing that stops most of the glow. Photos already developed keep theirs.",
+            options = listOf("Classic" to false, "True to film" to true),
+            selected = settings.trueCinemaGlow,
+        ) {
+            if (it != settings.trueCinemaGlow) {
+                onChange(settings.copy(trueCinemaGlow = it))
+                com.celestial.latent.develop.Presets.cinemaGlowChanged(context, settings.preset, it)
+            }
+        }
         Text("Open the roll to reach the darkroom: tap the last-photo thumbnail on the camera screen, or long-press the film strip.", color = LatentColors.TextDim, fontSize = 12.sp)
 
         Section("Xiaomi processing (official extensions)")
