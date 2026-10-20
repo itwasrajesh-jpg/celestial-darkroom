@@ -18,6 +18,8 @@ import com.spectrafilm.engine.HalationParams
 import com.spectrafilm.engine.PrintRenderingParams
 import com.spectrafilm.engine.ScannerParams
 import com.spectrafilm.engine.SpektraParams
+import com.spectrafilm.engine.ToneCurveChannel
+import com.spectrafilm.engine.ToneCurveParams
 import org.json.JSONObject
 
 /**
@@ -53,7 +55,7 @@ data class Recipe(
     // Grain
     val grain: Boolean = true,
     val grainSizeUm2: Float = 0.2f,
-    val grainBlur: Float = 0.5f,      // the engine's own default
+    val grainBlur: Float = 0.65f,     // the engine's own default (was 0.5 by mistake until 70a)
     val grainSublayers: Boolean = true,
     // Halation, continued
     val halationProtectEv: Float = 4.0f,
@@ -191,6 +193,12 @@ data class Recipe(
      * sensor's digital speckle, which film never sees; the film's own grain is the texture.
      */
     val lumaDenoise: Float = -1f,
+    /**
+     * A look's own tone curve on the finished print (70a), as x0, y0, x1, y1 … in 0–1; empty = none.
+     * Two of the engine's looks need it: Faded Matte lifts the blacks with it, Bleach Bypass adds
+     * its contrast with it. Applied by the engine as its very last step, so the preview has it too.
+     */
+    val toneCurve: List<Float> = emptyList(),
 ) {
     private fun triple(v: List<Float>, fallback: Float) =
         Triple(v.getOrElse(0) { fallback }, v.getOrElse(1) { fallback }, v.getOrElse(2) { fallback })
@@ -246,7 +254,10 @@ data class Recipe(
             normalizePrintExposure = normalizePrintExposure,
             diffusionFilter = DiffusionFilterParams(active = printDiffusion, filterFamily = printDiffusionFamily, strength = printDiffusionStrength),
         ),
-        printRender = PrintRenderingParams(densityCurveGamma = printContrast, glare = GlareParams(active = glare, percent = glarePercent)),
+        // One glare for film and print, as in Akshay's app: the print's roughness and blur follow the
+        // GLARE sliders too (70a; they were left at the engine's 0.7 / 0.5 before).
+        printRender = PrintRenderingParams(densityCurveGamma = printContrast,
+            glare = GlareParams(active = glare, percent = glarePercent, roughness = glareRoughness, blur = glareBlur)),
         scanner = ScannerParams(
             lensBlur = scannerLensBlur, unsharpMask = unsharpAmount to unsharpRadius,
             whiteCorrection = whiteCorrection, blackCorrection = blackCorrection,
@@ -268,6 +279,8 @@ data class Recipe(
             gpuPreview = gpuPreview, gpuExport = false,
             previewMaxSize = previewMaxSize,
         ),
+        toneCurve = if (toneCurve.size >= 4) ToneCurveParams(active = true,
+            master = ToneCurveChannel(toneCurve.chunked(2).filter { it.size == 2 }.map { it[0] to it[1] })) else ToneCurveParams(),
     )
 
     /** A one-line summary of the settings that shape the look, for the log. */
@@ -277,7 +290,8 @@ data class Recipe(
         "dir=$dir($dirAmount) glare=$glare " +
         "lensFilter=$diffusion${if (diffusion) "/$diffusionFamily/s=$diffusionStrength/scale=$diffusionScale/core=$diffusionCore/halo=$diffusionHalo/bloom=$diffusionBloom" else ""} " +
         "enlargerFilter=$printDiffusion${if (printDiffusion) "/$printDiffusionFamily/s=$printDiffusionStrength" else ""} " +
-        "out=$outputColorSpace/$outputGamutCompress format=${filmFormatMm}mm${if (lens85b) " 85B" else ""}"
+        "out=$outputColorSpace/$outputGamutCompress format=${filmFormatMm}mm${if (lens85b) " 85B" else ""}" +
+        (if (toneCurve.size >= 4) " curve=${toneCurve.joinToString(",")}" else "")
 
     fun toJson(): String = JSONObject().apply {
         put("film", film); put("paper", paper)
@@ -325,6 +339,7 @@ data class Recipe(
         put("glare", glare); put("glarePercent", glarePercent.toDouble()); put("glareRoughness", glareRoughness.toDouble()); put("glareBlur", glareBlur.toDouble())
         put("outputColorSpace", outputColorSpace); put("outputGamutCompress", outputGamutCompress); put("inputGamutCompress", inputGamutCompress)
         put("rgbToRaw", rgbToRaw); put("spectralBlur", spectralBlur.toDouble()); put("gpuPreview", gpuPreview); put("previewMaxSize", previewMaxSize)
+        put("toneCurve", org.json.JSONArray(toneCurve.map { it.toDouble() }))
     }.toString()
 
     companion object {
@@ -398,6 +413,7 @@ data class Recipe(
                 rgbToRaw = o.optString("rgbToRaw", d.rgbToRaw), spectralBlur = f("spectralBlur", d.spectralBlur),
                 gpuPreview = o.optBoolean("gpuPreview", d.gpuPreview),
                 previewMaxSize = o.optInt("previewMaxSize", d.previewMaxSize),
+                toneCurve = floats(o, "toneCurve", d.toneCurve),
             )
         } catch (t: Throwable) { Recipe() }
     }

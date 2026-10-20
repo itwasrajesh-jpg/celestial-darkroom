@@ -160,6 +160,26 @@ object Presets {
         }
         p.optJSONObject("printRender")?.let { pr ->
             r = r.copy(printContrast = pr.f("densityCurveGamma", r.printContrast))
+            // The print's glare: we have one glare for film and print, as Akshay's app does, so a look
+            // that sets it on the print sets it for both (70a; Portra 800 Wide Gamut Glow's 6%).
+            pr.optJSONObject("glare")?.let { g ->
+                r = r.copy(
+                    glare = g.optBoolean("active", r.glare),
+                    glarePercent = g.f("percent", r.glarePercent),
+                    glareRoughness = g.f("roughness", r.glareRoughness),
+                    glareBlur = g.f("blur", r.glareBlur),
+                )
+            }
+        }
+        // The look's tone curve (70a): the master curve only, which is all the engine's looks use.
+        p.optJSONObject("toneCurve")?.let { tc ->
+            val pts = tc.optJSONArray("master")
+            if (tc.optBoolean("active", false) && pts != null && pts.length() >= 2) {
+                r = r.copy(toneCurve = (0 until pts.length()).flatMap { i ->
+                    val pt = pts.optJSONArray(i) ?: return@flatMap emptyList<Float>()
+                    listOf(pt.f(0, 0f), pt.f(1, 0f))
+                })
+            }
         }
         p.optJSONObject("enlarger")?.let { e ->
             r = r.copy(

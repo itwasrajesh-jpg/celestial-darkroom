@@ -124,6 +124,7 @@ object LookBaker {
         r.meteringMethod, r.hanatosWindow, r.hanatosSurface,
         r.printExposureCompensation, r.normalizePrintExposure,
         r.outputColorSpace, r.outputGamutCompress, r.inputGamutCompress, r.rgbToRaw,
+        r.toneCurve.joinToString(","),
     ).joinToString("|")
 
     /** Reads an Adobe .cube: LUT_3D_SIZE then size³ RGB triples, blue slowest. */
