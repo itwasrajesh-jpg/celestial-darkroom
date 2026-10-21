@@ -167,6 +167,8 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
     var lastRenderMs by remember { mutableStateOf(0) }
     var fullJob by remember { mutableStateOf<com.celestial.latent.develop.DevelopQueue.Running?>(null) }
     var tab by remember { mutableStateOf("film") }
+    // 74a: App help, drawn over the darkroom at the page for what is on screen
+    var helpTopic by remember { mutableStateOf<String?>(null) }
     var sheet by remember { mutableStateOf(0) }   // 0 peek, 1 half, 2 full
     var saveName by remember { mutableStateOf("") }
     // 71a: the recipe before "Reset to film", and the painted effects before "Clear effects", for one Undo each
@@ -446,6 +448,10 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                                 when (label) { "PRINT" -> printing = true; "FULL" -> { printing = false; full = true }; else -> { printing = false; full = false } }
                             }).padding(horizontal = 9.dp, vertical = 3.dp))
                 }
+                // 74a: what the controls on screen do
+                Text("?", color = LatentColors.Amber, fontSize = 12.sp,
+                    modifier = Modifier.clip(RoundedCornerShape(999.dp)).border(0.5.dp, LatentColors.Line, RoundedCornerShape(999.dp))
+                        .combinedClickable(onClick = { Haptics.tick(context); helpTopic = if (printing) "print" else tab }).padding(horizontal = 8.dp, vertical = 2.dp))
             }
         }
 
@@ -1268,6 +1274,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
         com.celestial.latent.develop.LiveEdit(source, isRaw, recipe, exposureMap, softenMap, pairFirst, framing, fogMap, fogLook,
             raysMap, raysLook, extraLights, depthSplit, saturationMap, lithLook, wetMap, wetLook, rainMap),
     ) { liveOpen = false }
+    helpTopic?.let { t -> HelpScreen(start = t) { helpTopic = null } }
     }
 }
 

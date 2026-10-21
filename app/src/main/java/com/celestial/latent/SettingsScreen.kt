@@ -38,7 +38,7 @@ import com.celestial.latent.camera.Lenses
 import com.celestial.latent.ui.LatentColors
 
 @Composable
-fun SettingsScreen(settings: AppSettings, onChange: (AppSettings) -> Unit, onOpenReport: () -> Unit, onOpenVendor: () -> Unit, onOpenProbe: () -> Unit, onOpenDepth: () -> Unit, onOpenLogs: () -> Unit, onOpenExtension: () -> Unit, onOpenAbout: () -> Unit, onBack: () -> Unit) {
+fun SettingsScreen(settings: AppSettings, onChange: (AppSettings) -> Unit, onOpenReport: () -> Unit, onOpenVendor: () -> Unit, onOpenProbe: () -> Unit, onOpenDepth: () -> Unit, onOpenLogs: () -> Unit, onOpenExtension: () -> Unit, onOpenAbout: () -> Unit, onBack: () -> Unit, onOpenHelp: () -> Unit = {}) {
     Column(
         Modifier.fillMaxSize().background(LatentColors.Background).statusBarsPadding().navigationBarsPadding()
             .verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 12.dp),
@@ -47,6 +47,11 @@ fun SettingsScreen(settings: AppSettings, onChange: (AppSettings) -> Unit, onOpe
         Spacer(Modifier.height(8.dp))
         Text("Settings", color = LatentColors.TextBright, fontSize = 24.sp)
         Spacer(Modifier.height(20.dp))
+
+        // 74a: what every darkroom control does
+        Section("App help")
+        Text("Every control explained, tab by tab ›", color = LatentColors.Amber, fontSize = 14.sp, modifier = Modifier.combinedClickable(onClick = onOpenHelp).padding(vertical = 10.dp))
+        Spacer(Modifier.height(12.dp))
 
         Section("Exposure")
         OptionRow(
