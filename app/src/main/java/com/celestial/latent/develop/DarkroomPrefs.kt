@@ -37,6 +37,18 @@ object DarkroomPrefs {
         context.getSharedPreferences(FILE, Context.MODE_PRIVATE).edit().putFloat("ringSign_$axis", if (sign < 0f) -1f else 1f).apply()
     }
 
+    /** The photo's share of the darkroom above its controls (75b), dragged freely between these. */
+    const val PHOTO_SHARE_DEFAULT = 0.58f
+    const val PHOTO_SHARE_MIN = 0.15f
+    const val PHOTO_SHARE_MAX = 0.70f
+
+    fun photoShare(context: Context): Float =
+        context.getSharedPreferences(FILE, Context.MODE_PRIVATE).getFloat("photoShare", PHOTO_SHARE_DEFAULT).coerceIn(PHOTO_SHARE_MIN, PHOTO_SHARE_MAX)
+
+    fun setPhotoShare(context: Context, value: Float) {
+        context.getSharedPreferences(FILE, Context.MODE_PRIVATE).edit().putFloat("photoShare", value.coerceIn(PHOTO_SHARE_MIN, PHOTO_SHARE_MAX)).apply()
+    }
+
     fun setPrintSize(context: Context, value: Float) {
         context.getSharedPreferences(FILE, Context.MODE_PRIVATE).edit().putFloat("printSize", value).apply()
     }

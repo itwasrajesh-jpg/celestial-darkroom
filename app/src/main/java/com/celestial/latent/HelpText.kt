@@ -65,12 +65,15 @@ object HelpText {
 
     val TOPICS: List<Topic> = listOf(
         Topic("basics", "THE DARKROOM", "START HERE", "Simple, Full and Print; reset, clear and recipes",
-            "Open any photo from the Roll to develop it here. Nothing you do changes the original: the darkroom keeps your edit beside the photo and saves a new file when you press Develop (bottom right, in every room).",
+            "Open any photo from the Roll to develop it here. Nothing you do changes the original: the darkroom keeps your edit beside the photo and saves a new file when you press Develop, at the top of the DEVELOP tab (in PRINT, the last step).",
             listOf(
                 Section("THE THREE ROOMS", items = listOf(
                     Item("Simple · Full · Print", "top right",
                         "SIMPLE shows the controls most photos need. FULL opens every control the film engine has, in the tabs described in this help. PRINT turns the darkroom into an enlarger: test strips, colour ring-around and everything you paint by hand.",
                         use = "Start in SIMPLE, choose a look, then go to PRINT to finish. Use FULL when you want to understand or change one specific part of the film."),
+                    Item("The handle above the controls", "drag · double-tap",
+                        "Drag the small bar above the tabs to give the photo or the controls more room; it stays where you let go and is remembered. Double-tap it for the usual height.",
+                        use = "More room for sliders while you fine-tune, a bigger photo while you judge."),
                     Item("Press and hold the photo", "",
                         "Shows the photo before the film, framed the same way as your print. Let go to see the print again.",
                         use = "Check whether the film is helping, and how far your fog, light or colour has moved the picture."),
@@ -419,7 +422,7 @@ object HelpText {
             )))),
 
         Topic("develop", "DEVELOP", "DARKROOM TABS", "Print size, Live, reset, clear and save",
-            "Everything about the finished file. The slim bar at the bottom of every room shows the source and print size; tap it to come here, or tap Develop to make the full-size print.",
+            "Everything about the finished file, with the Develop button at the top. In PRINT the same page is the last step, DEVELOP. While a develop runs, a thin line under the handle shows its progress in every tab.",
             listOf(
                 Section("DEVELOP", items = listOf(
                     Item("Print size", "1× · 1.25× · 1.5× · 2×",
@@ -430,7 +433,7 @@ object HelpText {
                         use = "Check it before a long develop."),
                     Item("Live", "", "A short living clip of this edit: rain running, fog drifting, lamps flickering. Only what the darkroom added moves.",
                         use = "Sharing an edit with fog, rain or lights as a moving photo."),
-                    Item("Develop", "bottom right", "Makes the full-size print and saves it to DCIM/Latent.", use = "When the edit is finished."),
+                    Item("Develop", "top of this tab", "Makes the full-size print and saves it to DCIM/Latent. You can keep editing while it runs.", use = "When the edit is finished."),
                     Item("Reset to film · Clear effects · Save recipe", "", "Start again from the film's own look, remove the painted effects, or save these film settings under a name. See THE DARKROOM for details.",
                         use = "Reset and Clear both offer Undo right after."),
                 )),

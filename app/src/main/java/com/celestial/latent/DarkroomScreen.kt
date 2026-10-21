@@ -161,6 +161,8 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
     // the living photo panel (66a)
     var liveOpen by remember { mutableStateOf(false) }
     var previewIsPartial by remember { mutableStateOf(false) }
+    // 75b: the last whole-frame preview, under the quick pass's centre so the picture never jumps in size
+    var lastFull by remember { mutableStateOf<Bitmap?>(null) }
     var gpuTest by remember { mutableStateOf("") }
     var lookId by remember { mutableStateOf("") }
     var levelling by remember { mutableStateOf(false) }
@@ -171,7 +173,10 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
     var tab by remember { mutableStateOf("film") }
     // 74a: App help, drawn over the darkroom at the page for what is on screen
     var helpTopic by remember { mutableStateOf<String?>(null) }
-    var sheet by remember { mutableStateOf(0) }   // 0 peek, 1 half, 2 full
+    // 75b: the photo's share of the room above the controls, set by dragging the handle freely
+    // (it used to snap between three heights) and remembered for next time
+    var photoShare by remember { mutableStateOf(com.celestial.latent.develop.DarkroomPrefs.photoShare(context)) }
+    var roomHeight by remember { mutableStateOf(1) }
     var saveName by remember { mutableStateOf("") }
     // 71a: the recipe before "Reset to film", and the painted effects before "Clear effects", for one Undo each
     var beforeReset by remember { mutableStateOf<Recipe?>(null) }
@@ -218,7 +223,11 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                 val (bytes, _) = Develop.render(context, target, r, preview = true, exposureMap = map, softenMask = softenMap, saturationMap = sat,
                     lith = lithLook, lithFrame = if (lithFrame > 0f) com.celestial.latent.develop.Region(lithFrame, lithFrame, 1f - lithFrame, 1f - lithFrame) else null) { m -> status = m }
                 lastRenderMs = ((System.nanoTime() - t0) / 1_000_000).toInt()
-                preview = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                val got = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                // The quick pass is only the centre: shown at its real size and place over the last
+                // whole preview, not stretched to fill the box (which read as a zoom in and back out).
+                preview = if (cropFraction < 1f) inPlace(got, lastFull ?: preview?.takeIf { !previewIsPartial }, cropFraction)
+                    else got.also { lastFull = it }
                 previewIsPartial = cropFraction < 1f
             } catch (t: Throwable) { status = "failed: ${t.message}" }
             finally {
@@ -451,6 +460,168 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
             (if (lithLook.on) " · LITH" else "")
     }
 
+    /** The full-size print (75b: started from the DEVELOP tab, in SIMPLE/FULL and in PRINT alike). */
+    fun startFullDevelop() {
+        if (fullRunning) return
+        fullRunning = true; fullStarted = System.currentTimeMillis(); status = "full size: queued"; fullError = null
+        fullJob = com.celestial.latent.develop.DevelopQueue.submitFull(
+            context, source, isRaw, recipe, upscale = printSize, exposureMap = exposureMap, softenMask = softenMap, pairFirst = pairFirst, framing = framing,
+            fogMask = fogMap, fogLook = fogLook, raysMask = raysMap, raysLook = raysLook, extraLights = extraLights, depthSplit = depthSplit,
+            saturationMap = saturationMap, lith = lithLook, wetMask = wetMap, wetLook = wetLook, rainMask = rainMap,
+            onStatus = { m ->
+                status = "full size: $m"
+                if (m.startsWith("failed")) fullError =
+                    if (m.contains("OutOfMemory", ignoreCase = true) || m.contains("allocate", ignoreCase = true))
+                        "Not developed: the phone ran out of memory. Try a smaller print size."
+                    else "Not developed: " + m.removePrefix("failed: ").take(120)
+            },
+            onDone = { out ->
+                fullRunning = false; fullJob = null
+                if (out != null) {
+                    fullError = null
+                    status = "saved to DCIM/Latent"
+                    val b = runCatching { context.contentResolver.loadThumbnail(out, android.util.Size(1600, 1600), null) }.getOrNull()
+                    if (b != null) { preview = b; previewIsPartial = false; lastFull = b }
+                }
+            },
+        )
+    }
+
+    /** The DEVELOP page (75a/75b): the Develop button first, then print size, the summary, Live, reset / clear / save. */
+    val developPage: @Composable () -> Unit = {
+        Column(Modifier.fillMaxWidth()) {
+        Row(Modifier.fillMaxWidth().padding(top = 10.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text(if (fullRunning) "Developing… ${elapsed}s" else "Develop", color = LatentColors.AmberInk, fontSize = 13.sp, maxLines = 1, softWrap = false,
+                modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(LatentColors.Amber)
+                    .combinedClickable(onClick = { if (!fullRunning) { Haptics.click(context); startFullDevelop() } }).padding(horizontal = 22.dp, vertical = 10.dp))
+            Text("Full size, saved to DCIM/Latent.", color = LatentColors.TextDim, fontSize = 10.sp, modifier = Modifier.weight(1f))
+        }
+        Head("PRINT SIZE", null) {}
+        // Print size: the film's grain is generated at the larger size, so it stays fine
+        // rather than being blown up. Costs time in proportion to the pixels.
+        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            com.celestial.latent.develop.DarkroomPrefs.PRINT_SIZES.forEach { size ->
+                val on = printSize == size
+                Text(com.celestial.latent.develop.DarkroomPrefs.label(size),
+                    color = if (on) LatentColors.AmberInk else LatentColors.Text, fontSize = 11.sp,
+                    modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(if (on) LatentColors.Amber else LatentColors.Surface)
+                        .combinedClickable(onClick = {
+                            if (!fullRunning) {
+                                Haptics.tick(context); printSize = size
+                                com.celestial.latent.develop.DarkroomPrefs.setPrintSize(context, size)
+                            }
+                        }).padding(horizontal = 12.dp, vertical = 6.dp))
+            }
+        }
+        Note(if (printSize > 1f) "Finer grain at the larger size, no new detail; about ${"%.1f".format(printSize * printSize)}× as long to develop."
+            else "The photo's own size. Larger sizes keep the grain fine instead of enlarging it.")
+        Head("THIS DEVELOP", null) {}
+        // An honest estimate before you commit, rather than an explanation mid-wait.
+        Text(developSummary(), color = LatentColors.Text, fontSize = 10.sp, letterSpacing = 1.sp, lineHeight = 14.sp, modifier = Modifier.padding(vertical = 4.dp))
+        Head("LIVING PHOTO", null) {}
+        // the living photo (66a): this edit as a short loop, only what the darkroom added moving
+        Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("Live", color = LatentColors.TextBright, fontSize = 12.sp,
+                modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(LatentColors.Surface)
+                    .combinedClickable(onClick = { Haptics.click(context); liveOpen = true }).padding(horizontal = 16.dp, vertical = 8.dp))
+            Text("A short clip of this edit: rain running, fog drifting, lamps flickering.", color = LatentColors.TextDim, fontSize = 10.sp, modifier = Modifier.weight(1f))
+        }
+        Head("START OVER OR KEEP IT", null) {}
+        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            // 71a: back to this film's own look (its grain, glow and the rest), not the engine's bare
+            // defaults, which gave every film Portra 400's grain. One Undo brings the edit back.
+            Text("Reset to film", color = LatentColors.Text, fontSize = 11.sp,
+                modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(LatentColors.Surface)
+                    .combinedClickable(onClick = {
+                        Haptics.tick(context)
+                        val fresh = filmLook(context, recipe, lookId, ownRecipe != null)
+                        if (fresh != recipe) { beforeReset = recipe; resetTo = fresh; recipe = fresh }
+                    }).padding(horizontal = 12.dp, vertical = 7.dp))
+            Text("Clear effects", color = LatentColors.Text, fontSize = 11.sp,
+                modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(LatentColors.Surface)
+                    .combinedClickable(onClick = { Haptics.tick(context); clearAsk = true }).padding(horizontal = 12.dp, vertical = 7.dp))
+            Text("Save recipe", color = LatentColors.Text, fontSize = 11.sp,
+                modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(LatentColors.Surface)
+                    .combinedClickable(onClick = {
+                        // 72a: asks for a name first, offering the film's
+                        Haptics.tick(context); saveName = ""
+                        naming = (Develop.FILMS.firstOrNull { it.first == recipe.film }?.second ?: "My recipe") + " – "
+                    }).padding(horizontal = 12.dp, vertical = 7.dp))
+        }
+        val draft = naming
+        if (draft != null) {
+            val clean = Recipes.cleanName(draft)
+            val taken = clean.isNotEmpty() && Recipes.exists(context, clean)
+            NameField(draft, "name this recipe") { naming = it }
+            Row(Modifier.padding(bottom = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(if (taken) "Replace" else "Save", color = if (clean.isNotEmpty()) LatentColors.AmberInk else LatentColors.TextDim, fontSize = 11.sp,
+                    modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(if (clean.isNotEmpty()) LatentColors.Amber else LatentColors.Surface)
+                        .combinedClickable(onClick = {
+                            if (clean.isEmpty()) return@combinedClickable
+                            Haptics.tick(context)
+                            Recipes.save(context, clean, recipe); saveName = clean; naming = null
+                            lookId = "stock:" + clean; recipesRevision++
+                        }).padding(horizontal = 12.dp, vertical = 7.dp))
+                Text("Cancel", color = LatentColors.Text, fontSize = 11.sp,
+                    modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(LatentColors.Surface)
+                        .combinedClickable(onClick = { naming = null }).padding(horizontal = 12.dp, vertical = 7.dp))
+                if (taken) Text("a recipe has this name", color = LatentColors.TextDim, fontSize = 10.sp)
+            }
+        }
+        if (saveName.isNotEmpty()) Text("saved “$saveName” · find it under YOUR RECIPES in the looks above and in the camera's film strip",
+            color = LatentColors.Amber, fontSize = 10.sp)
+        // Undo for the reset, while nothing has been changed since
+        val undoReset = beforeReset
+        if (undoReset != null && resetTo == recipe) {
+            Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Back to the film's own look.", color = LatentColors.TextDim, fontSize = 11.sp, modifier = Modifier.weight(1f))
+                Text("Undo", color = LatentColors.AmberInk, fontSize = 11.sp,
+                    modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(LatentColors.Amber)
+                        .combinedClickable(onClick = { Haptics.tick(context); recipe = undoReset; beforeReset = null; resetTo = null })
+                        .padding(horizontal = 12.dp, vertical = 7.dp))
+            }
+        }
+        // "Clear effects" asks first, in place (no dialog: those misplace on the Xiaomi)
+        if (clearAsk) {
+            Text("Clear this photo's fog, lights, god rays, wet ground, rain, lith print, dodge & burn and painted colour? The film settings and the framing stay.",
+                color = LatentColors.Text, fontSize = 11.sp, modifier = Modifier.padding(top = 4.dp))
+            Row(Modifier.padding(vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Clear", color = LatentColors.AmberInk, fontSize = 11.sp,
+                    modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(LatentColors.Amber)
+                        .combinedClickable(onClick = {
+                            Haptics.tick(context)
+                            beforeClear = PaintedEffects(exposureMap, softenMap, fogMap, fogLook, raysMap, raysLook, extraLights,
+                                saturationMap, lithLook, wetMap, wetLook, rainMap)
+                            val none = PaintedEffects.NONE
+                            exposureMap = none.exposure; softenMap = none.soften; fogMap = none.fog; fogLook = none.fogLook
+                            raysMap = none.rays; raysLook = none.raysLook; extraLights = none.extraLights
+                            saturationMap = none.saturation; lithLook = none.lith; wetMap = none.wet; wetLook = none.wetLook; rainMap = none.rain
+                            clearAsk = false
+                        }).padding(horizontal = 12.dp, vertical = 7.dp))
+                Text("Keep them", color = LatentColors.Text, fontSize = 11.sp,
+                    modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(LatentColors.Surface)
+                        .combinedClickable(onClick = { clearAsk = false }).padding(horizontal = 12.dp, vertical = 7.dp))
+            }
+        }
+        // ...and its Undo, while the photo is still open
+        val undoClear = beforeClear
+        if (undoClear != null && !clearAsk) {
+            Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Effects cleared.", color = LatentColors.TextDim, fontSize = 11.sp, modifier = Modifier.weight(1f))
+                Text("Undo", color = LatentColors.AmberInk, fontSize = 11.sp,
+                    modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(LatentColors.Amber)
+                        .combinedClickable(onClick = {
+                            Haptics.tick(context)
+                            exposureMap = undoClear.exposure; softenMap = undoClear.soften; fogMap = undoClear.fog; fogLook = undoClear.fogLook
+                            raysMap = undoClear.rays; raysLook = undoClear.raysLook; extraLights = undoClear.extraLights
+                            saturationMap = undoClear.saturation; lithLook = undoClear.lith; wetMap = undoClear.wet; wetLook = undoClear.wetLook; rainMap = undoClear.rain
+                            beforeClear = null
+                        }).padding(horizontal = 12.dp, vertical = 7.dp))
+            }
+        }
+        }
+    }
+
     // a Box only so the living photo panel (66a) can lie over the darkroom, in the app's own window
     Box(Modifier.fillMaxSize()) {
     Column(Modifier.fillMaxSize().background(LatentColors.Background).statusBarsPadding().navigationBarsPadding()) {
@@ -480,6 +651,8 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
             if (inPrint) {
                 PrintPanel(
                     recipe = recipe,
+                    developPage = developPage,
+                    developPreview = preview,
                     renderAt = { r, edge -> renderStill(r, edge) },
                     onExposure = { e -> set { copy(printExposure = e) } },
                     onFilters = { y, m -> set { copy(yFilterShift = y, mFilterShift = m) } },
@@ -530,10 +703,10 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                     renderRegionWithMasks = { r, edge, mk, reg -> renderDetail(r, reg, edge, mk) },
                     modifier = Modifier.fillMaxSize(),
                 )
-            } else Column(Modifier.fillMaxSize()) {
+            } else Column(Modifier.fillMaxSize().onSizeChanged { roomHeight = it.height.coerceAtLeast(1) }) {
                 // Photo shrinks as the sheet is dragged up; it never disappears entirely.
-                // The sheet always keeps room; dragging shifts how much.
-                val photoWeight = when (sheet) { 0 -> 0.58f; 1 -> 0.38f; else -> 0.18f }
+                // While framing, the photo gets at least its usual share, so the crop is easy to see.
+                val photoWeight = if (frameOpen) maxOf(photoShare, com.celestial.latent.develop.DarkroomPrefs.PHOTO_SHARE_DEFAULT) else photoShare
                 Box(Modifier.fillMaxWidth().weight(photoWeight).background(LatentColors.Surface)
                     .onSizeChanged { viewSize = it }
                     // Two fingers zoom and move; one finger slides the picture when zoomed in.
@@ -667,7 +840,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                     Text(if (frameOpen) "FRAMING" else "FRAME", color = if (frameOpen) LatentColors.AmberInk else Color(0xE6FFFFFF), fontSize = 10.sp, letterSpacing = 1.5.sp,
                         modifier = Modifier.align(Alignment.TopEnd).padding(10.dp).clip(RoundedCornerShape(999.dp))
                             .background(if (frameOpen) LatentColors.Amber else Color(0x66000000))
-                            .combinedClickable(onClick = { Haptics.tick(context); frameOpen = !frameOpen; if (frameOpen) sheet = 0 })
+                            .combinedClickable(onClick = { Haptics.tick(context); frameOpen = !frameOpen })
                             .padding(horizontal = 10.dp, vertical = 4.dp))
 
                     if (!rendering && !fullRunning && preview == null) Text(if (status.isEmpty()) "no preview yet" else status, color = LatentColors.Text, fontSize = 11.sp, modifier = Modifier.align(Alignment.Center).padding(24.dp))
@@ -686,15 +859,27 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                     modifier = Modifier.fillMaxWidth().weight(1f - photoWeight),
                 ) else Column(
                     Modifier.fillMaxWidth().weight(1f - photoWeight).clip(RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)).background(Color(0xFF1D1D1B))
-                        .pointerInput(Unit) {
-                            detectVerticalDragGestures { _, dy ->
-                                if (dy < -12f && sheet < 2) { Haptics.tick(context); sheet++ }
-                                if (dy > 12f && sheet > 0) { Haptics.tick(context); sheet-- }
-                            }
-                        },
                 ) {
-                    Box(Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 6.dp), contentAlignment = Alignment.Center) {
-                        Box(Modifier.size(34.dp, 4.dp).clip(RoundedCornerShape(2.dp)).background(if (sheet > 0) LatentColors.Amber else LatentColors.Line))
+                    // the handle: drag it and the panel follows the finger, staying where it is let go
+                    // (75b; only the handle, so scrolling the controls never resizes the panel);
+                    // a double tap puts the usual height back
+                    Box(Modifier.fillMaxWidth().pointerInput(Unit) {
+                        detectVerticalDragGestures(
+                            onDragEnd = { com.celestial.latent.develop.DarkroomPrefs.setPhotoShare(context, photoShare) },
+                        ) { change, dy ->
+                            change.consume()
+                            photoShare = (photoShare + dy / roomHeight).coerceIn(
+                                com.celestial.latent.develop.DarkroomPrefs.PHOTO_SHARE_MIN, com.celestial.latent.develop.DarkroomPrefs.PHOTO_SHARE_MAX)
+                        }
+                    }.pointerInput(Unit) {
+                        detectTapGestures(onDoubleTap = {
+                            Haptics.tick(context)
+                            photoShare = com.celestial.latent.develop.DarkroomPrefs.PHOTO_SHARE_DEFAULT
+                            com.celestial.latent.develop.DarkroomPrefs.setPhotoShare(context, photoShare)
+                        })
+                    }.padding(top = 12.dp, bottom = 10.dp), contentAlignment = Alignment.Center) {
+                        val moved = Math.abs(photoShare - com.celestial.latent.develop.DarkroomPrefs.PHOTO_SHARE_DEFAULT) > 0.01f
+                        Box(Modifier.size(34.dp, 4.dp).clip(RoundedCornerShape(2.dp)).background(if (moved) LatentColors.Amber else LatentColors.Line))
                     }
                     // One line of state, off the photograph: what is happening, how long, and a way out.
                     if (fullRunning || rendering || previewIsPartial) {
@@ -1093,131 +1278,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                         }
                         Spacer(Modifier.height(8.dp))
                         Text(status + (if (lastRenderMs > 0) " · last ${lastRenderMs} ms" else ""), color = LatentColors.TextDim, fontSize = 10.sp)
-                        if (tab == "develop") {
-                        Head("PRINT SIZE", null) {}
-                        // Print size: the film's grain is generated at the larger size, so it stays fine
-                        // rather than being blown up. Costs time in proportion to the pixels.
-                        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            com.celestial.latent.develop.DarkroomPrefs.PRINT_SIZES.forEach { size ->
-                                val on = printSize == size
-                                Text(com.celestial.latent.develop.DarkroomPrefs.label(size),
-                                    color = if (on) LatentColors.AmberInk else LatentColors.Text, fontSize = 11.sp,
-                                    modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(if (on) LatentColors.Amber else LatentColors.Surface)
-                                        .combinedClickable(onClick = {
-                                            if (!fullRunning) {
-                                                Haptics.tick(context); printSize = size
-                                                com.celestial.latent.develop.DarkroomPrefs.setPrintSize(context, size)
-                                            }
-                                        }).padding(horizontal = 12.dp, vertical = 6.dp))
-                            }
-                        }
-                        Note(if (printSize > 1f) "Finer grain at the larger size, no new detail; about ${"%.1f".format(printSize * printSize)}× as long to develop."
-                            else "The photo's own size. Larger sizes keep the grain fine instead of enlarging it.")
-                        Head("THIS DEVELOP", null) {}
-                        // An honest estimate before you commit, rather than an explanation mid-wait.
-                        Text(developSummary(), color = LatentColors.Text, fontSize = 10.sp, letterSpacing = 1.sp, lineHeight = 14.sp, modifier = Modifier.padding(vertical = 4.dp))
-                        Head("LIVING PHOTO", null) {}
-                        // the living photo (66a): this edit as a short loop, only what the darkroom added moving
-                        Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                            Text("Live", color = LatentColors.TextBright, fontSize = 12.sp,
-                                modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(LatentColors.Surface)
-                                    .combinedClickable(onClick = { Haptics.click(context); liveOpen = true }).padding(horizontal = 16.dp, vertical = 8.dp))
-                            Text("A short clip of this edit: rain running, fog drifting, lamps flickering.", color = LatentColors.TextDim, fontSize = 10.sp, modifier = Modifier.weight(1f))
-                        }
-                        Head("START OVER OR KEEP IT", null) {}
-                        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            // 71a: back to this film's own look (its grain, glow and the rest), not the engine's bare
-                            // defaults, which gave every film Portra 400's grain. One Undo brings the edit back.
-                            Text("Reset to film", color = LatentColors.Text, fontSize = 11.sp,
-                                modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(LatentColors.Surface)
-                                    .combinedClickable(onClick = {
-                                        Haptics.tick(context)
-                                        val fresh = filmLook(context, recipe, lookId, ownRecipe != null)
-                                        if (fresh != recipe) { beforeReset = recipe; resetTo = fresh; recipe = fresh }
-                                    }).padding(horizontal = 12.dp, vertical = 7.dp))
-                            Text("Clear effects", color = LatentColors.Text, fontSize = 11.sp,
-                                modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(LatentColors.Surface)
-                                    .combinedClickable(onClick = { Haptics.tick(context); clearAsk = true }).padding(horizontal = 12.dp, vertical = 7.dp))
-                            Text("Save recipe", color = LatentColors.Text, fontSize = 11.sp,
-                                modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(LatentColors.Surface)
-                                    .combinedClickable(onClick = {
-                                        // 72a: asks for a name first, offering the film's
-                                        Haptics.tick(context); saveName = ""
-                                        naming = (Develop.FILMS.firstOrNull { it.first == recipe.film }?.second ?: "My recipe") + " – "
-                                    }).padding(horizontal = 12.dp, vertical = 7.dp))
-                        }
-                        val draft = naming
-                        if (draft != null) {
-                            val clean = Recipes.cleanName(draft)
-                            val taken = clean.isNotEmpty() && Recipes.exists(context, clean)
-                            NameField(draft, "name this recipe") { naming = it }
-                            Row(Modifier.padding(bottom = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                                Text(if (taken) "Replace" else "Save", color = if (clean.isNotEmpty()) LatentColors.AmberInk else LatentColors.TextDim, fontSize = 11.sp,
-                                    modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(if (clean.isNotEmpty()) LatentColors.Amber else LatentColors.Surface)
-                                        .combinedClickable(onClick = {
-                                            if (clean.isEmpty()) return@combinedClickable
-                                            Haptics.tick(context)
-                                            Recipes.save(context, clean, recipe); saveName = clean; naming = null
-                                            lookId = "stock:" + clean; recipesRevision++
-                                        }).padding(horizontal = 12.dp, vertical = 7.dp))
-                                Text("Cancel", color = LatentColors.Text, fontSize = 11.sp,
-                                    modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(LatentColors.Surface)
-                                        .combinedClickable(onClick = { naming = null }).padding(horizontal = 12.dp, vertical = 7.dp))
-                                if (taken) Text("a recipe has this name", color = LatentColors.TextDim, fontSize = 10.sp)
-                            }
-                        }
-                        if (saveName.isNotEmpty()) Text("saved “$saveName” · find it under YOUR RECIPES in the looks above and in the camera's film strip",
-                            color = LatentColors.Amber, fontSize = 10.sp)
-                        // Undo for the reset, while nothing has been changed since
-                        val undoReset = beforeReset
-                        if (undoReset != null && resetTo == recipe) {
-                            Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Text("Back to the film's own look.", color = LatentColors.TextDim, fontSize = 11.sp, modifier = Modifier.weight(1f))
-                                Text("Undo", color = LatentColors.AmberInk, fontSize = 11.sp,
-                                    modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(LatentColors.Amber)
-                                        .combinedClickable(onClick = { Haptics.tick(context); recipe = undoReset; beforeReset = null; resetTo = null })
-                                        .padding(horizontal = 12.dp, vertical = 7.dp))
-                            }
-                        }
-                        // "Clear effects" asks first, in place (no dialog: those misplace on the Xiaomi)
-                        if (clearAsk) {
-                            Text("Clear this photo's fog, lights, god rays, wet ground, rain, lith print, dodge & burn and painted colour? The film settings and the framing stay.",
-                                color = LatentColors.Text, fontSize = 11.sp, modifier = Modifier.padding(top = 4.dp))
-                            Row(Modifier.padding(vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Text("Clear", color = LatentColors.AmberInk, fontSize = 11.sp,
-                                    modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(LatentColors.Amber)
-                                        .combinedClickable(onClick = {
-                                            Haptics.tick(context)
-                                            beforeClear = PaintedEffects(exposureMap, softenMap, fogMap, fogLook, raysMap, raysLook, extraLights,
-                                                saturationMap, lithLook, wetMap, wetLook, rainMap)
-                                            val none = PaintedEffects.NONE
-                                            exposureMap = none.exposure; softenMap = none.soften; fogMap = none.fog; fogLook = none.fogLook
-                                            raysMap = none.rays; raysLook = none.raysLook; extraLights = none.extraLights
-                                            saturationMap = none.saturation; lithLook = none.lith; wetMap = none.wet; wetLook = none.wetLook; rainMap = none.rain
-                                            clearAsk = false
-                                        }).padding(horizontal = 12.dp, vertical = 7.dp))
-                                Text("Keep them", color = LatentColors.Text, fontSize = 11.sp,
-                                    modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(LatentColors.Surface)
-                                        .combinedClickable(onClick = { clearAsk = false }).padding(horizontal = 12.dp, vertical = 7.dp))
-                            }
-                        }
-                        // ...and its Undo, while the photo is still open
-                        val undoClear = beforeClear
-                        if (undoClear != null && !clearAsk) {
-                            Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Text("Effects cleared.", color = LatentColors.TextDim, fontSize = 11.sp, modifier = Modifier.weight(1f))
-                                Text("Undo", color = LatentColors.AmberInk, fontSize = 11.sp,
-                                    modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(LatentColors.Amber)
-                                        .combinedClickable(onClick = {
-                                            Haptics.tick(context)
-                                            exposureMap = undoClear.exposure; softenMap = undoClear.soften; fogMap = undoClear.fog; fogLook = undoClear.fogLook
-                                            raysMap = undoClear.rays; raysLook = undoClear.raysLook; extraLights = undoClear.extraLights
-                                            saturationMap = undoClear.saturation; lithLook = undoClear.lith; wetMap = undoClear.wet; wetLook = undoClear.wetLook; rainMap = undoClear.rain
-                                            beforeClear = null
-                                        }).padding(horizontal = 12.dp, vertical = 7.dp))
-                            }
-                        }
-                        }
+                        if (tab == "develop") developPage()
                         Spacer(Modifier.height(8.dp))
                     }
                 }
@@ -1230,44 +1291,6 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(top = 6.dp).clip(RoundedCornerShape(8.dp))
                     .background(LatentColors.Amber).combinedClickable(onClick = { fullError = null })
                     .padding(horizontal = 12.dp, vertical = 8.dp))
-        }
-        // 75a: one slim bar in every room. The left side says what will be developed and opens the
-        // DEVELOP tab, where print size, Live and the rest now live.
-        Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 6.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-            Text((if (isRaw) "RAW" else "JPEG") + " · " + com.celestial.latent.develop.DarkroomPrefs.label(printSize) +
-                (if (recipe.diffusion || recipe.printDiffusion) " · SLOW" else "") + "  ›",
-                color = LatentColors.TextDim, fontSize = 10.sp, letterSpacing = 1.5.sp, maxLines = 1,
-                modifier = Modifier.weight(1f).padding(end = 12.dp).combinedClickable(onClick = {
-                    Haptics.tick(context); printing = false; tab = "develop"
-                }).padding(vertical = 8.dp))
-            Text(if (fullRunning) "Developing… ${elapsed}s" else "Develop", color = LatentColors.AmberInk, fontSize = 12.sp,
-                maxLines = 1, softWrap = false,
-                modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(LatentColors.Amber).combinedClickable(onClick = {
-                    if (fullRunning) return@combinedClickable
-                    Haptics.click(context)
-                    fullRunning = true; fullStarted = System.currentTimeMillis(); status = "full size: queued"; fullError = null
-                    fullJob = com.celestial.latent.develop.DevelopQueue.submitFull(
-                        context, source, isRaw, recipe, upscale = printSize, exposureMap = exposureMap, softenMask = softenMap, pairFirst = pairFirst, framing = framing,
-                        fogMask = fogMap, fogLook = fogLook, raysMask = raysMap, raysLook = raysLook, extraLights = extraLights, depthSplit = depthSplit,
-                        saturationMap = saturationMap, lith = lithLook, wetMask = wetMap, wetLook = wetLook, rainMask = rainMap,
-                        onStatus = { m ->
-                            status = "full size: $m"
-                            if (m.startsWith("failed")) fullError =
-                                if (m.contains("OutOfMemory", ignoreCase = true) || m.contains("allocate", ignoreCase = true))
-                                    "Not developed: the phone ran out of memory. Try a smaller print size."
-                                else "Not developed: " + m.removePrefix("failed: ").take(120)
-                        },
-                        onDone = { out ->
-                            fullRunning = false; fullJob = null
-                            if (out != null) {
-                                fullError = null
-                                status = "saved to DCIM/Latent"
-                                val b = runCatching { context.contentResolver.loadThumbnail(out, android.util.Size(1600, 1600), null) }.getOrNull()
-                                if (b != null) { preview = b; previewIsPartial = false }
-                            }
-                        },
-                    )
-                }).padding(horizontal = 18.dp, vertical = 8.dp))
         }
     }
     if (liveOpen) LiveScreen(
@@ -1417,4 +1440,22 @@ private fun NameField(value: String, label: String, onChange: (String) -> Unit) 
         ),
         modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
     )
+}
+
+/**
+ * A centre crop ([part], [fraction] of each side) laid at its true place in a whole-frame picture,
+ * over [under] (the last whole preview, stretched to the frame's size) — or black when there is none
+ * of the same shape yet (75b).
+ */
+private fun inPlace(part: Bitmap, under: Bitmap?, fraction: Float): Bitmap {
+    val w = Math.round(part.width / fraction); val h = Math.round(part.height / fraction)
+    val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+    val c = android.graphics.Canvas(out)
+    val paint = android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG)
+    if (under != null && Math.abs(under.width.toFloat() / under.height - w.toFloat() / h) < 0.02f)
+        c.drawBitmap(under, null, android.graphics.Rect(0, 0, w, h), paint)
+    else c.drawColor(android.graphics.Color.BLACK)
+    val left = (w - part.width) / 2; val top = (h - part.height) / 2
+    c.drawBitmap(part, null, android.graphics.Rect(left, top, left + part.width, top + part.height), paint)
+    return out
 }

@@ -338,7 +338,7 @@ private fun StepIndicator(active: Int, available: Int, onSelect: (Int) -> Unit, 
     // Four names in one row, measured: "TEST STRIP" and 16 dp gaps would need ~394 dp of the ~357
     // a phone has, and the last would be crushed. "STRIP", 12 dp gaps and 1.2 sp letter spacing
     // come to about 331 dp.
-    val steps = listOf("STRIP", "COLOUR", "DODGE & BURN", "SOFTEN", "FOG", "LIGHT", "WET", "LITH")
+    val steps = listOf("STRIP", "COLOUR", "DODGE & BURN", "SOFTEN", "FOG", "LIGHT", "WET", "LITH", "DEVELOP")
     // Eight names since 64a's WET (seven since 63a's LITH), measured on this phone as it draws them (61d): spread across the width when they fit;
     // a phone that draws everything larger (the Xiaomi) gets them up to 20% smaller so all six still
     // show; only beyond that does the row scroll, and then it keeps the chosen step in view.
@@ -499,6 +499,9 @@ fun PrintPanel(
     onExtraLights: (List<RaysLook>) -> Unit = {},
     renderWithMasks: (Recipe, Int, Masks) -> Bitmap?,
     renderRegionWithMasks: ((Recipe, Int, Masks, Region) -> Bitmap?)? = null,
+    /** The DEVELOP step (75b): the darkroom's own develop page, with the print shown above it. */
+    developPage: (@Composable () -> Unit)? = null,
+    developPreview: Bitmap? = null,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -546,7 +549,7 @@ fun PrintPanel(
 
     Column(modifier.background(LatentColors.Background)) {
         StepIndicator(
-            active = step, available = 8,
+            active = step, available = 9,
             onSelect = { i -> if (i != step) Haptics.tick(context); step = i },
             modifier = Modifier.padding(horizontal = 18.dp).padding(top = 6.dp),
         )
@@ -566,6 +569,15 @@ fun PrintPanel(
         ) { s ->
             when (s) {
                 0 -> TestStripStep(recipe, render, onExposure, Modifier.fillMaxSize(), onGrain = onGrain, onGrainAmount = onGrainAmount)
+                // 75b: finish the print without leaving PRINT
+                8 -> Column(Modifier.fillMaxSize()) {
+                    Box(Modifier.fillMaxWidth().weight(1f).padding(horizontal = 18.dp, vertical = 8.dp), contentAlignment = Alignment.Center) {
+                        developPreview?.let { androidx.compose.foundation.Image(it.asImageBitmap(), contentDescription = "The print", modifier = Modifier.fillMaxSize()) }
+                    }
+                    Column(Modifier.fillMaxWidth().heightIn(max = 340.dp).verticalScroll(rememberScrollState()).padding(horizontal = 18.dp)) {
+                        developPage?.invoke()
+                    }
+                }
                 1 -> RingAroundStep(recipe, render, { r, e -> cache.peek(r, e) }, onFilters, Modifier.fillMaxSize())
                 // each painting step shows the print with BOTH masks: it is one print
                 2 -> {
