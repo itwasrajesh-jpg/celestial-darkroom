@@ -72,7 +72,7 @@ object HelpText {
                         "SIMPLE shows the controls most photos need. FULL opens every control the film engine has, in the tabs described in this help. PRINT turns the darkroom into an enlarger: test strips, colour ring-around and everything you paint by hand.",
                         use = "Start in SIMPLE, choose a look, then go to PRINT to finish. Use FULL when you want to understand or change one specific part of the film."),
                     Item("The handle above the controls", "drag · double-tap",
-                        "Drag the small bar above the tabs to give the photo or the controls more room; it stays where you let go and is remembered. Double-tap it for the usual height.",
+                        "Drag the small bar above the tabs to give the photo or the controls more room; it stays where you let go and is remembered, in PRINT's painting steps and DEVELOP too. Double-tap it for the usual height.",
                         use = "More room for sliders while you fine-tune, a bigger photo while you judge."),
                     Item("Press and hold the photo", "",
                         "Shows the photo before the film, framed the same way as your print. Let go to see the print again.",

@@ -175,7 +175,9 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
     var helpTopic by remember { mutableStateOf<String?>(null) }
     // 75b: the photo's share of the room above the controls, set by dragging the handle freely
     // (it used to snap between three heights) and remembered for next time
-    var photoShare by remember { mutableStateOf(com.celestial.latent.develop.DarkroomPrefs.photoShare(context)) }
+    // the photo ↔ controls split, shared with PRINT's steps (75c)
+    val panelSplit = remember { PanelSplit(com.celestial.latent.develop.DarkroomPrefs.photoShare(context)) }
+    val photoShare = panelSplit.share
     var roomHeight by remember { mutableStateOf(1) }
     var saveName by remember { mutableStateOf("") }
     // 71a: the recipe before "Reset to film", and the painted effects before "Clear effects", for one Undo each
@@ -648,7 +650,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
         // PRINT swaps the photo and controls for the enlarger; the header, print size and develop
         // bar stay. A crossfade, so it reads as one room changing, not a new screen.
         Crossfade(targetState = printing, animationSpec = tween(320), modifier = Modifier.fillMaxWidth().weight(1f), label = "darkroom mode") { inPrint ->
-            if (inPrint) {
+            if (inPrint) androidx.compose.runtime.CompositionLocalProvider(LocalPanelSplit provides panelSplit) {
                 PrintPanel(
                     recipe = recipe,
                     developPage = developPage,
@@ -860,27 +862,8 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                 ) else Column(
                     Modifier.fillMaxWidth().weight(1f - photoWeight).clip(RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)).background(Color(0xFF1D1D1B))
                 ) {
-                    // the handle: drag it and the panel follows the finger, staying where it is let go
-                    // (75b; only the handle, so scrolling the controls never resizes the panel);
-                    // a double tap puts the usual height back
-                    Box(Modifier.fillMaxWidth().pointerInput(Unit) {
-                        detectVerticalDragGestures(
-                            onDragEnd = { com.celestial.latent.develop.DarkroomPrefs.setPhotoShare(context, photoShare) },
-                        ) { change, dy ->
-                            change.consume()
-                            photoShare = (photoShare + dy / roomHeight).coerceIn(
-                                com.celestial.latent.develop.DarkroomPrefs.PHOTO_SHARE_MIN, com.celestial.latent.develop.DarkroomPrefs.PHOTO_SHARE_MAX)
-                        }
-                    }.pointerInput(Unit) {
-                        detectTapGestures(onDoubleTap = {
-                            Haptics.tick(context)
-                            photoShare = com.celestial.latent.develop.DarkroomPrefs.PHOTO_SHARE_DEFAULT
-                            com.celestial.latent.develop.DarkroomPrefs.setPhotoShare(context, photoShare)
-                        })
-                    }.padding(top = 12.dp, bottom = 10.dp), contentAlignment = Alignment.Center) {
-                        val moved = Math.abs(photoShare - com.celestial.latent.develop.DarkroomPrefs.PHOTO_SHARE_DEFAULT) > 0.01f
-                        Box(Modifier.size(34.dp, 4.dp).clip(RoundedCornerShape(2.dp)).background(if (moved) LatentColors.Amber else LatentColors.Line))
-                    }
+                    // the handle (75b): the panel follows the finger; a double tap puts the usual height back
+                    PanelHandle(panelSplit, roomHeight)
                     // One line of state, off the photograph: what is happening, how long, and a way out.
                     if (fullRunning || rendering || previewIsPartial) {
                         Column(Modifier.fillMaxWidth()) {

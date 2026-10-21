@@ -18,6 +18,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.layout.Arrangement
@@ -570,12 +571,20 @@ fun PrintPanel(
             when (s) {
                 0 -> TestStripStep(recipe, render, onExposure, Modifier.fillMaxSize(), onGrain = onGrain, onGrainAmount = onGrainAmount)
                 // 75b: finish the print without leaving PRINT
-                8 -> Column(Modifier.fillMaxSize()) {
-                    Box(Modifier.fillMaxWidth().weight(1f).padding(horizontal = 18.dp, vertical = 8.dp), contentAlignment = Alignment.Center) {
-                        developPreview?.let { androidx.compose.foundation.Image(it.asImageBitmap(), contentDescription = "The print", modifier = Modifier.fillMaxSize()) }
-                    }
-                    Column(Modifier.fillMaxWidth().heightIn(max = 340.dp).verticalScroll(rememberScrollState()).padding(horizontal = 18.dp)) {
-                        developPage?.invoke()
+                8 -> BoxWithConstraints(Modifier.fillMaxSize()) {
+                    val split = LocalPanelSplit.current
+                    val room = constraints.maxHeight
+                    Column(Modifier.fillMaxSize()) {
+                        Box(Modifier.fillMaxWidth().weight(1f).padding(horizontal = 18.dp, vertical = 8.dp), contentAlignment = Alignment.Center) {
+                            developPreview?.let { androidx.compose.foundation.Image(it.asImageBitmap(), contentDescription = "The print", modifier = Modifier.fillMaxSize()) }
+                        }
+                        // 75c: the same handle and split as simple mode
+                        Column(if (split != null) Modifier.fillMaxWidth().height(with(LocalDensity.current) { (room * (1f - split.share)).toDp() }) else Modifier.fillMaxWidth().heightIn(max = 340.dp)) {
+                            if (split != null) PanelHandle(split, room)
+                            Column(Modifier.fillMaxWidth().then(if (split != null) Modifier.weight(1f, fill = false) else Modifier).verticalScroll(rememberScrollState()).padding(horizontal = 18.dp)) {
+                                developPage?.invoke()
+                            }
+                        }
                     }
                 }
                 1 -> RingAroundStep(recipe, render, { r, e -> cache.peek(r, e) }, onFilters, Modifier.fillMaxSize())
@@ -2350,6 +2359,7 @@ private fun PaintStep(
     val total = if (constraints.hasBoundedHeight) maxHeight.value else screenH * 0.75f
     val photoMin = minOf(screenH * PHOTO_SHARE, total * 0.8f)
     val lowerMax = (total - photoMin - HINT_ROOM).coerceAtLeast(96f).dp
+    val roomPx = constraints.maxHeight
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(top = 10.dp), verticalAlignment = Alignment.CenterVertically) {
             Text(
@@ -2559,8 +2569,12 @@ private fun PaintStep(
                     .pointerInput(Unit) { detectTapGestures(onTap = { Haptics.tick(context); zoom.reset(); detail = null }) }
                     .padding(horizontal = 10.dp, vertical = 4.dp))
         }
-        // Everything under the photo: at most what PHOTO_SHARE leaves, scrolling when it needs more (61d).
-        Column(Modifier.fillMaxWidth().heightIn(max = lowerMax).verticalScroll(rememberScrollState())) {
+        // Everything under the photo, scrolling when it needs more (61d): at most what PHOTO_SHARE
+        // leaves, or (75c) exactly what the handle above it leaves — the same split as simple mode.
+        val split = LocalPanelSplit.current
+        Column(if (split != null) Modifier.fillMaxWidth().height(with(LocalDensity.current) { (roomPx * (1f - split.share)).toDp() }) else Modifier.fillMaxWidth()) {
+        if (split != null) PanelHandle(split, roomPx)
+        Column(Modifier.fillMaxWidth().then(if (split != null) Modifier.weight(1f) else Modifier.heightIn(max = lowerMax)).verticalScroll(rememberScrollState())) {
         // Two paintings in this step (62a): which one the brush paints, as the fog's tabs look.
         // Widths: LIGHT ~40 dp + 18 + SATURATION ~92 dp, and "painting" words on the right.
         if (!selOpen && layer != null) Row(
@@ -2652,6 +2666,7 @@ private fun PaintStep(
                     else if (tab < tabs.size) tabs[tab].second() else brushRows()
                 }
             }
+        }
         }
         }
     }
@@ -3071,5 +3086,45 @@ private fun WindowRainRow(look: com.celestial.latent.develop.RainLook, onLook: (
             color = LatentColors.TextDim, fontSize = 11.sp,
             modifier = Modifier.padding(horizontal = 18.dp).padding(top = 4.dp),
         )
+    }
+}
+
+/**
+ * The darkroom's photo ↔ controls split (75b): the photo's share of the room, dragged with the
+ * handle. One for the whole darkroom, so simple mode and PRINT's steps (75c) keep the same line.
+ */
+class PanelSplit(initial: Float) {
+    var share by mutableStateOf(initial)
+}
+
+/** The darkroom's split, when the screen is inside the darkroom (null elsewhere: no handle). */
+val LocalPanelSplit = androidx.compose.runtime.staticCompositionLocalOf<PanelSplit?> { null }
+
+/**
+ * The handle on top of the controls: drag it and the controls follow the finger, staying where
+ * they are let go — only the handle, so scrolling the controls never resizes them. A double tap
+ * puts the usual height back; amber when moved from it. [roomPx]: the height being shared.
+ */
+@Composable
+fun PanelHandle(split: PanelSplit, roomPx: Int) {
+    val context = LocalContext.current
+    val room by rememberUpdatedState(roomPx.coerceAtLeast(1))
+    Box(Modifier.fillMaxWidth().pointerInput(split) {
+        detectVerticalDragGestures(
+            onDragEnd = { com.celestial.latent.develop.DarkroomPrefs.setPhotoShare(context, split.share) },
+        ) { change, dy ->
+            change.consume()
+            split.share = (split.share + dy / room).coerceIn(
+                com.celestial.latent.develop.DarkroomPrefs.PHOTO_SHARE_MIN, com.celestial.latent.develop.DarkroomPrefs.PHOTO_SHARE_MAX)
+        }
+    }.pointerInput(split) {
+        detectTapGestures(onDoubleTap = {
+            Haptics.tick(context)
+            split.share = com.celestial.latent.develop.DarkroomPrefs.PHOTO_SHARE_DEFAULT
+            com.celestial.latent.develop.DarkroomPrefs.setPhotoShare(context, split.share)
+        })
+    }.padding(top = 12.dp, bottom = 10.dp), contentAlignment = Alignment.Center) {
+        val moved = Math.abs(split.share - com.celestial.latent.develop.DarkroomPrefs.PHOTO_SHARE_DEFAULT) > 0.01f
+        Box(Modifier.size(34.dp, 4.dp).clip(RoundedCornerShape(2.dp)).background(if (moved) LatentColors.Amber else LatentColors.Line))
     }
 }
