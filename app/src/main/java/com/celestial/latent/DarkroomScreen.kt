@@ -146,6 +146,9 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
     val zoomScope = rememberCoroutineScope()
     var preview by remember { mutableStateOf<Bitmap?>(null) }
     var original by remember { mutableStateOf<Bitmap?>(null) }
+    // 72a: the unframed "before", and which framing [original] was framed for
+    var originalPlain by remember { mutableStateOf<Bitmap?>(null) }
+    var originalFraming by remember { mutableStateOf("") }
     var comparing by remember { mutableStateOf(false) }
     var status by remember { mutableStateOf("") }
     var rendering by remember { mutableStateOf(false) }
@@ -171,6 +174,12 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
     var resetTo by remember { mutableStateOf<Recipe?>(null) }
     var clearAsk by remember { mutableStateOf(false) }
     var beforeClear by remember { mutableStateOf<PaintedEffects?>(null) }
+    // 72a: naming a recipe as it is saved, and renaming or deleting one (long-press on its chip)
+    var naming by remember { mutableStateOf<String?>(null) }
+    var managing by remember { mutableStateOf<String?>(null) }
+    var manageName by remember { mutableStateOf("") }
+    var deleteAsk by remember { mutableStateOf(false) }
+    var recipesRevision by remember { mutableStateOf(0) }
 
     fun render(fast: Boolean) {
         if (fullRunning) return                      // never compete with a full-size develop
@@ -539,13 +548,19 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                         onPress = {
                         // a moment's wait, so the start of a pinch or slide never flashes the original
                         val show = zoomScope.launch { delay(140); if (!pinching) comparing = true }
-                        if (original == null) Thread {
-                            original = runCatching { context.contentResolver.loadThumbnail(source, android.util.Size(1200, 1200), null) }.getOrNull()
+                        // the before, framed as the print is (72a: it used to stay sideways for a turned shot)
+                        val f = framing
+                        if (originalFraming != f.key()) Thread {
+                            val plain = originalPlain ?: plainBefore(context, source, isRaw)?.also { originalPlain = it }
+                            if (plain != null) {
+                                original = runCatching { com.celestial.latent.develop.Framings.frameBitmap(plain, f) }.getOrNull()
+                                originalFraming = f.key()
+                            }
                         }.start()
                         tryAwaitRelease(); show.cancel(); comparing = false
                     })
                 }) {
-                    val shown = if (comparing) (original ?: preview) else preview
+                    val shown = if (comparing && originalFraming == framing.key()) (original ?: preview) else preview
                     // While straightening, the print turns live under the finger, scaled so no blank
                     // corner shows — the real framed print develops when the finger lifts.
                     val delta = (liveStraighten ?: framing.straighten) - framing.straighten
@@ -691,7 +706,25 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                     val ourStocks = remember(com.celestial.latent.develop.Recipes.names(context).size) {
                         com.celestial.latent.develop.Recipes.stocks(context)
                     }
+                    // 72a: recipes saved here, which nothing used to show
+                    val savedRecipes = remember(recipesRevision, com.celestial.latent.develop.Recipes.names(context).size) {
+                        com.celestial.latent.develop.Recipes.saved(context)
+                    }
                     Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 14.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        savedRecipes.forEach { (name, saved) ->
+                            val on = lookId == "stock:" + name
+                            Column(
+                                Modifier.clip(RoundedCornerShape(6.dp)).background(if (on) LatentColors.Amber else LatentColors.Surface)
+                                    .combinedClickable(
+                                        onClick = { Haptics.tick(context); lookId = "stock:" + name; recipe = saved },
+                                        onLongClick = { Haptics.click(context); managing = name; manageName = name; deleteAsk = false },
+                                    )
+                                    .padding(horizontal = 11.dp, vertical = 6.dp),
+                            ) {
+                                Text(name.uppercase(), color = if (on) LatentColors.AmberInk else LatentColors.TextBright, fontSize = 10.sp, letterSpacing = 1.sp)
+                                Text("your recipe", color = if (on) LatentColors.AmberInk.copy(alpha = 0.7f) else LatentColors.Text, fontSize = 8.sp)
+                            }
+                        }
                         ourStocks.forEach { (name, saved) ->
                             val on = lookId == "stock:" + name
                             Column(
@@ -712,6 +745,51 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                             ) {
                                 Text(preset.name.substringBefore(" — ").uppercase(), color = if (on) LatentColors.AmberInk else LatentColors.TextBright, fontSize = 10.sp, letterSpacing = 1.sp)
                                 Text(preset.name.substringAfter(" — ", preset.group), color = if (on) LatentColors.AmberInk.copy(alpha = 0.7f) else LatentColors.Text, fontSize = 8.sp)
+                            }
+                        }
+                    }
+                    // 72a: rename or delete a saved recipe (long-press its chip)
+                    val held = managing
+                    if (held != null) {
+                        Column(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 4.dp)) {
+                            NameField(manageName, "rename “$held”") { manageName = it }
+                            val clean = Recipes.cleanName(manageName)
+                            val canRename = clean.isNotEmpty() && clean != held && !Recipes.exists(context, clean)
+                            fun cameraFollows(to: String?) {
+                                // the camera may be shooting with this recipe: keep it pointing at it, or back to a look
+                                val st = AppSettings.load(context)
+                                if (st.preset == "stock:" + held) AppSettings.save(context, st.copy(preset = if (to != null) "stock:" + to else "portra400_endura_wedding"))
+                            }
+                            if (!deleteAsk) Row(Modifier.horizontalScroll(rememberScrollState()).padding(vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Text("Rename", color = if (canRename) LatentColors.AmberInk else LatentColors.TextDim, fontSize = 11.sp,
+                                    modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(if (canRename) LatentColors.Amber else LatentColors.Surface)
+                                        .combinedClickable(onClick = {
+                                            if (canRename && Recipes.rename(context, held, clean)) {
+                                                Haptics.tick(context); cameraFollows(clean)
+                                                if (lookId == "stock:" + held) lookId = "stock:" + clean
+                                                managing = null; recipesRevision++
+                                            }
+                                        }).padding(horizontal = 12.dp, vertical = 7.dp))
+                                Text("Delete", color = LatentColors.Text, fontSize = 11.sp,
+                                    modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(LatentColors.Surface)
+                                        .combinedClickable(onClick = { Haptics.tick(context); deleteAsk = true }).padding(horizontal = 12.dp, vertical = 7.dp))
+                                Text("Done", color = LatentColors.Text, fontSize = 11.sp,
+                                    modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(LatentColors.Surface)
+                                        .combinedClickable(onClick = { managing = null }).padding(horizontal = 12.dp, vertical = 7.dp))
+                            } else {
+                                Text("Delete the recipe “$held”? Photos already developed with it keep their look.", color = LatentColors.Text, fontSize = 11.sp, modifier = Modifier.padding(top = 4.dp))
+                                Row(Modifier.padding(vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Text("Delete", color = LatentColors.AmberInk, fontSize = 11.sp,
+                                        modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(LatentColors.Amber)
+                                            .combinedClickable(onClick = {
+                                                Haptics.tick(context); Recipes.delete(context, held); cameraFollows(null)
+                                                if (lookId == "stock:" + held) lookId = ""
+                                                managing = null; deleteAsk = false; recipesRevision++
+                                            }).padding(horizontal = 12.dp, vertical = 7.dp))
+                                    Text("Keep it", color = LatentColors.Text, fontSize = 11.sp,
+                                        modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(LatentColors.Surface)
+                                            .combinedClickable(onClick = { deleteAsk = false }).padding(horizontal = 12.dp, vertical = 7.dp))
+                                }
                             }
                         }
                     }
@@ -1006,11 +1084,33 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                             Text("Save recipe", color = LatentColors.Text, fontSize = 11.sp,
                                 modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(LatentColors.Surface)
                                     .combinedClickable(onClick = {
-                                        val n = (Develop.FILMS.firstOrNull { it.first == recipe.film }?.second ?: "Recipe") + " " + (Recipes.names(context).size + 1)
-                                        Recipes.save(context, n, recipe); saveName = n
+                                        // 72a: asks for a name first, offering the film's
+                                        Haptics.tick(context); saveName = ""
+                                        naming = (Develop.FILMS.firstOrNull { it.first == recipe.film }?.second ?: "My recipe") + " – "
                                     }).padding(horizontal = 12.dp, vertical = 7.dp))
                         }
-                        if (saveName.isNotEmpty()) Text("saved “$saveName”", color = LatentColors.Amber, fontSize = 10.sp)
+                        val draft = naming
+                        if (draft != null) {
+                            val clean = Recipes.cleanName(draft)
+                            val taken = clean.isNotEmpty() && Recipes.exists(context, clean)
+                            NameField(draft, "name this recipe") { naming = it }
+                            Row(Modifier.padding(bottom = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Text(if (taken) "Replace" else "Save", color = if (clean.isNotEmpty()) LatentColors.AmberInk else LatentColors.TextDim, fontSize = 11.sp,
+                                    modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(if (clean.isNotEmpty()) LatentColors.Amber else LatentColors.Surface)
+                                        .combinedClickable(onClick = {
+                                            if (clean.isEmpty()) return@combinedClickable
+                                            Haptics.tick(context)
+                                            Recipes.save(context, clean, recipe); saveName = clean; naming = null
+                                            lookId = "stock:" + clean; recipesRevision++
+                                        }).padding(horizontal = 12.dp, vertical = 7.dp))
+                                Text("Cancel", color = LatentColors.Text, fontSize = 11.sp,
+                                    modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(LatentColors.Surface)
+                                        .combinedClickable(onClick = { naming = null }).padding(horizontal = 12.dp, vertical = 7.dp))
+                                if (taken) Text("a recipe has this name", color = LatentColors.TextDim, fontSize = 10.sp)
+                            }
+                        }
+                        if (saveName.isNotEmpty()) Text("saved “$saveName” · find it under YOUR RECIPES in the looks above and in the camera's film strip",
+                            color = LatentColors.Amber, fontSize = 10.sp)
                         // Undo for the reset, while nothing has been changed since
                         val undoReset = beforeReset
                         if (undoReset != null && resetTo == recipe) {
@@ -1269,4 +1369,41 @@ private fun filmLook(context: android.content.Context, current: Recipe, lookId: 
         ?: Recipe(film = film, paper = current.paper)
     val fresh = base.copy(autoExposure = false)
     return if (cinema) fresh.copy(paper = current.paper, scanFilm = current.scanFilm, filmFormatMm = current.filmFormatMm, lens85b = current.lens85b) else fresh
+}
+
+/**
+ * The photo before the film, unframed, about 1200 px (72a). Read the way the darkroom reads the photo
+ * itself, so its framing lines up: a RAW through the system's thumbnail (whose orientation agrees
+ * with the decoder's), any other picture through BitmapFactory, which — like [Develop.openImage] —
+ * ignores an EXIF turn; the system thumbnail would have applied it, and then been turned twice.
+ */
+private fun plainBefore(context: android.content.Context, source: Uri, isRaw: Boolean): Bitmap? = runCatching {
+    if (isRaw) context.contentResolver.loadThumbnail(source, android.util.Size(1200, 1200), null)
+    else {
+        val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        context.contentResolver.openInputStream(source)?.use { android.graphics.BitmapFactory.decodeStream(it, null, bounds) }
+        var sample = 1
+        while (maxOf(bounds.outWidth, bounds.outHeight) / (sample * 2) >= 1200) sample *= 2
+        val opts = android.graphics.BitmapFactory.Options().apply { inSampleSize = sample }
+        context.contentResolver.openInputStream(source)?.use { android.graphics.BitmapFactory.decodeStream(it, null, opts) }
+    }
+}.getOrNull()
+
+/** A one-line name box in the darkroom's colours (72a), like the Film Builder's. */
+@Composable
+private fun NameField(value: String, label: String, onChange: (String) -> Unit) {
+    androidx.compose.material3.OutlinedTextField(
+        value = value,
+        onValueChange = { onChange(it.take(28)) },
+        singleLine = true,
+        label = { Text(label, color = LatentColors.TextDim, fontSize = 12.sp) },
+        colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
+            focusedTextColor = LatentColors.TextBright,
+            unfocusedTextColor = LatentColors.TextBright,
+            focusedBorderColor = LatentColors.Amber,
+            unfocusedBorderColor = LatentColors.Line,
+            cursorColor = LatentColors.Amber,
+        ),
+        modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+    )
 }

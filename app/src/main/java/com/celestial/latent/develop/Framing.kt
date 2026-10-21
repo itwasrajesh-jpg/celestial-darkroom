@@ -154,6 +154,35 @@ object Framings {
      * the photo. [srcAspect] is the unframed photo's width ÷ height. Places the new framing shows
      * that the old one cropped away take the nearest painted value.
      */
+    /**
+     * A picture of the unframed photo — the "before" shown on press-and-hold — framed as the print is:
+     * turned, flipped, straightened and cropped (72a). Without it the before showed a sideways shot
+     * still sideways. Bilinear, which only matters when straightened; [bmp] itself is left alone.
+     */
+    fun frameBitmap(bmp: android.graphics.Bitmap, f: Framing): android.graphics.Bitmap {
+        if (f.isIdentity) return bmp
+        val sw = bmp.width; val sh = bmp.height
+        val (ow, oh) = f.outputSize(sw, sh)
+        val src = IntArray(sw * sh); bmp.getPixels(src, 0, sw, 0, 0, sw, sh)
+        val dst = IntArray(ow * oh)
+        for (y in 0 until oh) for (x in 0 until ow) {
+            val (xs, ys) = f.toSource(x + 0.5, y + 0.5, sw, sh)
+            val fx = (xs - 0.5).coerceIn(0.0, (sw - 1).toDouble()); val fy = (ys - 0.5).coerceIn(0.0, (sh - 1).toDouble())
+            val x0 = fx.toInt(); val y0 = fy.toInt()
+            val x1 = minOf(x0 + 1, sw - 1); val y1 = minOf(y0 + 1, sh - 1)
+            val ax = (fx - x0).toFloat(); val ay = (fy - y0).toFloat()
+            var px = 0xFF shl 24
+            for (sh8 in intArrayOf(16, 8, 0)) {
+                fun c(i: Int) = (src[i] shr sh8) and 0xFF
+                val top = c(y0 * sw + x0) * (1 - ax) + c(y0 * sw + x1) * ax
+                val bot = c(y1 * sw + x0) * (1 - ax) + c(y1 * sw + x1) * ax
+                px = px or ((top * (1 - ay) + bot * ay + 0.5f).toInt().coerceIn(0, 255) shl sh8)
+            }
+            dst[y * ow + x] = px
+        }
+        return android.graphics.Bitmap.createBitmap(dst, ow, oh, android.graphics.Bitmap.Config.ARGB_8888)
+    }
+
     fun carry(mask: ExposureMap, old: Framing, new: Framing, srcAspect: Float): ExposureMap {
         if (old == new) return mask
         // work in a source frame of this aspect; the absolute size cancels out

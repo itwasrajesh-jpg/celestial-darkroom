@@ -39,7 +39,9 @@ fun FilmStrip(selected: String, modifier: Modifier = Modifier, onLongPress: () -
     // Keyed on how many recipes are stored, so a film built in the builder appears here
     // without waiting for the app to be restarted.
     val ours = remember(com.celestial.latent.develop.Recipes.names(context).size) {
-        com.celestial.latent.develop.Recipes.stocks(context)
+        // films built here, then recipes saved in the darkroom (72a: those were never listed anywhere)
+        com.celestial.latent.develop.Recipes.stocks(context).map { Triple(it.first, it.second, "built here") } +
+            com.celestial.latent.develop.Recipes.saved(context).map { Triple(it.first, it.second, "your recipe") }
     }
     Row(
         modifier
@@ -54,7 +56,7 @@ fun FilmStrip(selected: String, modifier: Modifier = Modifier, onLongPress: () -
             .padding(horizontal = 12.dp, vertical = 6.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        ours.forEach { (name, recipe) ->
+        ours.forEach { (name, _, kind) ->
             val id = "stock:" + name
             val on = id == selected
             androidx.compose.foundation.layout.Column(
@@ -67,7 +69,7 @@ fun FilmStrip(selected: String, modifier: Modifier = Modifier, onLongPress: () -
                     .padding(horizontal = 13.dp, vertical = 7.dp),
             ) {
                 Text(name.uppercase(), color = if (on) LatentColors.AmberInk else LatentColors.TextBright, fontSize = 11.sp, letterSpacing = 1.sp)
-                Text("built here", color = if (on) LatentColors.AmberInk.copy(alpha = 0.7f) else LatentColors.Text, fontSize = 8.sp, letterSpacing = 0.5.sp)
+                Text(kind, color = if (on) LatentColors.AmberInk.copy(alpha = 0.7f) else LatentColors.Text, fontSize = 8.sp, letterSpacing = 0.5.sp)
             }
         }
         looks.forEach { preset ->

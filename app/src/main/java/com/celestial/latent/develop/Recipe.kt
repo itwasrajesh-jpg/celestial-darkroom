@@ -431,6 +431,30 @@ object Recipes {
     fun load(ctx: Context, name: String): Recipe? = prefs(ctx).getString(name, null)?.let { Recipe.fromJson(it) }
     fun delete(ctx: Context, name: String) = prefs(ctx).edit().remove(name).apply()
 
+    /**
+     * The recipes saved from the darkroom (72a): every saved recipe that is not a film built in the
+     * Film Builder (those are listed apart, as "built here"). Before 72a nothing ever showed these.
+     */
+    fun saved(ctx: Context): List<Pair<String, Recipe>> =
+        names(ctx).mapNotNull { name ->
+            val r = load(ctx, name) ?: return@mapNotNull null
+            if (Develop.isOurStock(r.film)) null else name to r
+        }
+
+    /** A name a recipe can be saved under: trimmed, not empty, and not one of the store's own "__" keys. */
+    fun cleanName(name: String): String = name.trim().take(28).trimStart('_').trim()
+
+    /** Renames a saved recipe; false if the new name is empty or already used. */
+    fun rename(ctx: Context, from: String, to: String): Boolean {
+        val n = cleanName(to)
+        if (n.isEmpty() || n == from || prefs(ctx).contains(n)) return false
+        val json = prefs(ctx).getString(from, null) ?: return false
+        prefs(ctx).edit().putString(n, json).remove(from).apply()
+        return true
+    }
+
+    fun exists(ctx: Context, name: String) = prefs(ctx).contains(name)
+
     /** Removes a built film entirely: its recipe and the profile the engine reads. */
     fun deleteStock(ctx: Context, name: String) {
         val r = load(ctx, name)
