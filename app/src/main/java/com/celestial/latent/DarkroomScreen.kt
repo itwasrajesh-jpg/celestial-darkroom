@@ -79,6 +79,8 @@ private val TABS = listOf(
     "film" to "FILM", "halation" to "HALATION", "grain" to "GRAIN", "diffusion" to "DIFFUSION",
     "camera" to "CAMERA", "enlarger" to "ENLARGER", "scanner" to "SCANNER", "glare" to "GLARE",
     "colour" to "COLOUR", "engine" to "ENGINE",
+    // 75a: print size, Live, the develop's summary, and reset / clear / save, out of the bottom bar
+    "develop" to "DEVELOP",
 )
 
 /** The four optical diffusion filters the engine models. */
@@ -431,6 +433,23 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
     // The decoded copy is kept by Develop.Cache so coming back is instant; nothing to free here.
 
     fun set(block: Recipe.() -> Recipe) { recipe = recipe.block() }
+
+    /** What a full-size develop will include (it used to sit in the bottom bar, before 75a). */
+    fun developSummary(): String {
+        val heavy = recipe.diffusion || recipe.printDiffusion
+        return (if (isRaw) "FROM RAW" else "FILM OVER JPEG") + (if (heavy) " · WITH DIFFUSION, SLOW" else "") +
+            (if (printSize > 1f) " · ${com.celestial.latent.develop.DarkroomPrefs.label(printSize)} PRINT" else "") +
+            (if (exposureMap?.isBlank == false) " · DODGED & BURNED" else "") +
+            (if (com.celestial.latent.develop.Saturation.wanted(saturationMap)) " · COLOUR PAINTED" else "") +
+            (if (softenMap != null && recipe.diffusion) " · SOFTENED IN PLACES" else "") +
+            (if (pairFirst != null) " · DOUBLE EXPOSURE" else "") +
+            (if (!framing.isIdentity) " · FRAMED" else "") +
+            (if (fogMap?.isBlank == false) " · FOGGED" else "") +
+            (if (raysLook.placed) " · LIGHT" else "") +
+            (if (com.celestial.latent.develop.Wet.wanted(wetMap)) " · WET" else "") +
+            (if (com.celestial.latent.develop.Rain.wanted(wetLook.window)) " · RAIN ON GLASS" else "") +
+            (if (lithLook.on) " · LITH" else "")
+    }
 
     // a Box only so the living photo panel (66a) can lie over the darkroom, in the app's own window
     Box(Modifier.fillMaxSize()) {
@@ -1074,6 +1093,38 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                         }
                         Spacer(Modifier.height(8.dp))
                         Text(status + (if (lastRenderMs > 0) " · last ${lastRenderMs} ms" else ""), color = LatentColors.TextDim, fontSize = 10.sp)
+                        if (tab == "develop") {
+                        Head("PRINT SIZE", null) {}
+                        // Print size: the film's grain is generated at the larger size, so it stays fine
+                        // rather than being blown up. Costs time in proportion to the pixels.
+                        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            com.celestial.latent.develop.DarkroomPrefs.PRINT_SIZES.forEach { size ->
+                                val on = printSize == size
+                                Text(com.celestial.latent.develop.DarkroomPrefs.label(size),
+                                    color = if (on) LatentColors.AmberInk else LatentColors.Text, fontSize = 11.sp,
+                                    modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(if (on) LatentColors.Amber else LatentColors.Surface)
+                                        .combinedClickable(onClick = {
+                                            if (!fullRunning) {
+                                                Haptics.tick(context); printSize = size
+                                                com.celestial.latent.develop.DarkroomPrefs.setPrintSize(context, size)
+                                            }
+                                        }).padding(horizontal = 12.dp, vertical = 6.dp))
+                            }
+                        }
+                        Note(if (printSize > 1f) "Finer grain at the larger size, no new detail; about ${"%.1f".format(printSize * printSize)}× as long to develop."
+                            else "The photo's own size. Larger sizes keep the grain fine instead of enlarging it.")
+                        Head("THIS DEVELOP", null) {}
+                        // An honest estimate before you commit, rather than an explanation mid-wait.
+                        Text(developSummary(), color = LatentColors.Text, fontSize = 10.sp, letterSpacing = 1.sp, lineHeight = 14.sp, modifier = Modifier.padding(vertical = 4.dp))
+                        Head("LIVING PHOTO", null) {}
+                        // the living photo (66a): this edit as a short loop, only what the darkroom added moving
+                        Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Text("Live", color = LatentColors.TextBright, fontSize = 12.sp,
+                                modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(LatentColors.Surface)
+                                    .combinedClickable(onClick = { Haptics.click(context); liveOpen = true }).padding(horizontal = 16.dp, vertical = 8.dp))
+                            Text("A short clip of this edit: rain running, fog drifting, lamps flickering.", color = LatentColors.TextDim, fontSize = 10.sp, modifier = Modifier.weight(1f))
+                        }
+                        Head("START OVER OR KEEP IT", null) {}
                         Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             // 71a: back to this film's own look (its grain, glow and the rest), not the engine's bare
                             // defaults, which gave every film Portra 400's grain. One Undo brings the edit back.
@@ -1166,51 +1217,13 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                                         }).padding(horizontal = 12.dp, vertical = 7.dp))
                             }
                         }
+                        }
                         Spacer(Modifier.height(8.dp))
                     }
                 }
             }
         }
 
-        // Print size — a direct child of the screen's column, above the bottom bar. It must never
-        // sit INSIDE the bar: in a horizontal row, fillMaxWidth takes all the width, squeezes the
-        // label and button to nothing, and the bar grows tall enough to crush the photo and controls.
-        // Print size: the film's grain is generated at the larger size, so it stays fine
-        // rather than being blown up. Costs time in proportion to the pixels.
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(top = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text("PRINT SIZE", color = LatentColors.Line, fontSize = 9.sp, letterSpacing = 1.5.sp,
-                modifier = Modifier.padding(end = 4.dp))
-            com.celestial.latent.develop.DarkroomPrefs.PRINT_SIZES.forEach { size ->
-                val on = printSize == size
-                Text(
-                    com.celestial.latent.develop.DarkroomPrefs.label(size),
-                    color = if (on) LatentColors.AmberInk else LatentColors.Text, fontSize = 11.sp,
-                    modifier = Modifier.clip(RoundedCornerShape(999.dp))
-                        .background(if (on) LatentColors.Amber else LatentColors.Surface)
-                        .combinedClickable(onClick = {
-                            if (!fullRunning) {
-                                Haptics.tick(context)
-                                printSize = size
-                                com.celestial.latent.develop.DarkroomPrefs.setPrintSize(context, size)
-                            }
-                        })
-                        .padding(horizontal = 10.dp, vertical = 4.dp),
-                )
-            }
-        }
-        if (printSize > 1f) {
-            // one line (61d): on a phone that draws everything larger, two lines here took the photo's room
-            Text(
-                "Finer grain at the larger size, no new detail; about ${"%.1f".format(printSize * printSize)}× as long.",
-                color = LatentColors.TextDim, fontSize = 10.sp, lineHeight = 14.sp, maxLines = 1,
-                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                modifier = Modifier.padding(horizontal = 18.dp).padding(top = 4.dp),
-            )
-        }
         // A failed full-size develop says so, here, until it is tapped away or the next one starts.
         fullError?.let { e ->
             Text(e, color = LatentColors.AmberInk, fontSize = 11.sp,
@@ -1218,29 +1231,16 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                     .background(LatentColors.Amber).combinedClickable(onClick = { fullError = null })
                     .padding(horizontal = 12.dp, vertical = 8.dp))
         }
-        Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 10.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-            // An honest estimate before you commit, rather than an explanation mid-wait.
-            val heavy = recipe.diffusion || recipe.printDiffusion
-            Text((if (isRaw) "FROM RAW" else "FILM OVER JPEG") + (if (heavy) " · WITH DIFFUSION, SLOW" else "") +
-                (if (printSize > 1f) " · ${com.celestial.latent.develop.DarkroomPrefs.label(printSize)} PRINT" else "") +
-                (if (exposureMap?.isBlank == false) " · DODGED & BURNED" else "") +
-                (if (com.celestial.latent.develop.Saturation.wanted(saturationMap)) " · COLOUR PAINTED" else "") +
-                (if (softenMap != null && recipe.diffusion) " · SOFTENED IN PLACES" else "") +
-                (if (pairFirst != null) " · DOUBLE EXPOSURE" else "") +
-                (if (!framing.isIdentity) " · FRAMED" else "") +
-                (if (fogMap?.isBlank == false) " · FOGGED" else "") +
-                (if (raysLook.placed) " · LIGHT" else "") +
-                (if (com.celestial.latent.develop.Wet.wanted(wetMap)) " · WET" else "") +
-                (if (com.celestial.latent.develop.Rain.wanted(wetLook.window)) " · RAIN ON GLASS" else "") +
-                (if (lithLook.on) " · LITH" else ""),
-                color = LatentColors.Line, fontSize = 9.sp, letterSpacing = 1.5.sp, lineHeight = 13.sp,
-                // takes the space the button leaves and wraps if it must — it used to crush the button
-                modifier = Modifier.weight(1f).padding(end = 12.dp))
-            // the living photo (66a): this edit as a short loop, only what the darkroom added moving
-            Text("Live", color = LatentColors.TextBright, fontSize = 12.sp, maxLines = 1, softWrap = false,
-                modifier = Modifier.padding(end = 8.dp).clip(RoundedCornerShape(999.dp)).background(LatentColors.Surface)
-                    .combinedClickable(onClick = { Haptics.click(context); liveOpen = true }).padding(horizontal = 14.dp, vertical = 9.dp))
-            Text(if (fullRunning) "Developing… ${elapsed}s" else "Develop full size", color = LatentColors.AmberInk, fontSize = 12.sp,
+        // 75a: one slim bar in every room. The left side says what will be developed and opens the
+        // DEVELOP tab, where print size, Live and the rest now live.
+        Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 6.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            Text((if (isRaw) "RAW" else "JPEG") + " · " + com.celestial.latent.develop.DarkroomPrefs.label(printSize) +
+                (if (recipe.diffusion || recipe.printDiffusion) " · SLOW" else "") + "  ›",
+                color = LatentColors.TextDim, fontSize = 10.sp, letterSpacing = 1.5.sp, maxLines = 1,
+                modifier = Modifier.weight(1f).padding(end = 12.dp).combinedClickable(onClick = {
+                    Haptics.tick(context); printing = false; tab = "develop"
+                }).padding(vertical = 8.dp))
+            Text(if (fullRunning) "Developing… ${elapsed}s" else "Develop", color = LatentColors.AmberInk, fontSize = 12.sp,
                 maxLines = 1, softWrap = false,
                 modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(LatentColors.Amber).combinedClickable(onClick = {
                     if (fullRunning) return@combinedClickable
@@ -1267,7 +1267,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                             }
                         },
                     )
-                }).padding(horizontal = 16.dp, vertical = 9.dp))
+                }).padding(horizontal = 18.dp, vertical = 8.dp))
         }
     }
     if (liveOpen) LiveScreen(
@@ -1310,7 +1310,11 @@ private fun Head(title: String, active: Boolean?, onActive: (Boolean) -> Unit) {
 
 @Composable
 private fun Note(text: String) {
-    Text(text, color = LatentColors.TextDim, fontSize = 10.sp, lineHeight = 13.sp, modifier = Modifier.padding(vertical = 6.dp))
+    // 75a: one line, tap for the rest (the full explanation is also in App help, behind "?")
+    var open by remember(text) { mutableStateOf(false) }
+    Text(text, color = LatentColors.TextDim, fontSize = 10.sp, lineHeight = 13.sp,
+        maxLines = if (open) Int.MAX_VALUE else 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+        modifier = Modifier.fillMaxWidth().combinedClickable(onClick = { open = !open }).padding(vertical = 6.dp))
 }
 
 @Composable

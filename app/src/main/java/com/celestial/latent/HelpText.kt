@@ -65,7 +65,7 @@ object HelpText {
 
     val TOPICS: List<Topic> = listOf(
         Topic("basics", "THE DARKROOM", "START HERE", "Simple, Full and Print; reset, clear and recipes",
-            "Open any photo from the Roll to develop it here. Nothing you do changes the original: the darkroom keeps your edit beside the photo and saves a new file when you press Develop full size.",
+            "Open any photo from the Roll to develop it here. Nothing you do changes the original: the darkroom keeps your edit beside the photo and saves a new file when you press Develop (bottom right, in every room).",
             listOf(
                 Section("THE THREE ROOMS", items = listOf(
                     Item("Simple · Full · Print", "top right",
@@ -417,6 +417,24 @@ object HelpText {
                     "Previews on the CPU.", "Previews on the GPU, if it is faster on this phone.",
                     "Tap Measure GPU vs CPU on a cool, idle phone first, and keep whichever is faster."),
             )))),
+
+        Topic("develop", "DEVELOP", "DARKROOM TABS", "Print size, Live, reset, clear and save",
+            "Everything about the finished file. The slim bar at the bottom of every room shows the source and print size; tap it to come here, or tap Develop to make the full-size print.",
+            listOf(
+                Section("DEVELOP", items = listOf(
+                    Item("Print size", "1× · 1.25× · 1.5× · 2×",
+                        "How big the saved file is. The film's grain is made at the larger size, so it stays fine instead of being enlarged. No new detail is added.",
+                        "The photo's own size, fastest.", "A bigger file with finer grain; 2× takes about 4× as long.",
+                        "1× for sharing; 1.5× or 2× for large prints."),
+                    Item("This develop", "", "A summary of what the full-size develop will include: RAW or JPEG, diffusion (slow), framing, fog, light, wet, lith and so on.",
+                        use = "Check it before a long develop."),
+                    Item("Live", "", "A short living clip of this edit: rain running, fog drifting, lamps flickering. Only what the darkroom added moves.",
+                        use = "Sharing an edit with fog, rain or lights as a moving photo."),
+                    Item("Develop", "bottom right", "Makes the full-size print and saves it to DCIM/Latent.", use = "When the edit is finished."),
+                    Item("Reset to film · Clear effects · Save recipe", "", "Start again from the film's own look, remove the painted effects, or save these film settings under a name. See THE DARKROOM for details.",
+                        use = "Reset and Clear both offer Undo right after."),
+                )),
+            )),
 
         Topic("print", "PRINT", "PRINT ROOM", "Strips, ring-around, painting, fog, light, wet, lith",
             "PRINT turns the darkroom into an enlarger. The steps run left to right, but you can visit any of them. Everything you paint belongs to this photo only, never to a recipe.",
