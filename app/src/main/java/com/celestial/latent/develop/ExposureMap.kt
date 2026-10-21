@@ -112,6 +112,14 @@ object ExposureMaps {
     /** Where the rain on the window is wiped away or added (65a, WET → WINDOW): −1 wiped … +1 twice the drops. */
     const val RAIN = "rain"
 
+    private val KINDS = listOf(DODGE_BURN, SOFTEN, FOG, RAYS, DEPTH_SPLIT, DEPTH_FIX, SATURATION, WET, RAIN)
+
+    /** Every mask of a deleted photo goes with it (73a). */
+    fun forget(context: Context, photo: Uri) {
+        KINDS.forEach { runCatching { file(context, photo, it).delete() } }
+        index(context).edit().remove(photo.toString()).apply()
+    }
+
     private fun file(context: Context, photo: Uri, kind: String): File {
         val digest = MessageDigest.getInstance("SHA-1").digest(photo.toString().toByteArray())
         val name = digest.joinToString("") { "%02x".format(it) }
