@@ -166,6 +166,11 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
     var tab by remember { mutableStateOf("film") }
     var sheet by remember { mutableStateOf(0) }   // 0 peek, 1 half, 2 full
     var saveName by remember { mutableStateOf("") }
+    // 71a: the recipe before "Reset to film", and the painted effects before "Clear effects", for one Undo each
+    var beforeReset by remember { mutableStateOf<Recipe?>(null) }
+    var resetTo by remember { mutableStateOf<Recipe?>(null) }
+    var clearAsk by remember { mutableStateOf(false) }
+    var beforeClear by remember { mutableStateOf<PaintedEffects?>(null) }
 
     fun render(fast: Boolean) {
         if (fullRunning) return                      // never compete with a full-size develop
@@ -985,17 +990,75 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                         }
                         Spacer(Modifier.height(8.dp))
                         Text(status + (if (lastRenderMs > 0) " · last ${lastRenderMs} ms" else ""), color = LatentColors.TextDim, fontSize = 10.sp)
-                        Row(Modifier.padding(vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Text("Reset", color = LatentColors.Text, fontSize = 11.sp,
+                        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            // 71a: back to this film's own look (its grain, glow and the rest), not the engine's bare
+                            // defaults, which gave every film Portra 400's grain. One Undo brings the edit back.
+                            Text("Reset to film", color = LatentColors.Text, fontSize = 11.sp,
                                 modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(LatentColors.Surface)
-                                    .combinedClickable(onClick = { recipe = Recipe(film = recipe.film, paper = recipe.paper) }).padding(horizontal = 12.dp, vertical = 7.dp))
+                                    .combinedClickable(onClick = {
+                                        Haptics.tick(context)
+                                        val fresh = filmLook(context, recipe, lookId, ownRecipe != null)
+                                        if (fresh != recipe) { beforeReset = recipe; resetTo = fresh; recipe = fresh }
+                                    }).padding(horizontal = 12.dp, vertical = 7.dp))
+                            Text("Clear effects", color = LatentColors.Text, fontSize = 11.sp,
+                                modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(LatentColors.Surface)
+                                    .combinedClickable(onClick = { Haptics.tick(context); clearAsk = true }).padding(horizontal = 12.dp, vertical = 7.dp))
                             Text("Save recipe", color = LatentColors.Text, fontSize = 11.sp,
                                 modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(LatentColors.Surface)
                                     .combinedClickable(onClick = {
                                         val n = (Develop.FILMS.firstOrNull { it.first == recipe.film }?.second ?: "Recipe") + " " + (Recipes.names(context).size + 1)
                                         Recipes.save(context, n, recipe); saveName = n
                                     }).padding(horizontal = 12.dp, vertical = 7.dp))
-                            if (saveName.isNotEmpty()) Text("saved “$saveName”", color = LatentColors.Amber, fontSize = 10.sp, modifier = Modifier.padding(top = 6.dp))
+                        }
+                        if (saveName.isNotEmpty()) Text("saved “$saveName”", color = LatentColors.Amber, fontSize = 10.sp)
+                        // Undo for the reset, while nothing has been changed since
+                        val undoReset = beforeReset
+                        if (undoReset != null && resetTo == recipe) {
+                            Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Text("Back to the film's own look.", color = LatentColors.TextDim, fontSize = 11.sp, modifier = Modifier.weight(1f))
+                                Text("Undo", color = LatentColors.AmberInk, fontSize = 11.sp,
+                                    modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(LatentColors.Amber)
+                                        .combinedClickable(onClick = { Haptics.tick(context); recipe = undoReset; beforeReset = null; resetTo = null })
+                                        .padding(horizontal = 12.dp, vertical = 7.dp))
+                            }
+                        }
+                        // "Clear effects" asks first, in place (no dialog: those misplace on the Xiaomi)
+                        if (clearAsk) {
+                            Text("Clear this photo's fog, lights, god rays, wet ground, rain, lith print, dodge & burn and painted colour? The film settings and the framing stay.",
+                                color = LatentColors.Text, fontSize = 11.sp, modifier = Modifier.padding(top = 4.dp))
+                            Row(Modifier.padding(vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Text("Clear", color = LatentColors.AmberInk, fontSize = 11.sp,
+                                    modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(LatentColors.Amber)
+                                        .combinedClickable(onClick = {
+                                            Haptics.tick(context)
+                                            beforeClear = PaintedEffects(exposureMap, softenMap, fogMap, fogLook, raysMap, raysLook, extraLights,
+                                                saturationMap, lithLook, wetMap, wetLook, rainMap)
+                                            val none = PaintedEffects.NONE
+                                            exposureMap = none.exposure; softenMap = none.soften; fogMap = none.fog; fogLook = none.fogLook
+                                            raysMap = none.rays; raysLook = none.raysLook; extraLights = none.extraLights
+                                            saturationMap = none.saturation; lithLook = none.lith; wetMap = none.wet; wetLook = none.wetLook; rainMap = none.rain
+                                            clearAsk = false
+                                        }).padding(horizontal = 12.dp, vertical = 7.dp))
+                                Text("Keep them", color = LatentColors.Text, fontSize = 11.sp,
+                                    modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(LatentColors.Surface)
+                                        .combinedClickable(onClick = { clearAsk = false }).padding(horizontal = 12.dp, vertical = 7.dp))
+                            }
+                        }
+                        // ...and its Undo, while the photo is still open
+                        val undoClear = beforeClear
+                        if (undoClear != null && !clearAsk) {
+                            Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Text("Effects cleared.", color = LatentColors.TextDim, fontSize = 11.sp, modifier = Modifier.weight(1f))
+                                Text("Undo", color = LatentColors.AmberInk, fontSize = 11.sp,
+                                    modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(LatentColors.Amber)
+                                        .combinedClickable(onClick = {
+                                            Haptics.tick(context)
+                                            exposureMap = undoClear.exposure; softenMap = undoClear.soften; fogMap = undoClear.fog; fogLook = undoClear.fogLook
+                                            raysMap = undoClear.rays; raysLook = undoClear.raysLook; extraLights = undoClear.extraLights
+                                            saturationMap = undoClear.saturation; lithLook = undoClear.lith; wetMap = undoClear.wet; wetLook = undoClear.wetLook; rainMap = undoClear.rain
+                                            beforeClear = null
+                                        }).padding(horizontal = 12.dp, vertical = 7.dp))
+                            }
                         }
                         Spacer(Modifier.height(8.dp))
                     }
@@ -1163,4 +1226,47 @@ private fun Chips(options: List<String>, selected: String, onSelect: (String) ->
                     .combinedClickable(onClick = { Haptics.tick(context); onSelect(o) }).padding(horizontal = 10.dp, vertical = 5.dp))
         }
     }
+}
+
+/**
+ * Everything "Clear effects" takes off a photo (71a), kept so one Undo can put it all back. The
+ * depth split and its fixes stay: they describe the photo, they are not an effect on it.
+ */
+private data class PaintedEffects(
+    val exposure: ExposureMap?, val soften: ExposureMap?,
+    val fog: ExposureMap?, val fogLook: com.celestial.latent.develop.FogLook,
+    val rays: ExposureMap?, val raysLook: com.celestial.latent.develop.RaysLook,
+    val extraLights: List<com.celestial.latent.develop.RaysLook>,
+    val saturation: ExposureMap?, val lith: com.celestial.latent.develop.LithLook,
+    val wet: ExposureMap?, val wetLook: com.celestial.latent.develop.WetLook, val rain: ExposureMap?,
+) {
+    companion object {
+        /** A photo nothing was ever done to: exactly what loading it with nothing saved gives. */
+        val NONE = PaintedEffects(null, null, null, com.celestial.latent.develop.FogLook.parse(null),
+            null, com.celestial.latent.develop.RaysLook.parse(null), emptyList(),
+            null, com.celestial.latent.develop.LithLook.parse(null), null, com.celestial.latent.develop.WetLook.parse(null), null)
+    }
+}
+
+/**
+ * The film's own look for "Reset to film" (71a): the look chosen in the darkroom, else the camera's
+ * look if it is this film, else this film's first look, else a film built here, else the plain film.
+ * Opened as every photo is, at the brightness it was shot. A cinema shot keeps its cinema choices
+ * (print stock, Super 35 frame, 85B), which come from the camera, not from a look.
+ */
+private fun filmLook(context: android.content.Context, current: Recipe, lookId: String, cinema: Boolean): Recipe {
+    val film = current.film
+    val presets = com.celestial.latent.develop.Presets
+    val camera = AppSettings.load(context).preset
+    val base = when {
+        lookId.startsWith("stock:") -> Recipes.load(context, lookId.removePrefix("stock:"))
+        lookId.isNotEmpty() -> presets.byId(context, lookId)?.recipe
+        else -> null
+    }?.takeIf { it.film == film }
+        ?: (if (camera.startsWith("stock:")) Recipes.load(context, camera.removePrefix("stock:")) else presets.byId(context, camera)?.recipe)?.takeIf { it.film == film }
+        ?: presets.defaultFor(context, film)?.recipe
+        ?: Recipes.stocks(context).firstOrNull { it.second.film == film }?.second
+        ?: Recipe(film = film, paper = current.paper)
+    val fresh = base.copy(autoExposure = false)
+    return if (cinema) fresh.copy(paper = current.paper, scanFilm = current.scanFilm, filmFormatMm = current.filmFormatMm, lens85b = current.lens85b) else fresh
 }
