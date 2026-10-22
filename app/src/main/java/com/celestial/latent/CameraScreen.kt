@@ -99,6 +99,9 @@ fun CameraScreen(
     var status by remember { mutableStateOf("Starting camera…") }
     var log by remember { mutableStateOf("") }
     val startLens = remember { Lenses.ALL.firstOrNull { it.physicalId == settings.defaultLensId } ?: Lenses.DEFAULT }
+    // 77a: the film cards folded away or open, kept between visits
+    val uiPrefs = remember { context.getSharedPreferences("latent_camera_ui", android.content.Context.MODE_PRIVATE) }
+    var filmsFolded by remember { mutableStateOf(runCatching { uiPrefs.getBoolean("films_folded", false) }.getOrDefault(false)) }
     var lens by remember { mutableStateOf(startLens) }
     var readout by remember { mutableStateOf(LiveReadout()) }
     var kelvinShown by remember { mutableStateOf(0) }
@@ -483,6 +486,8 @@ fun CameraScreen(
                 }
             }
             // Quiet captions overlaid on the image.
+            // 77a: the film cards can be folded into one pill; the lens row and its labels follow them down
+            val filmsLift by androidx.compose.animation.core.animateDpAsState(if (filmsFolded) 0.dp else 32.dp, label = "films")
             // 76a: each on a small see-through dark pill, so it reads over a bright scene as well as a dark one
             Column(Modifier.align(Alignment.TopStart).padding(12.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                 Text(if (settings.saveJpeg) "RAW + JPG · 12.5M" else "RAW · 12.5M", color = LatentColors.TextBright, fontSize = 10.sp, letterSpacing = 1.sp, modifier = Modifier.onPicture())
@@ -512,21 +517,21 @@ fun CameraScreen(
                 modifier = Modifier.align(Alignment.TopCenter).padding(8.dp).clip(RoundedCornerShape(999.dp)).background(LatentColors.Amber).padding(horizontal = 10.dp, vertical = 4.dp))
             if (countdown > 0) Text("$countdown", color = LatentColors.TextBright, fontSize = 64.sp, modifier = Modifier.align(Alignment.Center))
             Text((if (lens.mm >= 70) "TELE" else lens.name.uppercase()) + " · ${lens.mm} MM" + (if (readout.afState.isNotEmpty()) " · AF ${readout.afState.uppercase()}" else ""),
-                color = LatentColors.TextBright, fontSize = 10.sp, letterSpacing = 1.sp, modifier = Modifier.align(Alignment.BottomStart).padding(start = 12.dp, bottom = 132.dp).onPicture())
+                color = LatentColors.TextBright, fontSize = 10.sp, letterSpacing = 1.sp, modifier = Modifier.align(Alignment.BottomStart).padding(start = 12.dp, bottom = 100.dp + filmsLift).onPicture())
             val zoomNote = when {
                 controls.zoom == 4f -> "×4 ON"
                 controls.zoom == 2f -> "×2 ON"
                 else -> ""
             }
             if (zoomNote.isNotEmpty()) Text(zoomNote, color = LatentColors.TextBright, fontSize = 10.sp, letterSpacing = 1.sp,
-                modifier = Modifier.align(Alignment.BottomEnd).padding(end = 12.dp, bottom = 132.dp).onPicture())
+                modifier = Modifier.align(Alignment.BottomEnd).padding(end = 12.dp, bottom = 100.dp + filmsLift).onPicture())
             // ×4 reads the sensor's tiny pixels one by one: noisy in dim light, and a burst cleans it up.
             // Its own line, centred above the labels — beside them it would run into the lens label.
             if (controls.zoom == 4f) Text("best in bright light · hold the shutter for a burst", color = LatentColors.Amber, fontSize = 10.sp,
-                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 160.dp).onPicture())
+                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 128.dp + filmsLift).onPicture())
             // Lens row floating on the image: plain numbers, active one larger; ×2 multiplies the current lens.
             // 76a: on one see-through dark pill, the chosen lens in a light circle, so it reads over any scene
-            Row(Modifier.align(Alignment.BottomCenter).padding(bottom = 84.dp).clip(RoundedCornerShape(999.dp)).background(PICTURE_PILL)
+            Row(Modifier.align(Alignment.BottomCenter).padding(bottom = 52.dp + filmsLift).clip(RoundedCornerShape(999.dp)).background(PICTURE_PILL)
                 .padding(horizontal = 4.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                 Lenses.ALL.forEach { l ->
                     val on = l == lens
@@ -553,7 +558,9 @@ fun CameraScreen(
                 }
             }
             FilmStrip(settings.preset, Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp),
-                onLongPress = { lastRawUri?.let { u -> onOpenDarkroom(u, true) } }) { id ->
+                onLongPress = { lastRawUri?.let { u -> onOpenDarkroom(u, true) } },
+                folded = filmsFolded,
+                onFold = { filmsFolded = it; runCatching { uiPrefs.edit().putBoolean("films_folded", it).apply() } }) { id ->
                     // A film built here is a saved recipe rather than one of the engine's looks.
                     if (id.startsWith("stock:")) {
                         com.celestial.latent.develop.Recipes.load(context, id.removePrefix("stock:"))?.let { r ->
