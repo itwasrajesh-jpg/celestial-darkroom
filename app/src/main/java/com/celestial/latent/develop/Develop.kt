@@ -151,11 +151,29 @@ object Develop {
         context.contentResolver.openInputStream(uri)?.use { input ->
             val head = ByteArray(64 * 1024)
             val n = input.read(head)
-            if (n < 16) 0 else readIsoTag(head, n)
+            if (n < 16) 0 else readTag(head, n, 34855)
         } ?: 0
     } catch (t: Throwable) { 0 }
 
-    private fun readIsoTag(b: ByteArray, len: Int): Int {
+    /**
+     * The file's TIFF orientation (tag 274: 1 upright, 6 turned a quarter clockwise, 8 anticlockwise…),
+     * or 0 when unknown. Our camera writes 6 into every DNG, as its sensor lies on its side (75d).
+     */
+    fun orientationOf(context: Context, uri: Uri): Int = try {
+        context.contentResolver.openInputStream(uri)?.use { input ->
+            val head = ByteArray(64 * 1024)
+            val n = input.read(head)
+            if (n < 16) 0 else readTag(head, n, 274)
+        } ?: 0
+    } catch (t: Throwable) { 0 }
+
+    /** The size of the picture the darkroom opened for [source] (upright, as the decoder stood it), when still cached (75d). */
+    fun openedSize(source: Uri, isRaw: Boolean, maxEdge: Int, pairFirst: Uri? = null): Pair<Int, Int>? {
+        val key = if (pairFirst != null && isRaw) "$pairFirst+$source@$maxEdge" else "$source@$maxEdge"
+        return Cache.get(key)?.let { it.width to it.height }
+    }
+
+    private fun readTag(b: ByteArray, len: Int, want: Int): Int {
         val little = b[0] == 'I'.code.toByte() && b[1] == 'I'.code.toByte()
         val big = b[0] == 'M'.code.toByte() && b[1] == 'M'.code.toByte()
         if (!little && !big) return 0
@@ -168,7 +186,7 @@ object Develop {
             else ((b[o].toInt() and 0xFF) shl 24) or ((b[o + 1].toInt() and 0xFF) shl 16) or
                 ((b[o + 2].toInt() and 0xFF) shl 8) or (b[o + 3].toInt() and 0xFF)
 
-        // Walk the first IFD, then the Exif IFD it points to, looking for tag 34855 (ISO).
+        // Walk the first IFD, then the Exif IFD it points to, looking for the tag (a SHORT: ISO 34855, orientation 274).
         fun scan(off: Int, depth: Int): Int {
             if (off <= 0 || off + 2 > len || depth > 2) return 0
             val count = u16(off)
@@ -177,7 +195,7 @@ object Develop {
                 val e = off + 2 + i * 12
                 if (e + 12 > len) break
                 when (u16(e)) {
-                    34855 -> return u16(e + 8)          // ISO, SHORT in place
+                    want -> return u16(e + 8)           // SHORT in place
                     34665 -> exifOff = u32(e + 8)       // Exif IFD pointer
                 }
             }

@@ -751,7 +751,9 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                         // the before, framed as the print is (72a: it used to stay sideways for a turned shot)
                         val f = framing
                         if (originalFraming != f.key()) Thread {
-                            val plain = originalPlain ?: plainBefore(context, source, isRaw)?.also { originalPlain = it }
+                            val plain = originalPlain ?: plainBefore(context, source, isRaw)
+                                ?.let { uprightBefore(context, it, source, isRaw, Develop.openedSize(source, isRaw, DECODE_EDGE, pairFirst)) }
+                                ?.also { originalPlain = it }
                             if (plain != null) {
                                 original = runCatching { com.celestial.latent.develop.Framings.frameBitmap(plain, f) }.getOrNull()
                                 originalFraming = f.key()
@@ -1405,6 +1407,32 @@ private fun plainBefore(context: android.content.Context, source: Uri, isRaw: Bo
         context.contentResolver.openInputStream(source)?.use { android.graphics.BitmapFactory.decodeStream(it, null, opts) }
     }
 }.getOrNull()
+
+/**
+ * The before stood the way the print stands (75d). The print is opened by LibRaw, which turns a RAW
+ * upright from the file's orientation; Android's picture of the same file often is not turned (our
+ * DNGs carry no preview of their own, and many phones ignore the orientation when drawing one). So
+ * the picture the darkroom opened is the judge: when the before's shape disagrees with it (or, before
+ * it is opened, when the file says it lies on its side and the before is still landscape), the
+ * before is turned the file's way. A before that already agrees is left as it is.
+ */
+private fun uprightBefore(context: android.content.Context, plain: Bitmap, source: Uri, isRaw: Boolean, opened: Pair<Int, Int>?): Bitmap {
+    if (!isRaw) return plain
+    val o = Develop.orientationOf(context, source)
+    if (o !in 5..8) return plain
+    val plainTall = plain.height > plain.width
+    val wantTall = opened?.let { (w, h) -> h > w } ?: true
+    if (plainTall == wantTall || plain.width == plain.height) return plain
+    val m = android.graphics.Matrix()
+    // 6: a quarter clockwise; 8: anticlockwise; 5 and 7 are those with a mirror
+    when (o) {
+        6 -> m.postRotate(90f)
+        8 -> m.postRotate(270f)
+        5 -> { m.postScale(-1f, 1f); m.postRotate(270f) }
+        7 -> { m.postScale(-1f, 1f); m.postRotate(90f) }
+    }
+    return runCatching { Bitmap.createBitmap(plain, 0, 0, plain.width, plain.height, m, true) }.getOrDefault(plain)
+}
 
 /** A one-line name box in the darkroom's colours (72a), like the Film Builder's. */
 @Composable
