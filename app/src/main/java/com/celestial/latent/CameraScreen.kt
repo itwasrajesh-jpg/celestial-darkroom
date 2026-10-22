@@ -33,6 +33,7 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
@@ -482,9 +483,10 @@ fun CameraScreen(
                 }
             }
             // Quiet captions overlaid on the image.
-            Column(Modifier.align(Alignment.TopStart).padding(12.dp)) {
-                Text(if (settings.saveJpeg) "RAW + JPG · 12.5M" else "RAW · 12.5M", color = LatentColors.TextBright, fontSize = 10.sp, letterSpacing = 1.sp)
-                if (settings.cinema) Text(Cinema.label(settings), color = LatentColors.Amber, fontSize = 10.sp, letterSpacing = 1.sp)
+            // 76a: each on a small see-through dark pill, so it reads over a bright scene as well as a dark one
+            Column(Modifier.align(Alignment.TopStart).padding(12.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Text(if (settings.saveJpeg) "RAW + JPG · 12.5M" else "RAW · 12.5M", color = LatentColors.TextBright, fontSize = 10.sp, letterSpacing = 1.sp, modifier = Modifier.onPicture())
+                if (settings.cinema) Text(Cinema.label(settings), color = LatentColors.Amber, fontSize = 10.sp, letterSpacing = 1.sp, modifier = Modifier.onPicture())
                 // Says plainly what the live image is and is not, without crowding the frame.
                 if (settings.filmPreview) Text(
                     (com.celestial.latent.develop.Presets.byId(context, settings.preset)?.name?.substringBefore(" — ")
@@ -494,8 +496,8 @@ fun CameraScreen(
                             lookReady -> " · COLOUR ONLY"
                             else -> " · PLAIN IMAGE"
                         },
-                    color = if (lookReady) LatentColors.TextDim else LatentColors.Line,
-                    fontSize = 9.sp, letterSpacing = 1.5.sp, modifier = Modifier.padding(top = 3.dp),
+                    color = if (lookReady) LatentColors.Text else LatentColors.TextDim,
+                    fontSize = 9.sp, letterSpacing = 1.5.sp, modifier = Modifier.onPicture(),
                 )
             }
             val modes = listOfNotNull(
@@ -505,30 +507,36 @@ fun CameraScreen(
             )
             val tagLabels = remember(settings.vendorTags, lens) { if (controller.hasCharacteristics) controller.activeTagLabels() else emptyList() }
             val allLabels = modes + tagLabels
-            if (allLabels.isNotEmpty()) Text(allLabels.joinToString(" · "), color = LatentColors.Amber, fontSize = 10.sp, letterSpacing = 1.sp, modifier = Modifier.align(Alignment.TopEnd).padding(12.dp))
+            if (allLabels.isNotEmpty()) Text(allLabels.joinToString(" · "), color = LatentColors.Amber, fontSize = 10.sp, letterSpacing = 1.sp, modifier = Modifier.align(Alignment.TopEnd).padding(12.dp).onPicture())
             if (controls.locked) Text("AE/AF LOCK", color = LatentColors.AmberInk, fontSize = 11.sp, letterSpacing = 1.sp,
                 modifier = Modifier.align(Alignment.TopCenter).padding(8.dp).clip(RoundedCornerShape(999.dp)).background(LatentColors.Amber).padding(horizontal = 10.dp, vertical = 4.dp))
             if (countdown > 0) Text("$countdown", color = LatentColors.TextBright, fontSize = 64.sp, modifier = Modifier.align(Alignment.Center))
             Text((if (lens.mm >= 70) "TELE" else lens.name.uppercase()) + " · ${lens.mm} MM" + (if (readout.afState.isNotEmpty()) " · AF ${readout.afState.uppercase()}" else ""),
-                color = LatentColors.TextDim, fontSize = 10.sp, letterSpacing = 1.sp, modifier = Modifier.align(Alignment.BottomStart).padding(start = 12.dp, bottom = 122.dp))
-            Text(when {
-                    controls.zoom == 4f -> "×4 ON"
-                    controls.zoom == 2f -> "×2 ON"
-                    else -> ""
-                }, color = LatentColors.TextDim, fontSize = 10.sp, letterSpacing = 1.sp, modifier = Modifier.align(Alignment.BottomEnd).padding(end = 12.dp, bottom = 122.dp))
+                color = LatentColors.TextBright, fontSize = 10.sp, letterSpacing = 1.sp, modifier = Modifier.align(Alignment.BottomStart).padding(start = 12.dp, bottom = 132.dp).onPicture())
+            val zoomNote = when {
+                controls.zoom == 4f -> "×4 ON"
+                controls.zoom == 2f -> "×2 ON"
+                else -> ""
+            }
+            if (zoomNote.isNotEmpty()) Text(zoomNote, color = LatentColors.TextBright, fontSize = 10.sp, letterSpacing = 1.sp,
+                modifier = Modifier.align(Alignment.BottomEnd).padding(end = 12.dp, bottom = 132.dp).onPicture())
             // ×4 reads the sensor's tiny pixels one by one: noisy in dim light, and a burst cleans it up.
             // Its own line, centred above the labels — beside them it would run into the lens label.
             if (controls.zoom == 4f) Text("best in bright light · hold the shutter for a burst", color = LatentColors.Amber, fontSize = 10.sp,
-                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 142.dp))
+                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 160.dp).onPicture())
             // Lens row floating on the image: plain numbers, active one larger; ×2 multiplies the current lens.
-            Row(Modifier.align(Alignment.BottomCenter).padding(bottom = 84.dp), verticalAlignment = Alignment.CenterVertically) {
+            // 76a: on one see-through dark pill, the chosen lens in a light circle, so it reads over any scene
+            Row(Modifier.align(Alignment.BottomCenter).padding(bottom = 84.dp).clip(RoundedCornerShape(999.dp)).background(PICTURE_PILL)
+                .padding(horizontal = 4.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                 Lenses.ALL.forEach { l ->
                     val on = l == lens
-                    Text(if (on) l.label + "×" else l.label, color = if (on) LatentColors.TextBright else LatentColors.Text, fontSize = if (on) 15.sp else 12.sp,
-                        modifier = Modifier.combinedClickable(onClick = {
+                    Text(if (on) l.label + "×" else l.label, color = if (on) LatentColors.Background else LatentColors.TextBright, fontSize = if (on) 14.sp else 12.sp,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                        modifier = Modifier.then(if (on) Modifier.clip(CircleShape).background(LatentColors.TextBright).size(38.dp).wrapContentHeight(Alignment.CenterVertically) else Modifier)
+                            .combinedClickable(onClick = {
                             // ×4 exists only on the periscope: leaving it turns ×4 off rather than becoming a digital ×4
                             if (l != lens) { Haptics.tick(context); lens = l; push(controls.copy(shutterNs = null, iso = null, focusDiopters = null, zoom = if (controls.zoom > 2.5f) 1f else controls.zoom)); onLensChanged(l); reopen() }
-                        }).padding(horizontal = 11.dp, vertical = 6.dp))
+                        }).then(if (on) Modifier else Modifier.padding(horizontal = 11.dp, vertical = 6.dp)))
                 }
                 Spacer(Modifier.width(6.dp))
                 // ×2 multiplies the current lens. Where the sensor has its own crop (the 15 Ultra's
@@ -788,3 +796,10 @@ internal fun FocusEvOverlay(
 
 /** Frames in a focus stack (69a): about 2.5 dioptres of depth on the main lens, e.g. 16-27 cm when focused at 20 cm. */
 private const val FOCUS_FRAMES = 12
+
+/** A see-through dark backing for words drawn over the live picture (76a). */
+private val PICTURE_PILL = Color(0x73000000)
+
+/** Words over the live picture sit on a small dark pill, readable over a bright scene as well as a dark one (76a). */
+private fun Modifier.onPicture(): Modifier =
+    clip(RoundedCornerShape(999.dp)).background(PICTURE_PILL).padding(horizontal = 8.dp, vertical = 3.dp)
