@@ -605,7 +605,7 @@ object Develop {
      */
     fun render(context: Context, source: Source, recipe: Recipe, preview: Boolean, upscale: Float = 1f,
                exposureMap: ExposureMap? = null, softenMask: ExposureMap? = null, saturationMap: ExposureMap? = null,
-               lith: LithLook = LithLook(), lithFrame: Region? = null,
+               lith: LithLook = LithLook(), lithFrame: Region? = null, hdrGlow: Float = 0f,
                log: (String) -> Unit = {}): Pair<ByteArray, Pair<Int, Int>> {
         val t = System.nanoTime()
         Log.i("Latent", "render start: source ${source.width}x${source.height}, preview=$preview, cap=${recipe.previewMaxSize}")
@@ -620,6 +620,10 @@ object Develop {
         val watch = if (!preview) MemoryWatch(context) else null
         val jpeg = try {
             engineFor(context).use { engine ->
+                // 78a: the exposure the film is given, for the glow map's "how bright was the scene really"
+                // (the engine's own metering when it levels the shot, plus the EV set by hand)
+                val glow = HdrGlow.wanted(hdrGlow, lith)
+                val sceneEv = if (glow) recipe.exposureEv + runCatching { engine.meterExposureEv(source.image, params) }.getOrDefault(0.0) else 0.0
                 val result = if (preview) engine.simulatePreview(source.image, params) else engine.simulate(source.image, params)
                 result.use { r ->
                     // painted saturation (62a): on the finished print, before any bars
@@ -635,13 +639,22 @@ object Develop {
                         Lith.apply(r.data, r.width, r.height, r.colorSpace, lith, lithFrame)
                         if (!preview) Log.i("Latent", "lith (${lith.paper}, pulled ${lith.snatch}) in ${(System.nanoTime() - tl) / 1_000_000} ms")
                     }
+                    // Ultra HDR glow (78a): where the finished print may shine brighter than white, read from the
+                    // scene the film saw (never on lith paper, so the lith border below never needs a place in it)
+                    val glowMap = if (!glow) null else runCatching {
+                        val tg = System.nanoTime()
+                        HdrGlow.shape(source, sceneEv, r.data, r.width, r.height).also { m ->
+                            Log.i("Latent", "hdr glow ${HdrGlow.label(hdrGlow)} stops: map ${m.width}x${m.height}, " +
+                                "${(m.cover() * 100).toInt()}% of the picture glows, scene at ${"%.2f".format(sceneEv)} EV, in ${(System.nanoTime() - tg) / 1_000_000} ms")
+                        }
+                    }.getOrElse { t -> Log.e("Latent", "hdr glow: could not make the map", t); null }
                     // film-still bars and the lith paper's border, around the full-size print only:
                     // previews stay the bare picture, so painting, zoom and masks all line up with what they draw on
                     val (bd, bw, bh) = if (!preview) Lith.border(r.data, r.width, r.height, r.colorSpace, lith) else Triple(r.data, r.width, r.height)
                     if (!preview && source.letterbox) {
                         val (data, w, h) = letterbox(bd, bw, bh)
-                        dims = w to h; toJpeg(data, w, h, r.colorSpace, ourSpace)
-                    } else { dims = bw to bh; toJpeg(bd, bw, bh, r.colorSpace, ourSpace) }
+                        dims = w to h; toJpeg(data, w, h, r.colorSpace, ourSpace, glowMap?.let { HdrGlow.framed(it, bw, bh, w, h) to hdrGlow })
+                    } else { dims = bw to bh; toJpeg(bd, bw, bh, r.colorSpace, ourSpace, glowMap?.let { it to hdrGlow }) }
                 }
             }
         } finally {
@@ -743,7 +756,8 @@ object Develop {
      * colour space — not bytes. Clamp, quantise to 8 bit, and tag the bitmap with that space so
      * the system colour-manages it and embeds the right profile on export.
      */
-    private fun toJpeg(data: ByteBuffer, w: Int, h: Int, colorSpace: com.spectrafilm.engine.ColorSpace, ourSpace: String = ""): ByteArray {
+    private fun toJpeg(data: ByteBuffer, w: Int, h: Int, colorSpace: com.spectrafilm.engine.ColorSpace, ourSpace: String = "",
+                       glow: Pair<HdrGlow.Map, Float>? = null): ByteArray {
         val f = data.order(ByteOrder.nativeOrder()).asFloatBuffer()
         val bmp = taggedBitmap(w, h, colorSpace, ourSpace)
         val bandRows = (1024 * 1024 / w).coerceIn(1, h)
@@ -766,6 +780,8 @@ object Develop {
             bmp.setPixels(strip, 0, w, 0, y, w, rows)
             y += rows
         }
+        // 78a: with a glow map behind it, the same compress writes an Ultra HDR file (Android 14+)
+        glow?.let { (m, stops) -> runCatching { HdrGlow.attach(bmp, m, stops) }.onFailure { t -> Log.e("Latent", "hdr glow: could not attach the map", t) } }
         val out = ByteArrayOutputStream()
         bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 95, out)
         bmp.recycle()
@@ -955,7 +971,7 @@ object Develop {
                     extraLights: List<RaysLook> = emptyList(),
                     depthSplit: ExposureMap? = null, saturationMap: ExposureMap? = null, lith: LithLook = LithLook(),
                     wetMask: ExposureMap? = null, wetLook: WetLook = WetLook(), rainMask: ExposureMap? = null,
-                    log: (String) -> Unit = {}): Uri {
+                    hdrGlow: Float = 0f, log: (String) -> Unit = {}): Uri {
         log(if (maxEdge > 0) "decoding…" else "decoding at full size…")
         val pair = pairFirst != null && isRaw
         val opened = if (pair) openPair(context, pairFirst!!, source, maxEdge, log)
@@ -972,7 +988,7 @@ object Develop {
             prepareStages(context, source, s, iso, recipe, framing, softenMask, fogMask, fogLook, raysMask, raysLook, extraLights,
                 depthSplit, wetMask, wetLook, rainMask, log)
             log("developing ${s.width}×${s.height}…")
-            val (bytes, dims) = render(context, s, recipe, preview = false, upscale = upscale, exposureMap = exposureMap, softenMask = softenMask, saturationMap = saturationMap, lith = lith, log = log)
+            val (bytes, dims) = render(context, s, recipe, preview = false, upscale = upscale, exposureMap = exposureMap, softenMask = softenMask, saturationMap = saturationMap, lith = lith, hdrGlow = hdrGlow, log = log)
             log("saving ${dims.first}×${dims.second}, ${bytes.size / 1024} KB")
             // The fog and light travel inside the file, so the Film Builder can read them exactly
             // later — even if the file is renamed or the original's fog is changed afterwards.

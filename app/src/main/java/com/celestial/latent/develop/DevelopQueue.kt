@@ -36,6 +36,7 @@ object DevelopQueue {
                    extraLights: List<RaysLook> = emptyList(),
                    depthSplit: ExposureMap? = null, saturationMap: ExposureMap? = null, lith: LithLook = LithLook(),
                    wetMask: ExposureMap? = null, wetLook: WetLook = WetLook(), rainMask: ExposureMap? = null,
+                   hdrGlow: Float = 0f,
                    onStatus: (String) -> Unit, onDone: (Uri?) -> Unit): Running {
         val handle = Running()
         pending.incrementAndGet(); onChanged()
@@ -53,7 +54,7 @@ object DevelopQueue {
                 holdsLane = acquireLane(120)
                 if (handle.cancelled) { Log.i("Latent", "full develop cancelled while waiting"); return@execute }
                 onStatus("starting")
-                out = Develop.developFull(app, source, isRaw, recipe, upscale = upscale, exposureMap = exposureMap, softenMask = softenMask, pairFirst = pairFirst, framing = framing, fogMask = fogMask, fogLook = fogLook, raysMask = raysMask, raysLook = raysLook, extraLights = extraLights, depthSplit = depthSplit, saturationMap = saturationMap, lith = lith, wetMask = wetMask, wetLook = wetLook, rainMask = rainMask) { m -> if (!handle.cancelled) onStatus(m) }
+                out = Develop.developFull(app, source, isRaw, recipe, upscale = upscale, exposureMap = exposureMap, softenMask = softenMask, pairFirst = pairFirst, framing = framing, fogMask = fogMask, fogLook = fogLook, raysMask = raysMask, raysLook = raysLook, extraLights = extraLights, depthSplit = depthSplit, saturationMap = saturationMap, lith = lith, wetMask = wetMask, wetLook = wetLook, rainMask = rainMask, hdrGlow = hdrGlow) { m -> if (!handle.cancelled) onStatus(m) }
                 if (handle.cancelled) { Log.i("Latent", "full develop finished after cancel; result discarded"); out = null }
             } catch (t: Throwable) {
                 Log.e("Latent", "full develop failed", t)
@@ -105,7 +106,9 @@ object DevelopQueue {
                 val recipe = com.celestial.latent.PhotoRecipes.load(context.applicationContext, job.source) ?: job.recipe
                 val out = if (job.isRaw)
                               Develop.developFull(context.applicationContext, job.source, isRaw = true, recipe = recipe,
-                                  pairFirst = job.first, framing = framing)
+                                  pairFirst = job.first, framing = framing,
+                                  // 78a: a new photo glows by Settings' starting value, or by its own once set
+                                  hdrGlow = HdrGlows.load(context.applicationContext, job.source))
                           else Develop.developJpeg(context.applicationContext, job.source, recipe)
                 onDeveloped(out)
             } catch (t: Throwable) {

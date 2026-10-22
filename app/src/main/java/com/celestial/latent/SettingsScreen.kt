@@ -104,6 +104,16 @@ fun SettingsScreen(settings: AppSettings, onChange: (AppSettings) -> Unit, onOpe
                 com.celestial.latent.develop.Presets.cinemaGlowChanged(context, settings.preset, it)
             }
         }
+        // 78a: where a new photo's Ultra HDR glow starts; each photo keeps its own once moved in the darkroom
+        if (com.celestial.latent.develop.HdrGlow.supported) {
+            var hdrStart by remember { mutableStateOf(com.celestial.latent.develop.HdrGlows.defaultStops(context)) }
+            OptionRow(
+                title = "Ultra HDR glow for new photos",
+                subtitle = "Developed JPEGs carry a hidden glow map: on HDR screens the brightest lights shine brighter than white, and every other screen shows the normal print. Each photo can change its own in the darkroom's DEVELOP tab.",
+                options = com.celestial.latent.develop.HdrGlow.CHOICES.map { com.celestial.latent.develop.HdrGlow.label(it) to it },
+                selected = hdrStart,
+            ) { hdrStart = it; com.celestial.latent.develop.HdrGlows.setDefault(context, it) }
+        }
         Text("Open the roll to reach the darkroom: tap the last-photo thumbnail on the camera screen, or long-press the film strip.", color = LatentColors.TextDim, fontSize = 12.sp)
 
         Section("Xiaomi processing (official extensions)")

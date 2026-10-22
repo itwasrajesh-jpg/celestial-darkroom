@@ -9,7 +9,7 @@ import android.net.Uri
  * behind under an address that no longer leads anywhere.
  */
 object PhotoData {
-    private val STORES = listOf("latent_frame", "latent_fog", "latent_rays", "latent_extra_lights", "latent_lith", "latent_wet", "latent_photo_recipes")
+    private val STORES = listOf("latent_frame", "latent_fog", "latent_rays", "latent_extra_lights", "latent_lith", "latent_wet", "latent_photo_recipes", "latent_hdr")
 
     fun forget(context: Context, photo: Uri) {
         val key = photo.toString()

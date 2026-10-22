@@ -190,9 +190,11 @@ data class Atmosphere(
             if (jpeg.size < 4 || jpeg[0] != 0xFF.toByte() || jpeg[1] != 0xD8.toByte()) return jpeg
             val payload = text.toByteArray(Charsets.UTF_8)
             if (payload.size > 65000) return jpeg
-            // after SOI and any APPn segments (JFIF and EXIF expect to come first)
+            // after SOI and any APPn segments (JFIF and EXIF expect to come first) — but before an Ultra HDR
+            // file's MPF index (78a): it counts from its own header to the hidden glow map, so a note put after
+            // it would leave it pointing at the wrong place and the glow would be lost. Before it, both move together.
             var at = 2
-            while (at + 4 <= jpeg.size && jpeg[at] == 0xFF.toByte() && (jpeg[at + 1].toInt() and 0xFF) in 0xE0..0xEF) {
+            while (at + 4 <= jpeg.size && jpeg[at] == 0xFF.toByte() && (jpeg[at + 1].toInt() and 0xFF) in 0xE0..0xEF && !isMpf(jpeg, at)) {
                 val len = ((jpeg[at + 2].toInt() and 0xFF) shl 8) or (jpeg[at + 3].toInt() and 0xFF)
                 at += 2 + len
             }
@@ -205,6 +207,11 @@ data class Atmosphere(
             out.write(jpeg, at, jpeg.size - at)
             return out.toByteArray()
         }
+
+        /** True for the APP2 segment at [at] that holds the MPF index ("MPF\0"), which locates an Ultra HDR glow map. */
+        private fun isMpf(jpeg: ByteArray, at: Int): Boolean =
+            at + 8 <= jpeg.size && (jpeg[at + 1].toInt() and 0xFF) == 0xE2 &&
+                jpeg[at + 4] == 'M'.code.toByte() && jpeg[at + 5] == 'P'.code.toByte() && jpeg[at + 6] == 'F'.code.toByte() && jpeg[at + 7] == 0.toByte()
 
         /** The atmosphere note inside a JPEG, if it has one. Reads only the file's opening segments. */
         fun readNote(context: Context, uri: Uri): Atmosphere? = runCatching {

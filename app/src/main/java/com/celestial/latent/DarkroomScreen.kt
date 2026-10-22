@@ -125,6 +125,11 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
     var saturationMap by remember { mutableStateOf(ExposureMaps.load(context, source, ExposureMaps.SATURATION)) }
     // ...and whether it is printed on lith paper, and how (63a, PRINT's LITH step)
     var lithLook by remember { mutableStateOf(com.celestial.latent.develop.LithLooks.load(context, source)) }
+    // ...and how far its brightest lights glow on HDR screens (78a): Settings' starting value until it is moved
+    var hdrGlow by remember { mutableStateOf(com.celestial.latent.develop.HdrGlows.load(context, source)) }
+    var hdrGlowTouched by remember { mutableStateOf(false) }
+    // 78a: the window switched to HDR, so the preview shows the glow (only while asked, only in the darkroom)
+    var hdrView by remember { mutableStateOf(false) }
     // ...and where its ground is wet, and how (64a, PRINT's WET step)
     var wetMap by remember { mutableStateOf(ExposureMaps.load(context, source, ExposureMaps.WET)) }
     var wetLook by remember { mutableStateOf(com.celestial.latent.develop.WetLooks.load(context, source)) }
@@ -208,6 +213,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                 q.engineLane.acquire(); true          // wait for our turn; never run two engines at once
             }
             var cropped: Develop.Source? = null
+            var glowUsed = 0f
             try {
                 // The cache key covers the stages that alter the decoded pixels, so a change to
                 // colour noise or the fast diffusion re-decodes instead of being ignored.
@@ -223,9 +229,14 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                 val sat = saturationMap?.let { if (cropFraction < 1f) it.centreCrop(cropFraction) else it }
                 val lithFrame = if (cropFraction < 1f) (1f - cropFraction) / 2f else 0f
                 val (bytes, _) = Develop.render(context, target, r, preview = true, exposureMap = map, softenMask = softenMap, saturationMap = sat,
-                    lith = lithLook, lithFrame = if (lithFrame > 0f) com.celestial.latent.develop.Region(lithFrame, lithFrame, 1f - lithFrame, 1f - lithFrame) else null) { m -> status = m }
+                    lith = lithLook, lithFrame = if (lithFrame > 0f) com.celestial.latent.develop.Region(lithFrame, lithFrame, 1f - lithFrame, 1f - lithFrame) else null,
+                    hdrGlow = if (hdrView) hdrGlow.also { glowUsed = it } else 0f) { m -> status = m }
                 lastRenderMs = ((System.nanoTime() - t0) / 1_000_000).toInt()
-                val got = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                // 78a: the glow slider may have moved while this developed: shown at its strength now
+                val got = BitmapFactory.decodeByteArray(bytes, 0, bytes.size).let { b ->
+                    val g = hdrGlow
+                    if (hdrView && g != glowUsed && com.celestial.latent.develop.HdrGlow.has(b)) com.celestial.latent.develop.HdrGlow.retuned(b, g) else b
+                }
                 // The quick pass is only the centre: shown at its real size and place over the last
                 // whole preview, not stretched to fill the box (which read as a zoom in and back out).
                 preview = if (cropFraction < 1f) inPlace(got, lastFull ?: preview?.takeIf { !previewIsPartial }, cropFraction)
@@ -281,7 +292,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
             Develop.cropRegion(whole, region).use { part ->
                 val (bytes, _) = Develop.render(context, part, r.copy(previewMaxSize = edge), preview = true,
                     exposureMap = masks.dodge?.crop(region), softenMask = masks.soften, saturationMap = masks.saturation?.crop(region),
-                    lith = masks.lith, lithFrame = region)
+                    lith = masks.lith, lithFrame = region, hdrGlow = if (hdrView) hdrGlow else 0f)
                 BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
             }
         } catch (t: Throwable) {
@@ -351,6 +362,22 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { com.celestial.latent.develop.LithLooks.save(context, source, l) }
         if (!printing && src != null) render(fast = false)
     }
+    // The glow (78a), kept with the photo once moved, so a photo never touched keeps following Settings. The slider
+    // retunes the glow on screen at once (its map's shape does not depend on the strength); a develop is only
+    // needed when the picture on screen has no glow to retune.
+    LaunchedEffect(hdrGlow) {
+        delay(400)
+        val g = hdrGlow
+        if (hdrGlowTouched) kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { com.celestial.latent.develop.HdrGlows.save(context, source, g) }
+        if (hdrView && !printing && src != null && g >= 0.125f && !com.celestial.latent.develop.HdrGlow.has(preview)) render(fast = false)
+    }
+    // HDR view on or off: the window's mode, and a preview with (or without) its glow
+    LaunchedEffect(hdrView) {
+        com.celestial.latent.develop.HdrGlow.setWindowHdr(context, hdrView)
+        if (!printing && src != null) render(fast = false)
+    }
+    // leaving the darkroom always gives the app its ordinary window back
+    DisposableEffect(Unit) { onDispose { com.celestial.latent.develop.HdrGlow.setWindowHdr(context, false) } }
     // The same for the soften mask. Kept even when all sharp: that is a choice, not "untouched".
     LaunchedEffect(softenMap) {
         delay(400)
@@ -459,7 +486,8 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
             (if (raysLook.placed) " · LIGHT" else "") +
             (if (com.celestial.latent.develop.Wet.wanted(wetMap)) " · WET" else "") +
             (if (com.celestial.latent.develop.Rain.wanted(wetLook.window)) " · RAIN ON GLASS" else "") +
-            (if (lithLook.on) " · LITH" else "")
+            (if (lithLook.on) " · LITH" else "") +
+            (if (com.celestial.latent.develop.HdrGlow.wanted(hdrGlow, lithLook)) " · ULTRA HDR ${com.celestial.latent.develop.HdrGlow.label(hdrGlow)}" else "")
     }
 
     /** The full-size print (75b: started from the DEVELOP tab, in SIMPLE/FULL and in PRINT alike). */
@@ -470,6 +498,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
             context, source, isRaw, recipe, upscale = printSize, exposureMap = exposureMap, softenMask = softenMap, pairFirst = pairFirst, framing = framing,
             fogMask = fogMap, fogLook = fogLook, raysMask = raysMap, raysLook = raysLook, extraLights = extraLights, depthSplit = depthSplit,
             saturationMap = saturationMap, lith = lithLook, wetMask = wetMap, wetLook = wetLook, rainMask = rainMap,
+            hdrGlow = hdrGlow,
             onStatus = { m ->
                 status = "full size: $m"
                 if (m.startsWith("failed")) fullError =
@@ -482,7 +511,9 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                 if (out != null) {
                     fullError = null
                     status = "saved to DCIM/Latent"
-                    val b = runCatching { context.contentResolver.loadThumbnail(out, android.util.Size(1600, 1600), null) }.getOrNull()
+                    // 78a: in HDR view, the saved file itself (a thumbnail would drop its glow)
+                    val b = (if (hdrView) com.celestial.latent.develop.HdrGlow.decodeSmall(context, out, 1600) else null)
+                        ?: runCatching { context.contentResolver.loadThumbnail(out, android.util.Size(1600, 1600), null) }.getOrNull()
                     if (b != null) { preview = b; previewIsPartial = false; lastFull = b }
                 }
             },
@@ -517,6 +548,40 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
         }
         Note(if (printSize > 1f) "Finer grain at the larger size, no new detail; about ${"%.1f".format(printSize * printSize)}× as long to develop."
             else "The photo's own size. Larger sizes keep the grain fine instead of enlarging it.")
+        // 78a: Ultra HDR glow, this photo's own; the saved JPEG is the same print with a hidden glow map behind it
+        Head("ULTRA HDR GLOW", null) {}
+        if (!com.celestial.latent.develop.HdrGlow.supported) Note("Needs Android 14 or newer. Prints are saved as plain JPEGs.")
+        else {
+            val glowOn = !lithLook.on
+            Row(Modifier.fillMaxWidth().padding(top = 6.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text("Glow in the brightest lights", color = if (glowOn) LatentColors.Text else LatentColors.Line, fontSize = 11.sp)
+                Text(if (!glowOn) "Off · lith" else com.celestial.latent.develop.HdrGlow.label(hdrGlow) + (if (hdrGlow >= 0.125f) " stops" else ""),
+                    color = if (glowOn) LatentColors.TextBright else LatentColors.Line, fontSize = 11.sp)
+            }
+            Slider(
+                value = hdrGlow.coerceIn(0f, com.celestial.latent.develop.HdrGlow.MAX_STOPS),
+                onValueChange = { v ->
+                    val snapped = Math.round(v * 4) / 4f
+                    if (snapped != hdrGlow) {
+                        Haptics.tick(context); hdrGlow = snapped; hdrGlowTouched = true
+                        // in HDR view the glow on screen follows the finger, without a new develop
+                        if (hdrView) {
+                            val p = preview
+                            val np = p?.let { com.celestial.latent.develop.HdrGlow.retuned(it, snapped) }
+                            lastFull = if (lastFull === p) np else lastFull?.let { com.celestial.latent.develop.HdrGlow.retuned(it, snapped) }
+                            preview = np
+                        }
+                    }
+                },
+                valueRange = 0f..com.celestial.latent.develop.HdrGlow.MAX_STOPS, steps = 7, enabled = glowOn,
+                colors = SliderDefaults.colors(thumbColor = LatentColors.Amber, activeTrackColor = LatentColors.Amber, inactiveTrackColor = LatentColors.Line),
+            )
+            Note(when {
+                !glowOn -> "Lith prints never glow: matte paper has no light of its own."
+                hdrGlow < 0.125f -> "Off: a plain JPEG, exactly the print."
+                else -> "Lamps and bright sky shine up to ${com.celestial.latent.develop.HdrGlow.times(hdrGlow)}× brighter than white on HDR screens; the print itself is unchanged. Tap HDR on the photo to see it. Settings sets where new photos start."
+            })
+        }
         Head("THIS DEVELOP", null) {}
         // An honest estimate before you commit, rather than an explanation mid-wait.
         Text(developSummary(), color = LatentColors.Text, fontSize = 10.sp, letterSpacing = 1.sp, lineHeight = 14.sp, modifier = Modifier.padding(vertical = 4.dp))
@@ -841,11 +906,31 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                             }
                         }
                     }
-                    Text(if (frameOpen) "FRAMING" else "FRAME", color = if (frameOpen) LatentColors.AmberInk else Color(0xE6FFFFFF), fontSize = 10.sp, letterSpacing = 1.5.sp,
-                        modifier = Modifier.align(Alignment.TopEnd).padding(10.dp).clip(RoundedCornerShape(999.dp))
-                            .background(if (frameOpen) LatentColors.Amber else Color(0x66000000))
-                            .combinedClickable(onClick = { Haptics.tick(context); frameOpen = !frameOpen })
-                            .padding(horizontal = 10.dp, vertical = 4.dp))
+                    Row(Modifier.align(Alignment.TopEnd).padding(10.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        // 78a: see the Ultra HDR glow while editing (Android 14+): the window turns HDR only while this is on
+                        if (com.celestial.latent.develop.HdrGlow.supported && !frameOpen) Text("HDR", color = if (hdrView) LatentColors.AmberInk else Color(0xE6FFFFFF), fontSize = 10.sp, letterSpacing = 1.5.sp,
+                            modifier = Modifier.clip(RoundedCornerShape(999.dp))
+                                .background(if (hdrView) LatentColors.Amber else Color(0x66000000))
+                                .combinedClickable(onClick = { Haptics.tick(context); hdrView = !hdrView })
+                                .padding(horizontal = 10.dp, vertical = 4.dp))
+                        Text(if (frameOpen) "FRAMING" else "FRAME", color = if (frameOpen) LatentColors.AmberInk else Color(0xE6FFFFFF), fontSize = 10.sp, letterSpacing = 1.5.sp,
+                            modifier = Modifier.clip(RoundedCornerShape(999.dp))
+                                .background(if (frameOpen) LatentColors.Amber else Color(0x66000000))
+                                .combinedClickable(onClick = { Haptics.tick(context); frameOpen = !frameOpen })
+                                .padding(horizontal = 10.dp, vertical = 4.dp))
+                    }
+                    // why nothing glows, when HDR view is on and something stops it
+                    if (hdrView && !frameOpen) {
+                        val why = when {
+                            lithLook.on -> "lith prints never glow"
+                            hdrGlow < 0.125f -> "glow is Off for this photo · DEVELOP tab"
+                            !com.celestial.latent.develop.HdrGlow.screenCan(context) -> "this screen does not report HDR"
+                            else -> null
+                        }
+                        if (why != null) Text(why, color = Color(0xE6FFFFFF), fontSize = 10.sp,
+                            modifier = Modifier.align(Alignment.TopEnd).padding(top = 40.dp, end = 10.dp).clip(RoundedCornerShape(999.dp))
+                                .background(Color(0x66000000)).padding(horizontal = 10.dp, vertical = 3.dp))
+                    }
 
                     if (!rendering && !fullRunning && preview == null) Text(if (status.isEmpty()) "no preview yet" else status, color = LatentColors.Text, fontSize = 11.sp, modifier = Modifier.align(Alignment.Center).padding(24.dp))
                     Text(if (comparing) "ORIGINAL" else (Develop.FILMS.firstOrNull { it.first == recipe.film }?.second?.uppercase() ?: recipe.film),
@@ -1468,5 +1553,7 @@ private fun inPlace(part: Bitmap, under: Bitmap?, fraction: Float): Bitmap {
     else c.drawColor(android.graphics.Color.BLACK)
     val left = (w - part.width) / 2; val top = (h - part.height) / 2
     c.drawBitmap(part, null, android.graphics.Rect(left, top, left + part.width, top + part.height), paint)
+    // 78a: and their glows laid the same way, so HDR view does not flicker while a control moves
+    runCatching { com.celestial.latent.develop.HdrGlow.inPlace(out, part, under, fraction) }
     return out
 }
