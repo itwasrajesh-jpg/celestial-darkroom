@@ -75,6 +75,10 @@ private const val FINE_EDGE = 640       // the size the engine's own editor uses
 private const val DECODE_EDGE = 1200    // the RAW is decoded once at this size for the darkroom
 private const val DETAIL_EDGE = 2400    // ...and at this size, the first time you zoom in, for real detail
 
+/** 79a: a fast shot's lens crop keeps only the middle, so it is decoded that much larger to stay as sharp. */
+private fun decodeEdge(edge: Int, framing: com.celestial.latent.develop.Framing): Int =
+    if (framing.zoomed) (edge * framing.zoom.coerceAtMost(2f)).toInt() else edge
+
 private val TABS = listOf(
     "film" to "FILM", "halation" to "HALATION", "grain" to "GRAIN", "diffusion" to "DIFFUSION",
     "camera" to "CAMERA", "enlarger" to "ENLARGER", "scanner" to "SCANNER", "glare" to "GLARE",
@@ -221,7 +225,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                 // colour noise or the fast diffusion re-decodes instead of being ignored.
                 val iso = Develop.isoOf(context, source)
                 // The working buffer belongs to the cache and is reused; never closed here.
-                src = Develop.openCached(context, source, isRaw, DECODE_EDGE, r, iso, softenMask = softenMap, pairFirst = pairFirst, framing = framing,
+                src = Develop.openCached(context, source, isRaw, decodeEdge(DECODE_EDGE, framing), r, iso, softenMask = softenMap, pairFirst = pairFirst, framing = framing,
                     fogMask = fogMap, fogLook = fogLook, raysMask = raysMap, raysLook = raysLook, extraLights = extraLights, depthSplit = depthSplit,
                     wetMask = wetMap, wetLook = wetLook, rainMask = rainMap) { m -> status = m }
                 // Middle of the frame first on the quick pass: it appears sooner and reads the same.
@@ -264,7 +268,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
         q.engineLane.acquire()
         return try {
             val iso = Develop.isoOf(context, source)
-            val s0 = Develop.openCached(context, source, isRaw, DECODE_EDGE, r, iso, softenMask = masks.soften, pairFirst = pairFirst, framing = framing,
+            val s0 = Develop.openCached(context, source, isRaw, decodeEdge(DECODE_EDGE, framing), r, iso, softenMask = masks.soften, pairFirst = pairFirst, framing = framing,
                 fogMask = masks.fog, fogLook = fogLook,
                 raysMask = masks.rays, raysLook = if (masks.raysOn) raysLook else com.celestial.latent.develop.RaysLook(),
                 extraLights = if (masks.raysOn) extraLights else emptyList(), depthSplit = depthSplit,
@@ -286,7 +290,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
         q.engineLane.acquire()
         return try {
             val iso = Develop.isoOf(context, source)
-            val whole = Develop.openCached(context, source, isRaw, DETAIL_EDGE, r, iso, softenMask = masks.soften, pairFirst = pairFirst, framing = framing,
+            val whole = Develop.openCached(context, source, isRaw, decodeEdge(DETAIL_EDGE, framing), r, iso, softenMask = masks.soften, pairFirst = pairFirst, framing = framing,
                 fogMask = masks.fog, fogLook = fogLook,
                 raysMask = masks.rays, raysLook = if (masks.raysOn) raysLook else com.celestial.latent.develop.RaysLook(),
                 extraLights = if (masks.raysOn) extraLights else emptyList(), depthSplit = depthSplit,
@@ -776,13 +780,13 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                     sampleScene = { u, v ->
                         val q = com.celestial.latent.develop.DevelopQueue
                         q.engineLane.acquire()
-                        try { Develop.sampleScene(context, source, isRaw, DECODE_EDGE, pairFirst, framing, u, v) }
+                        try { Develop.sampleScene(context, source, isRaw, decodeEdge(DECODE_EDGE, framing), pairFirst, framing, u, v) }
                         catch (t: Throwable) { null } finally { q.engineLane.release() }
                     },
                     readAir = { near, w, h ->
                         val q = com.celestial.latent.develop.DevelopQueue
                         q.engineLane.acquire()
-                        try { Develop.readAir(context, source, isRaw, DECODE_EDGE, pairFirst, framing, near, w, h) }
+                        try { Develop.readAir(context, source, isRaw, decodeEdge(DECODE_EDGE, framing), pairFirst, framing, near, w, h) }
                         catch (t: Throwable) { android.util.Log.e("Latent", "air: could not read the photo", t); null }
                         finally { q.engineLane.release() }
                     },
@@ -845,7 +849,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                         val f = framing
                         if (originalFraming != f.key()) Thread {
                             val plain = originalPlain ?: plainBefore(context, source, isRaw)
-                                ?.let { uprightBefore(context, it, source, isRaw, Develop.openedSize(source, isRaw, DECODE_EDGE, pairFirst)) }
+                                ?.let { uprightBefore(context, it, source, isRaw, Develop.openedSize(source, isRaw, decodeEdge(DECODE_EDGE, framing), pairFirst)) }
                                 ?.also { originalPlain = it }
                             if (plain != null) {
                                 original = runCatching { com.celestial.latent.develop.Framings.frameBitmap(plain, f) }.getOrNull()
@@ -975,6 +979,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                     onCommit = { commitFrame(it) },
                     onDone = { frameOpen = false; liveStraighten = null },
                     modifier = Modifier.fillMaxWidth().weight(1f - photoWeight),
+                    shotCrop = remember(source) { com.celestial.latent.develop.Framings.shotCrop(context, source) },
                 ) else Column(
                     Modifier.fillMaxWidth().weight(1f - photoWeight).clip(RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)).background(Color(0xFF1D1D1B))
                 ) {

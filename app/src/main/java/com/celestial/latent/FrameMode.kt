@@ -43,6 +43,8 @@ fun FramePanel(
     onCommit: (Framing) -> Unit,
     onDone: () -> Unit,
     modifier: Modifier = Modifier,
+    /** 79a: the lens crop this photo was shot with in Fast shot (how much closer, focal length), or null. */
+    shotCrop: Pair<Float, Int>? = null,
 ) {
     val context = LocalContext.current
     val angle = live ?: framing.straighten
@@ -58,6 +60,16 @@ fun FramePanel(
             FrameChip("↻ right") { onCommit(framing.copy(turns = framing.turns + 1)) }
             FrameChip("flip", on = framing.flip) { onCommit(framing.copy(flip = !framing.flip)) }
             FrameChip("reset", enabled = !framing.isIdentity) { onCommit(Framing()) }
+        }
+        // 79a: a fast shot prints at its focal length; the whole frame the lens saw is still in the RAW
+        if (shotCrop != null) {
+            Row(Modifier.fillMaxWidth().padding(top = 14.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Text("fast shot", color = LatentColors.Text, fontSize = 12.sp)
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    FrameChip("${shotCrop.second} mm", on = framing.zoomed) { onCommit(framing.copy(zoom = shotCrop.first)) }
+                    FrameChip("whole frame", on = !framing.zoomed) { onCommit(framing.copy(zoom = 1f)) }
+                }
+            }
         }
         // straighten
         Row(Modifier.fillMaxWidth().padding(top = 14.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {

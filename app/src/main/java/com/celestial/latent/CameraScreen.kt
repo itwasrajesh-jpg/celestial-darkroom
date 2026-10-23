@@ -71,6 +71,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import com.celestial.latent.camera.CameraController
 import com.celestial.latent.camera.ControlMath
 import com.celestial.latent.camera.Controls
+import com.celestial.latent.camera.FastShot
 import com.celestial.latent.camera.Lens
 import com.celestial.latent.camera.Lenses
 import com.celestial.latent.camera.LiveReadout
@@ -166,10 +167,15 @@ fun CameraScreen(
                 // framing) already comes out the right way up and the right shape.
                 val cine = single && liveSettings.cinema
                 val turnNow = if (liveSettings.autoRotate) deviceTurns else 0
-                if (single && (turnNow != 0 || cine)) {
+                // 79a: a fast shot's crop (35 mm from the 23 mm main...) goes into its framing the same way
+                val fast = FastShot.savedCrops.remove(uri.toString())
+                val lensCrop = if (single) fast?.first ?: 1f else 1f
+                if (single && (turnNow != 0 || cine || lensCrop > 1.001f)) {
                     com.celestial.latent.develop.Framings.save(context, uri, com.celestial.latent.develop.Framing(
-                        turns = turnNow, aspect = if (cine) liveSettings.cinemaAspect else 0f, bars = cine && liveSettings.cinemaBars))
+                        turns = turnNow, aspect = if (cine) liveSettings.cinemaAspect else 0f, bars = cine && liveSettings.cinemaBars,
+                        zoom = lensCrop))
                 }
+                if (single && fast != null && fast.first > 1.001f) com.celestial.latent.develop.Framings.saveShotCrop(context, uri, fast.first, fast.second)
                 // The recipe this shot develops with. A cinema shot keeps its own, so the darkroom
                 // and the roll develop it as it was shot, and the shared recipe never turns Vision3.
                 val shotRecipe = com.celestial.latent.develop.Recipes.current(context)
@@ -320,7 +326,8 @@ fun CameraScreen(
     }
 
     // Any of these changes the streams or the session tags: push them, then let the controller rebuild if needed.
-    LaunchedEffect(settings.cameraPath, settings.opmode, settings.opmodeLens, settings.vendorTags, settings.saveJpeg, settings.inSensorZoomJpeg, settings.teleZoomDirect, settings.dcgTest) {
+    LaunchedEffect(settings.cameraPath, settings.opmode, settings.opmodeLens, settings.vendorTags, settings.saveJpeg, settings.inSensorZoomJpeg, settings.teleZoomDirect, settings.dcgTest, settings.fastShot) {
+        controller.fastShot = settings.fastShot
         controller.cameraPath = settings.cameraPath
         controller.opmode = settings.opmode
         controller.vendorTags = settings.vendorTags.map { CameraController.VendorTagSpec(it.name, it.scope, it.type, it.value, it.lens) }
@@ -351,6 +358,32 @@ fun CameraScreen(
 
     // Session-affecting toggles need a rebuild: reopen the same lens.
     fun reopen() { surfaceRef?.let { surf -> controller.open(lens, surf) } }
+
+    // 79a Fast shot: a focal length is a lens (switched to if need be), maybe its in-sensor ×2, a crop
+    // recorded with each shot, and the snap focus. Your shutter survives the change; ISO goes back to auto.
+    fun goFocal(f: Int, snap: Float = settings.fastSnap) {
+        val plan = FastShot.plan(f) ?: return
+        controller.fastCrop = plan.crop; controller.fastFocal = f
+        val c = controls.copy(iso = null, zoom = plan.zoom, focusDiopters = FastShot.snapDiopters(snap), locked = false)
+        if (plan.lens != lens) {
+            lens = plan.lens; controls = c
+            val surf = surfaceRef
+            if (surf != null) controller.openWith(plan.lens, surf, c) else controller.setControls(c)
+            onLensChanged(plan.lens)
+        } else push(c)
+    }
+    var wasFast by remember { mutableStateOf(false) }
+    LaunchedEffect(settings.fastShot) {
+        if (settings.fastShot) {
+            val f = settings.fastFocal.takeIf { FastShot.plan(it) != null } ?: FastShot.available().firstOrNull()
+            if (f != null) goFocal(f)
+        } else if (wasFast) {
+            // back to the camera as it was: the lens's own view, autofocus
+            controller.fastCrop = 1f; controller.fastFocal = 0
+            push(controls.copy(zoom = 1f, focusDiopters = null))
+        }
+        wasFast = settings.fastShot
+    }
 
     Column(Modifier.fillMaxSize().background(LatentColors.Background).statusBarsPadding().navigationBarsPadding()) {
 
@@ -460,6 +493,28 @@ fun CameraScreen(
                     drawLine(line, androidx.compose.ui.geometry.Offset(x0 + band, 0f), androidx.compose.ui.geometry.Offset(x0 + band, size.height), 1.5f)
                 }
             }
+            // 79a Fast shot: the focal length's frame, rangefinder style: thin corner lines, the view outside
+            // dimmed, so what is about to walk in is already in sight.
+            if (settings.fastShot) FastShot.plan(settings.fastFocal)?.let { plan ->
+                Canvas(Modifier.fillMaxSize()) {
+                    val fw = size.width / plan.crop; val fh = size.height / plan.crop
+                    val x0 = (size.width - fw) / 2f; val y0 = (size.height - fh) / 2f
+                    if (plan.crop > 1.001f) {
+                        val shade = Color(0x8C000000)
+                        drawRect(shade, Offset.Zero, androidx.compose.ui.geometry.Size(size.width, y0))
+                        drawRect(shade, Offset(0f, y0 + fh), androidx.compose.ui.geometry.Size(size.width, size.height - y0 - fh))
+                        drawRect(shade, Offset(0f, y0), androidx.compose.ui.geometry.Size(x0, fh))
+                        drawRect(shade, Offset(x0 + fw, y0), androidx.compose.ui.geometry.Size(size.width - x0 - fw, fh))
+                    }
+                    val line = Color(0xEEF1EFE8); val arm = 22.dp.toPx(); val sw = 1.5.dp.toPx()
+                    val inset = if (plan.crop > 1.001f) 0f else 6.dp.toPx()
+                    val l = x0 + inset; val t = y0 + inset; val r = x0 + fw - inset; val b = y0 + fh - inset
+                    for ((cx, cy, dx, dy) in listOf(listOf(l, t, 1f, 1f), listOf(r, t, -1f, 1f), listOf(l, b, 1f, -1f), listOf(r, b, -1f, -1f))) {
+                        drawLine(line, Offset(cx, cy), Offset(cx + dx * arm, cy), sw)
+                        drawLine(line, Offset(cx, cy), Offset(cx, cy + dy * arm), sw)
+                    }
+                }
+            }
             // Double exposure, top right: hold the last frame, or show that one is held (× winds on).
             val heldFrame = pendingFirst
             if (heldFrame != null || lastSingleRaw != null) {
@@ -490,7 +545,9 @@ fun CameraScreen(
             val filmsLift by androidx.compose.animation.core.animateDpAsState(if (filmsFolded) 0.dp else 32.dp, label = "films")
             // 76a: each on a small see-through dark pill, so it reads over a bright scene as well as a dark one
             Column(Modifier.align(Alignment.TopStart).padding(12.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                Text(if (settings.saveJpeg) "RAW + JPG · 12.5M" else "RAW · 12.5M", color = LatentColors.TextBright, fontSize = 10.sp, letterSpacing = 1.sp, modifier = Modifier.onPicture())
+                val fastPlan = if (settings.fastShot) FastShot.plan(settings.fastFocal) else null
+                Text(if (fastPlan != null) "RAW · ${fastPlan.focal} MM · ${String.format(java.util.Locale.US, "%.1f", fastPlan.megapixels())}M"
+                    else if (settings.saveJpeg) "RAW + JPG · 12.5M" else "RAW · 12.5M", color = LatentColors.TextBright, fontSize = 10.sp, letterSpacing = 1.sp, modifier = Modifier.onPicture())
                 if (settings.cinema) Text(Cinema.label(settings), color = LatentColors.Amber, fontSize = 10.sp, letterSpacing = 1.sp, modifier = Modifier.onPicture())
                 // Says plainly what the live image is and is not, without crowding the frame.
                 if (settings.filmPreview) Text(
@@ -506,8 +563,9 @@ fun CameraScreen(
                 )
             }
             val modes = listOfNotNull(
-                if (settings.inSensorZoomJpeg && Lenses.isXiaomi15Ultra && controls.zoom > 1.001f) "ISZ" else null,
-                if (settings.dcgTest && Lenses.isXiaomi15Ultra && lens.physicalId == Lenses.MAIN_ID && controls.zoom <= 1.001f) "DCG" else null,
+                if (settings.fastShot) "FAST SHOT" else null,
+                if (settings.inSensorZoomJpeg && Lenses.isXiaomi15Ultra && controls.zoom > 1.001f && !settings.fastShot) "ISZ" else null,
+                if (settings.dcgTest && !settings.fastShot && Lenses.isXiaomi15Ultra && lens.physicalId == Lenses.MAIN_ID && controls.zoom <= 1.001f) "DCG" else null,
                 if (settings.burstMode) "BURST" else null, if (settings.focusStack) "FOCUS STACK" else null, if (settings.timerSeconds > 0) "${settings.timerSeconds}S" else null,
             )
             val tagLabels = remember(settings.vendorTags, lens) { if (controller.hasCharacteristics) controller.activeTagLabels() else emptyList() }
@@ -516,9 +574,11 @@ fun CameraScreen(
             if (controls.locked) Text("AE/AF LOCK", color = LatentColors.AmberInk, fontSize = 11.sp, letterSpacing = 1.sp,
                 modifier = Modifier.align(Alignment.TopCenter).padding(8.dp).clip(RoundedCornerShape(999.dp)).background(LatentColors.Amber).padding(horizontal = 10.dp, vertical = 4.dp))
             if (countdown > 0) Text("$countdown", color = LatentColors.TextBright, fontSize = 64.sp, modifier = Modifier.align(Alignment.Center))
-            Text((if (lens.mm >= 70) "TELE" else lens.name.uppercase()) + " · ${lens.mm} MM" + (if (readout.afState.isNotEmpty()) " · AF ${readout.afState.uppercase()}" else ""),
+            Text(if (settings.fastShot) "${settings.fastFocal} MM FROM ${lens.name.uppercase()}" + (if (readout.fast.isNotEmpty()) " · ${readout.fast}" else "")
+                else (if (lens.mm >= 70) "TELE" else lens.name.uppercase()) + " · ${lens.mm} MM" + (if (readout.afState.isNotEmpty()) " · AF ${readout.afState.uppercase()}" else ""),
                 color = LatentColors.TextBright, fontSize = 10.sp, letterSpacing = 1.sp, modifier = Modifier.align(Alignment.BottomStart).padding(start = 12.dp, bottom = 100.dp + filmsLift).onPicture())
             val zoomNote = when {
+                settings.fastShot -> ""
                 controls.zoom == 4f -> "×4 ON"
                 controls.zoom == 2f -> "×2 ON"
                 else -> ""
@@ -527,11 +587,36 @@ fun CameraScreen(
                 modifier = Modifier.align(Alignment.BottomEnd).padding(end = 12.dp, bottom = 100.dp + filmsLift).onPicture())
             // ×4 reads the sensor's tiny pixels one by one: noisy in dim light, and a burst cleans it up.
             // Its own line, centred above the labels — beside them it would run into the lens label.
-            if (controls.zoom == 4f) Text("best in bright light · hold the shutter for a burst", color = LatentColors.Amber, fontSize = 10.sp,
+            if (controls.zoom == 4f && !settings.fastShot) Text("best in bright light · hold the shutter for a burst", color = LatentColors.Amber, fontSize = 10.sp,
                 modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 128.dp + filmsLift).onPicture())
             // Lens row floating on the image: plain numbers, active one larger; ×2 multiplies the current lens.
             // 76a: on one see-through dark pill, the chosen lens in a light circle, so it reads over any scene
-            Row(Modifier.align(Alignment.BottomCenter).padding(bottom = 52.dp + filmsLift).clip(RoundedCornerShape(999.dp)).background(PICTURE_PILL)
+            if (settings.fastShot) Row(Modifier.align(Alignment.BottomCenter).padding(bottom = 52.dp + filmsLift).clip(RoundedCornerShape(999.dp)).background(PICTURE_PILL)
+                .padding(horizontal = 4.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                // 79a: the focal lengths instead of the lenses, the chosen one in a light circle, then snap focus
+                FastShot.available().forEach { f ->
+                    val on = f == settings.fastFocal
+                    Text("$f", color = if (on) LatentColors.Background else LatentColors.TextBright, fontSize = if (on) 13.sp else 12.sp,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                        modifier = Modifier.then(if (on) Modifier.clip(CircleShape).background(LatentColors.TextBright).size(36.dp).wrapContentHeight(Alignment.CenterVertically) else Modifier)
+                            .combinedClickable(onClick = {
+                                if (!on) { Haptics.tick(context); onSettingsChange(settings.copy(fastFocal = f)); goFocal(f) }
+                            }).then(if (on) Modifier else Modifier.padding(horizontal = 8.dp, vertical = 6.dp)))
+                }
+                Spacer(Modifier.width(6.dp))
+                val snapOn = controls.focusDiopters != null
+                val snapD = FastShot.snapDiopters(settings.fastSnap)
+                // the snap distance, or, after the focus slider moved it, where it really is
+                Text(if (!snapOn) "AF" else if (snapD != null && kotlin.math.abs(controls.focusDiopters!! - snapD) < 0.001f) FastShot.snapLabel(settings.fastSnap) else focusLabel(controls.focusDiopters!!), color = if (snapOn) LatentColors.AmberInk else LatentColors.Amber, fontSize = 11.sp,
+                    modifier = Modifier.padding(end = 4.dp).clip(RoundedCornerShape(999.dp)).background(if (snapOn) LatentColors.Amber else Color.Transparent).border(0.5.dp, LatentColors.Amber, RoundedCornerShape(999.dp))
+                        .combinedClickable(onClick = {
+                            Haptics.tick(context)
+                            // from autofocus (or a tap that went back to it) the cycle starts at 1 m
+                            val next = if (!snapOn) FastShot.SNAPS[1] else FastShot.nextSnap(settings.fastSnap)
+                            onSettingsChange(settings.copy(fastSnap = next))
+                            push(controls.copy(focusDiopters = FastShot.snapDiopters(next)))
+                        }).padding(horizontal = 9.dp, vertical = 3.dp))
+            } else Row(Modifier.align(Alignment.BottomCenter).padding(bottom = 52.dp + filmsLift).clip(RoundedCornerShape(999.dp)).background(PICTURE_PILL)
                 .padding(horizontal = 4.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                 Lenses.ALL.forEach { l ->
                     val on = l == lens
@@ -598,13 +683,12 @@ fun CameraScreen(
                         Tile("Portrait / Night", false, Modifier.weight(1f)) { drawerOpen = false; onOpenExtension() }
                         Tile("All settings", false, Modifier.weight(1f)) { drawerOpen = false; onOpenSettings() }
                     }
-                    // DCG: the main lens's cleaner-shadow sensor mode (Xiaomi 15 Ultra only).
-                    if (Lenses.isXiaomi15Ultra) {
-                        Spacer(Modifier.height(6.dp))
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Tile("DCG · main lens", settings.dcgTest, Modifier.weight(1f)) { onSettingsChange(settings.copy(dcgTest = it)) }
-                            Spacer(Modifier.weight(1f))
-                        }
+                    // DCG: the main lens's cleaner-shadow sensor mode (Xiaomi 15 Ultra only). 79a: Fast shot beside it.
+                    Spacer(Modifier.height(6.dp))
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Tile("Fast shot\n28–135 mm", settings.fastShot, Modifier.weight(1f)) { onSettingsChange(settings.copy(fastShot = it)) }
+                        if (Lenses.isXiaomi15Ultra) Tile("DCG · main lens" + if (settings.fastShot) "\n(off in fast shot)" else "", settings.dcgTest, Modifier.weight(1f)) { onSettingsChange(settings.copy(dcgTest = it)) }
+                        else Spacer(Modifier.weight(1f))
                     }
                     // Cinema: a motion-picture film and print, a Super 35 frame, a widescreen crop.
                     Spacer(Modifier.height(6.dp))
@@ -646,7 +730,9 @@ fun CameraScreen(
         val fStr = if (controls.focusDiopters == null) "AF" else focusLabel(controls.focusDiopters!!)
         Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp)) {
             StripCell("EV", evStr, false, selected == Cell.EV, controls.manualExposure, Modifier.weight(1f)) { selected = if (selected == Cell.EV) null else Cell.EV }
-            StripCell("S", sStr, controls.shutterNs == null, selected == Cell.S, false, Modifier.weight(1f)) { selected = if (selected == Cell.S) null else Cell.S }
+            // 79a: in fast shot an untouched shutter is the motion's choice, not the phone's
+            val fastAuto = settings.fastShot && controls.shutterNs == null && readout.fast.startsWith("MOTION")
+            StripCell(if (fastAuto) "S · MOTION" else "S", sStr, controls.shutterNs == null && !fastAuto, selected == Cell.S, false, Modifier.weight(1f)) { selected = if (selected == Cell.S) null else Cell.S }
             StripCell("ISO", isoStr, controls.iso == null, selected == Cell.ISO, false, Modifier.weight(1f)) { selected = if (selected == Cell.ISO) null else Cell.ISO }
             StripCell("WB", wbStr, controls.kelvin == null, selected == Cell.WB, false, Modifier.weight(1f)) { selected = if (selected == Cell.WB) null else Cell.WB }
             StripCell("FOCUS", fStr, false, selected == Cell.F, false, Modifier.weight(1f)) { selected = if (selected == Cell.F) null else Cell.F }
