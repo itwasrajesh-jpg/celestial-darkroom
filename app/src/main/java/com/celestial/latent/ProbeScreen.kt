@@ -100,6 +100,15 @@ fun ProbeScreen(settings: AppSettings, onBack: () -> Unit) {
             Btn("Quality probe (DCG/HDR/routing)", !running) {
                 run { probe.qualityProbe(settings.cameraPath, lens) { p -> progress = p } }
             }
+            // 80a proof: zero lag in normal mode (saves pairs of DNGs to Pictures/Latent probe)
+            Btn("Zero lag A/B on ${settings.cameraPath}/${lens.physicalId}", !running) {
+                run { probe.zeroLagTest(settings.cameraPath, lens, 1) { p -> progress = p } }
+            }
+            for (z in listOf(2, 4)) if (Lenses.sensorZoomMode(lens, z.toFloat()) != null) {
+                Btn("Zero lag A/B at in-sensor ×$z", !running) {
+                    run { probe.zeroLagTest(settings.cameraPath, lens, z) { p -> progress = p } }
+                }
+            }
         }
         if (progress.isNotEmpty()) { Spacer(Modifier.height(8.dp)); Text(progress, color = LatentColors.Amber, fontSize = 12.sp) }
         Spacer(Modifier.height(12.dp))
