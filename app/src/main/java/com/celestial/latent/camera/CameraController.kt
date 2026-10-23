@@ -917,7 +917,9 @@ class CameraController(
         if (ready.isEmpty()) { status("One moment: the camera is still starting"); return }
         val pick = if (realtime) ready.minByOrNull { Math.abs(it.timestamp - (pressNs - 80_000_000L)) }!! else ready.last()
         zsl.remove(pick)
-        val meta = metaFor(zslResults[pick.timestamp]!!)
+        // read everything off the frame before it goes back to the camera: an Image is unusable once closed
+        val pickTs = pick.timestamp
+        val meta = metaFor(zslResults[pickTs]!!)
         val w = pick.width; val h = pick.height
         val bb = java.nio.ByteBuffer.allocateDirect(w * h * 2).order(java.nio.ByteOrder.nativeOrder())
         try {
@@ -929,7 +931,7 @@ class CameraController(
         busy = true
         val name = fileBase() + ".dng"
         val chars = physChars; val lensNow = lens; val crop = fastCrop; val focal = fastFocal
-        val lagMs = if (realtime) (pressNs - pick.timestamp) / 1_000_000 else -1
+        val lagMs = if (realtime) (pressNs - pickTs) / 1_000_000 else -1
         zslWriter.execute {
             try {
                 val t = System.nanoTime()
