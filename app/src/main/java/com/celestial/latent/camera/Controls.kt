@@ -28,6 +28,8 @@ data class LiveReadout(
     val focusDiopters: Float = 0f,
     val kelvinEstimate: Int = 0,
     val afState: String = "",
+    /** 79a fast shot: what picked the shutter ("MOTION 1/250", "YOUR 1/1000", "DIM", "METERING"), or "" when off. */
+    val fast: String = "",
 )
 
 object ControlMath {

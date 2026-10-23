@@ -68,6 +68,15 @@ data class AppSettings(
      * film, lower, because Vision3 and Verita carry rem-jet (Akshay's datasheet correction).
      */
     val trueCinemaGlow: Boolean = false,
+    /**
+     * 79a Fast shot: fixed focal lengths (28-135 mm) made from the real lenses and a recorded crop, frame
+     * lines in the viewfinder, a shutter picked from the motion, the frame from the moment the shutter is
+     * pressed, and snap focus. Off: the camera is exactly as before.
+     */
+    val fastShot: Boolean = false,
+    val fastFocal: Int = 35,
+    /** Snap focus distance in metres; 0 = autofocus, -1 = infinity. */
+    val fastSnap: Float = 3f,
 ) {
     companion object {
         const val ANTIBANDING_OFF = 0
@@ -112,6 +121,9 @@ data class AppSettings(
                 cinemaBars = p.getBoolean("cinemaBars", false),
                 cinema85b = p.getBoolean("cinema85b", false),
                 trueCinemaGlow = p.getBoolean("trueCinemaGlow", false),
+                fastShot = p.getBoolean("fastShot", false),
+                fastFocal = p.getInt("fastFocal", 35),
+                fastSnap = p.getFloat("fastSnap", 3f),
             )
         }
 
@@ -149,6 +161,9 @@ data class AppSettings(
                 .putBoolean("cinemaBars", s.cinemaBars)
                 .putBoolean("cinema85b", s.cinema85b)
                 .putBoolean("trueCinemaGlow", s.trueCinemaGlow)
+                .putBoolean("fastShot", s.fastShot)
+                .putInt("fastFocal", s.fastFocal)
+                .putFloat("fastSnap", s.fastSnap)
                 .apply()
         }
     }

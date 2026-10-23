@@ -31,6 +31,11 @@ data class Framing(
     val aspect: Float = 0f,
     /** Film-still bars: the widescreen picture set in a 16:9 frame of black. Added after the print. */
     val bars: Boolean = false,
+    /**
+     * 79a: a centred crop of the same shape, as how much closer it brings the picture (1.52 = a third of
+     * each edge trimmed). Fast shot records one so a 23 mm RAW prints as 35 mm; FRAME can take it away.
+     */
+    val zoom: Float = 1f,
 ) {
     /** Quarter turns clockwise, 0..3. */
     val quarter: Int get() = ((turns % 4) + 4) % 4
@@ -38,7 +43,10 @@ data class Framing(
     private val rad get() = Math.toRadians(straighten.toDouble())
 
     /** No change to the picture's geometry (bars, which come after the print, do not count). */
-    val isIdentity: Boolean get() = k == 0 && !flip && abs(straighten) < 0.005f && aspect <= 0f
+    val isIdentity: Boolean get() = k == 0 && !flip && abs(straighten) < 0.005f && aspect <= 0f && !zoomed
+
+    /** A fast shot's lens crop is in force (79a). */
+    val zoomed: Boolean get() = zoom > 1.001f
 
     /** Bars only mean something around a widescreen crop. */
     val letterbox: Boolean get() = bars && aspect > 0f
@@ -61,7 +69,8 @@ data class Framing(
     fun outputSize(w: Int, h: Int): Pair<Int, Int> {
         val (tw, th) = turned(w, h)
         val sc = cropScale(w, h)
-        var ow = maxOf(8, floor(tw * sc).toInt()); var oh = maxOf(8, floor(th * sc).toInt())
+        val z = if (zoomed) zoom else 1f
+        var ow = maxOf(8, floor(tw * sc / z).toInt()); var oh = maxOf(8, floor(th * sc / z).toInt())
         if (aspect > 0f) {
             // along the long edge: a landscape picture gets a wide crop, a portrait one a tall one
             if (ow >= oh) { val want = floor(ow / aspect).toInt(); if (want < oh) oh = maxOf(8, want) else ow = maxOf(8, floor(oh * aspect).toInt()) }
@@ -72,12 +81,14 @@ data class Framing(
 
     /**
      * The share of the turned picture's long edge that survives framing — the share of the film's
-     * width the framed picture shows, which grain and halation are sized from.
+     * width the framed picture shows, which grain and halation are sized from. A fast shot's lens crop
+     * (79a) does not count: it stands for a longer lens on the whole film frame, not an enlargement.
      */
     fun filmShare(w: Int, h: Int): Float {
         val (tw, th) = turned(w, h)
         val (ow, oh) = outputSize(w, h)
-        return maxOf(ow, oh).toFloat() / maxOf(tw, th)
+        val z = if (zoomed) zoom else 1f
+        return (maxOf(ow, oh).toFloat() * z / maxOf(tw, th)).coerceAtMost(1f)
     }
 
     /** Where an output position comes from in the source picture (w × h). */
@@ -120,7 +131,8 @@ data class Framing(
 
     /** For the record, and for telling one framing from another. */
     fun key(): String = "$k,${if (flip) 1 else 0},${"%.2f".format(java.util.Locale.US, straighten)}," +
-        "${"%.3f".format(java.util.Locale.US, aspect)},${if (bars) 1 else 0}"
+        "${"%.3f".format(java.util.Locale.US, aspect)},${if (bars) 1 else 0}" +
+        (if (zoomed) ",${"%.4f".format(java.util.Locale.US, zoom)}" else "")
 }
 
 /**
@@ -138,16 +150,34 @@ object Framings {
     fun load(context: Context, photo: Uri): Framing {
         val v = prefs(context).getString(photo.toString(), null) ?: return Framing()
         return runCatching {
-            // older saves have three fields (turns, flip, straighten); newer add aspect and bars
+            // older saves have three fields (turns, flip, straighten); newer add aspect and bars, 79a the lens crop
             val p = v.split(",")
             Framing(p[0].toInt(), p[1] == "1", p[2].toFloat(),
-                aspect = p.getOrNull(3)?.toFloat() ?: 0f, bars = p.getOrNull(4) == "1")
+                aspect = p.getOrNull(3)?.toFloat() ?: 0f, bars = p.getOrNull(4) == "1",
+                zoom = p.getOrNull(5)?.toFloatOrNull()?.coerceIn(1f, 8f) ?: 1f)
         }.getOrDefault(Framing())
     }
 
     fun save(context: Context, photo: Uri, f: Framing) {
         prefs(context).edit().apply { if (f.isIdentity && !f.bars) remove(photo.toString()) else putString(photo.toString(), f.key()) }.apply()
     }
+
+    /**
+     * 79a: the lens crop a fast shot was taken with (how much closer, and the focal length it stands for),
+     * kept apart from the framing so FRAME can offer it back after it was taken away or reset.
+     */
+    private const val SHOT_FILE = "latent_fastshot"
+
+    fun saveShotCrop(context: Context, photo: Uri, zoom: Float, focal: Int) {
+        context.getSharedPreferences(SHOT_FILE, Context.MODE_PRIVATE).edit()
+            .putString(photo.toString(), "${"%.4f".format(java.util.Locale.US, zoom)},$focal").apply()
+    }
+
+    /** The fast-shot crop of this photo ([Framing.zoom], focal length in mm), or null for any other photo. */
+    fun shotCrop(context: Context, photo: Uri): Pair<Float, Int>? = runCatching {
+        val p = context.getSharedPreferences(SHOT_FILE, Context.MODE_PRIVATE).getString(photo.toString(), null)?.split(",") ?: return null
+        p[0].toFloat() to p[1].toInt()
+    }.getOrNull()
 
     /**
      * A mask painted under [old] framing, carried to [new] so each mark stays over the same part of

@@ -88,6 +88,29 @@ class CameraController(
      */
     @Volatile var dcgTest = false
     /**
+     * 79a Fast shot. While on: every preview frame also goes to the RAW stream and the last few are kept
+     * ([zsl]), so the shutter saves the frame of the moment it was pressed; exposure is our own
+     * ([FastShot.Exposure]) so the shutter can come from the motion ([FastShot.MotionMeter]) or from you,
+     * with ISO following; [fastCrop] / [fastFocal] are the focal length's crop, recorded with each shot.
+     */
+    @Volatile var fastShot = false
+    @Volatile var fastCrop = 1f
+    @Volatile var fastFocal = 0
+    private val zsl = ArrayDeque<Image>()
+    private val zslResults = LinkedHashMap<Long, TotalCaptureResult>()
+    /** While a burst runs, the RAW stream leaves the preview and the burst has it to itself. */
+    private var zslPaused = false
+    private val motion = FastShot.MotionMeter()
+    private val fastExposure = FastShot.Exposure()
+    private val fastSample = FloatArray(FastShot.W * FastShot.H)
+    private var fastFrames = 0
+    /** Shutter and ISO our exposure asks for now (0 while the phone's own exposure is still being learned). */
+    private var fastShutterNs = 0L
+    private var fastIso = 0
+    private var fastWhy = ""
+    /** Pixels being written for a fast shot: the saved file's crop, read by the screen when the file appears. */
+    private val zslWriter = java.util.concurrent.Executors.newSingleThreadExecutor()
+    /**
      * Which way of running DCG works. After a driver crash the next way is tried by itself, and the one
      * that works is kept for as long as the app runs (so at most one crash per launch):
      *  0 = auto exposure, held at 30 fps;
@@ -105,7 +128,9 @@ class CameraController(
     private val DCG_WHITE = 16383
     private val DCG_SKIP_BOTTOM = 512
     private var lastFocusD = 0f
-    private fun dcgOn(c: Controls = controls) = dcgTest && Lenses.isXiaomi15Ultra && lens.physicalId == Lenses.MAIN_ID && sensorMode(c) == null
+    private fun dcgOn(c: Controls = controls) = dcgTest && !fastShot && Lenses.isXiaomi15Ultra && lens.physicalId == Lenses.MAIN_ID && sensorMode(c) == null
+    /** The RAW stream runs with the preview: fast shot, and no burst in progress. */
+    private val zslRunning get() = fastShot && !zslPaused
     /** Open a tele lens directly while zoomed (stops the logical camera switching sensors). */
     @Volatile var teleZoomDirect = true
     private var jpegIsUltraHdr = false   // kept false: JPEG_R cannot share a session with RAW on tested devices
@@ -115,7 +140,7 @@ class CameraController(
     private fun sessionSignature() = listOf(
         lens.physicalId, cameraPath, activeOpmode.toString(), wantJpeg.toString(),
         allTags().joinToString { it.name + it.scope + it.type + it.value },
-        zoomedTele().toString(),
+        zoomedTele().toString(), fastShot.toString(),
     ).joinToString("|")
     private var openSignature: String? = null
     @Volatile private var opening = false
@@ -349,8 +374,11 @@ class CameraController(
     private fun startPreview() {
         val dev = device ?: return; val s = session ?: return; val prev = previewSurface ?: return
         frameCounter = 0      // so the DCG check reads a settled frame of this session
+        // 79a: a new session learns the phone's exposure again (another lens meters differently)
+        fastExposure.forget(); motion.reset(); fastShutterNs = 0L; fastIso = 0; fastFrames = 0; zslPaused = false
         val req = dev.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
             addTarget(prev)
+            if (zslRunning) rawReader?.let { addTarget(it.surface) }
             applyControls(this)
         }
         try {
@@ -363,7 +391,11 @@ class CameraController(
     private fun updatePreview() {
         val dev = device ?: return; val s = session ?: return; val prev = previewSurface ?: return
         try {
-            val req = dev.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply { addTarget(prev); applyControls(this) }
+            val req = dev.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
+                addTarget(prev)
+                if (zslRunning) rawReader?.let { addTarget(it.surface) }
+                applyControls(this)
+            }
             if (afTriggerPending) {
                 // One-shot AF trigger, then the repeating request continues without it.
                 afTriggerPending = false
@@ -388,6 +420,8 @@ class CameraController(
         if (wasZoomedTele != isZoomedTele || modeChanged || (crossedZoom && inSensorZoomJpeg)) previewSurface?.let { open(lens, it) } else updatePreview()
     }
     fun setAntibanding(mode: Int) = handler.post { antibanding = mode; updatePreview() }
+    /** A new lens and its controls together, in one open (79a: a focal length can change both at once). */
+    fun openWith(lens: Lens, surface: Surface, c: Controls) = handler.post { controls = c; open(lens, surface) }
 
     /** Viewfinder point (u right, v down, both 0..1) -> metering rectangle in sensor coordinates. */
     private fun regionFor(u: Float, v: Float): MeteringRectangle? {
@@ -448,7 +482,14 @@ class CameraController(
         // DCG: a fixed 30 fps. Way 0 lets auto exposure work inside it (so no shutter longer than 1/30 s);
         // ways 1–2 are MotionCam's manual exposure (the shutter and ISO you set, or the last auto values).
         if (dcg) b.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, Range(dcgFps, dcgFps))
-        if (c.manualExposure || (dcg && dcgAttempt >= 1)) {
+        val ownExposure = fastShot && fastExposure.learned && fastShutterNs > 0 && !(c.shutterNs != null && c.iso != null)
+        if (ownExposure) {
+            // 79a: our own exposure: the shutter from the motion (or yours), ISO to match
+            b.set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_OFF)
+            b.set(CaptureRequest.SENSOR_EXPOSURE_TIME, fastShutterNs.coerceIn(shutterRange.lower, shutterRange.upper))
+            b.set(CaptureRequest.SENSOR_SENSITIVITY, fastIso.coerceIn(isoRange.lower, isoRange.upper))
+            b.set(CaptureRequest.SENSOR_FRAME_DURATION, maxOf(33_333_333L, fastShutterNs))
+        } else if (c.manualExposure || (dcg && dcgAttempt >= 1)) {
             val exp = (c.shutterNs ?: lastAutoShutterNs).let { if (dcg) minOf(it, dcgFrameNs) else it }
             val iso = c.iso ?: lastAutoIso
             b.set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_OFF)
@@ -511,9 +552,15 @@ class CameraController(
         override fun onCaptureCompleted(sess: CameraCaptureSession, req: CaptureRequest, result: TotalCaptureResult) {
             val r = metaFor(result)
             val c = controls
-            val dcg = dcgOn(c) && dcgAttempt >= 1     // DCG with manual exposure: keep the values from before
+            // DCG with manual exposure, or fast shot's own exposure: keep the phone's values from before
+            val dcg = (dcgOn(c) && dcgAttempt >= 1) || (fastShot && fastExposure.learned)
             r.get(CaptureResult.SENSOR_EXPOSURE_TIME)?.let { if (!c.manualExposure && !dcg) lastAutoShutterNs = it }
             r.get(CaptureResult.SENSOR_SENSITIVITY)?.let { if (!c.manualExposure && !dcg) lastAutoIso = it }
+            if (fastShot) result.get(CaptureResult.SENSOR_TIMESTAMP)?.let { ts ->
+                zslResults[ts] = result
+                while (zslResults.size > 10) zslResults.remove(zslResults.keys.first())
+                zsl.firstOrNull { it.timestamp == ts }?.let { measureFast(it) }
+            }
             if (!dcg) r.get(CaptureResult.LENS_FOCUS_DISTANCE)?.let { lastFocusD = it }
             if (c.kelvin == null && !dcg) {
                 r.get(CaptureResult.COLOR_CORRECTION_TRANSFORM)?.let { lastTransform = it }
@@ -538,6 +585,7 @@ class CameraController(
                     focusDiopters = r.get(CaptureResult.LENS_FOCUS_DISTANCE) ?: 0f,
                     kelvinEstimate = if (gains != null && frameCounter % 30 == 0) ControlMath.kelvinForGains(physChars, gains) else -1,
                     afState = af,
+                    fast = if (fastShot) fastWhy else "",
                 ))
             }
         }
@@ -561,6 +609,7 @@ class CameraController(
     fun captureSingle() = handler.post {
         val s = session ?: return@post
         if (busy) { log("shutter ignored: still saving the previous shot"); return@post }
+        if (zslRunning) { zslCapture(); return@post }
         try {
             busy = true
             val t0 = System.nanoTime()
@@ -586,6 +635,8 @@ class CameraController(
         val s = session ?: return@post
         if (roll != null) { status("Still saving the last burst…"); return@post }
         if (burst != null || busy) { status("busy"); return@post }
+        // 79a: the burst has the RAW stream to itself; the kept frames are let go
+        if (fastShot) { zslPaused = true; while (zsl.isNotEmpty()) zsl.removeFirst().close(); updatePreview() }
         val dcg = dcgOn()
         var rj: RollJob? = null
         try {
@@ -623,7 +674,7 @@ class CameraController(
                 val missing = frames - rj.received.get() - rj.failed.get()
                 if (missing > 0) { log("burst: $missing frames never arrived"); rj.failed.addAndGet(missing); rj.checkDone() }
             }, 8000)
-        } catch (e: Exception) { burst = null; roll = null; rj?.abandon(); status("burst: ${e.message}") }
+        } catch (e: Exception) { burst = null; roll = null; rj?.abandon(); status("burst: ${e.message}"); resumeZsl() }
     }
 
     /**
@@ -732,7 +783,7 @@ class CameraController(
             if (finished || received.get() + failed.get() < frames || next < received.get()) return@synchronized
             finished = true
             pool.shutdown()
-            if (roll === this) handler.post { if (roll === this) roll = null }
+            if (roll === this) handler.post { if (roll === this) roll = null; resumeZsl() }
             try {
                 val u = uri
                 val wr = writer
@@ -797,6 +848,111 @@ class CameraController(
         return Triple(px, w, h)
     }
 
+    // ---- 79a fast shot: the kept frames, the meters, the moment ----------------------------
+
+    /** A frame of the running RAW stream: kept (the last three), and measured when its result is known. */
+    private fun zslAccept(img: Image) {
+        zsl.addLast(img)
+        while (zsl.size > 3) zsl.removeFirst().close()
+        if (zslResults.containsKey(img.timestamp)) measureFast(img)
+    }
+
+    private var lastMeasuredTs = 0L
+
+    /**
+     * Every other frame: how bright (inside the frame lines) and how fast the picture moves, then the
+     * shutter and ISO for the next frames. Until the phone's own exposure has settled, it is only learned.
+     */
+    private fun measureFast(img: Image) {
+        val ts = img.timestamp
+        if (ts <= lastMeasuredTs) return
+        lastMeasuredTs = ts
+        if (++fastFrames % 2 != 0) return
+        val r = metaFor(zslResults[ts] ?: return)
+        try {
+            val plane = img.planes[0]
+            val sb = plane.buffer.duplicate().order(java.nio.ByteOrder.nativeOrder()).asShortBuffer()
+            val black = r.get(CaptureResult.SENSOR_DYNAMIC_BLACK_LEVEL)?.average()?.let { Math.round(it).toInt() }
+                ?: physChars.get(CameraCharacteristics.SENSOR_BLACK_LEVEL_PATTERN)?.getOffsetForIndex(0, 0) ?: 64
+            val white = r.get(CaptureResult.SENSOR_DYNAMIC_WHITE_LEVEL) ?: physChars.get(CameraCharacteristics.SENSOR_INFO_WHITE_LEVEL) ?: 1023
+            val level = FastShot.sample(sb, img.width, img.height, plane.rowStride / 2, black, white, fastCrop, fastSample)
+            motion.feed(fastSample, level, ts)
+            val t = r.get(CaptureResult.SENSOR_EXPOSURE_TIME) ?: return
+            val iso = r.get(CaptureResult.SENSOR_SENSITIVITY) ?: return
+            val c = controls
+            val evStops = c.evIndex * (physChars.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_STEP)?.toFloat() ?: (1f / 6f))
+            if (!fastExposure.learned) {
+                val ae = r.get(CaptureResult.CONTROL_AE_STATE)
+                val settled = ae == CameraMetadata.CONTROL_AE_STATE_CONVERGED || ae == CameraMetadata.CONTROL_AE_STATE_FLASH_REQUIRED
+                if ((settled && frameCounter > 8) || frameCounter > 45) {
+                    fastExposure.learn(level, t, iso, evStops)
+                    log("fast shot: learned the phone's exposure: level ${"%.3f".format(level)} at 1/${Math.round(1e9 / t)} s ISO $iso (AE ${if (settled) "settled" else "still moving"}) on the ${lens.name}")
+                } else { fastWhy = "METERING"; return }
+            } else if (!c.locked) fastExposure.update(level, t, iso, evStops)
+            val lo = shutterRange.lower; val isoLo = isoRange.lower; val isoHi = isoRange.upper
+            val (ns, isoNew) = when {
+                c.shutterNs != null -> fastExposure.settings(c.shutterNs, isoLo, isoHi, lo).also { fastWhy = "YOUR " + ControlMath.shutterLabel(c.shutterNs) }
+                c.iso != null -> (fastExposure.shutterForIso(c.iso, lo, minOf(shutterRange.upper, 250_000_000L)) to c.iso).also { fastWhy = "ISO ${c.iso}" }
+                else -> {
+                    val want = motion.shutterNs(fastCrop).coerceAtLeast(lo)
+                    fastExposure.settings(want, isoLo, isoHi, lo).also { (tt, _) -> fastWhy = "MOTION " + ControlMath.shutterLabel(tt) }
+                }
+            }
+            if (fastExposure.dim) fastWhy += " · DIM"
+            val moved = fastShutterNs == 0L || Math.abs(Math.log(ns.toDouble() * isoNew / (fastShutterNs.toDouble() * fastIso))) > 0.03 ||
+                Math.abs(Math.log(ns.toDouble() / fastShutterNs)) > 0.03
+            if (moved) { fastShutterNs = ns; fastIso = isoNew; updatePreview() }
+        } catch (e: Exception) { log("fast shot meter: ${e.message}") }
+    }
+
+    /**
+     * The shutter in fast shot: the kept frame nearest the moment you pressed — what the viewfinder showed
+     * you then, about 80 ms before the press reaches the camera — copied off the camera at once and written
+     * on its own thread, so the stream and the viewfinder never stop.
+     */
+    private fun zslCapture() {
+        val pressNs = android.os.SystemClock.elapsedRealtimeNanos()
+        val realtime = physChars.get(CameraCharacteristics.SENSOR_INFO_TIMESTAMP_SOURCE) == CameraMetadata.SENSOR_INFO_TIMESTAMP_SOURCE_REALTIME
+        val ready = zsl.filter { zslResults.containsKey(it.timestamp) }
+        if (ready.isEmpty()) { status("One moment: the camera is still starting"); return }
+        val pick = if (realtime) ready.minByOrNull { Math.abs(it.timestamp - (pressNs - 80_000_000L)) }!! else ready.last()
+        zsl.remove(pick)
+        val meta = metaFor(zslResults[pick.timestamp]!!)
+        val w = pick.width; val h = pick.height
+        val bb = java.nio.ByteBuffer.allocateDirect(w * h * 2).order(java.nio.ByteOrder.nativeOrder())
+        try {
+            val plane = pick.planes[0]
+            val src = plane.buffer.duplicate(); val stride = plane.rowStride
+            for (y in 0 until h) { src.clear(); src.position(y * stride); src.limit(y * stride + w * 2); bb.put(src) }
+            bb.flip()
+        } catch (e: Exception) { status("save failed: ${e.message}"); return } finally { pick.close() }
+        busy = true
+        val name = fileBase() + ".dng"
+        val chars = physChars; val lensNow = lens; val crop = fastCrop; val focal = fastFocal
+        val lagMs = if (realtime) (pressNs - pick.timestamp) / 1_000_000 else -1
+        zslWriter.execute {
+            try {
+                val t = System.nanoTime()
+                val creator = DngCreator(chars, meta)
+                creator.setOrientation(ExifInterface.ORIENTATION_ROTATE_90)
+                creator.setDescription("Celestial Darkroom fast shot - $focal mm (${lensNow.name}" +
+                    (if (crop > 1.001f) ", crop ${"%.2f".format(Locale.US, crop)}" else "") + ")")
+                saveTo(name, crop to focal) { creator.writeByteBuffer(it, Size(w, h), bb, 0) }
+                creator.close()
+                val exp = meta.get(CaptureResult.SENSOR_EXPOSURE_TIME) ?: 0L
+                status("Saved $name · $focal mm · ${ControlMath.shutterLabel(exp)} ISO ${meta.get(CaptureResult.SENSOR_SENSITIVITY) ?: 0}" +
+                    (if (lagMs >= 0) " · the frame from ${lagMs} ms before the press" else "") + " · write ${(System.nanoTime() - t) / 1_000_000} ms")
+                log("fast shot $name: frame of ${lagMs} ms before the press, ${lensNow.name} ×${controls.zoom}, crop ${"%.3f".format(crop)} for $focal mm, $fastWhy")
+            } catch (e: Exception) { status("save failed: ${e.message}"); Log.e("Latent", "fast shot save", e) }
+            finally { handler.post { busy = false } }
+        }
+    }
+
+    /** After a burst: the RAW stream joins the preview again. */
+    private fun resumeZsl() {
+        if (fastShot && zslPaused && burst == null && roll == null) { zslPaused = false; updatePreview() }
+    }
+
     // ---- pairing ----------------------------------------------------------------
 
     private fun onResult(result: TotalCaptureResult, t0: Long?) {
@@ -807,6 +963,7 @@ class CameraController(
 
     private fun onRawImage(reader: ImageReader) {
         val img = reader.acquireNextImage() ?: return
+        if (zslRunning && burst == null && roll == null) { zslAccept(img); return }
         val ts = img.timestamp
         val res = pendingResults.remove(ts)
         if (res != null) handle(img, res, null) else {
@@ -871,6 +1028,7 @@ class CameraController(
                 log("burst frame timestamps ms from first: " + job.tsList.joinToString { ((it - job.firstTs) / 1_000_000).toString() })
                 log("alignment shifts px (accepted tiles): " + job.shifts.joinToString(" ") + " · overall ${job.tilesAccepted}/${job.tilesTotal} tiles used")
             } catch (e: Exception) { status("burst save failed: ${e.message}"); Log.e("Latent", "burst", e) }
+            resumeZsl()
         }
     }
 
@@ -978,7 +1136,7 @@ class CameraController(
         return (System.nanoTime() - t) / 1_000_000
     }
 
-    private fun saveTo(name: String, block: (OutputStream) -> Unit) {
+    private fun saveTo(name: String, fastCropFocal: Pair<Float, Int>? = null, block: (OutputStream) -> Unit) {
         val values = ContentValues().apply {
             put(MediaStore.Images.Media.DISPLAY_NAME, name)
             put(MediaStore.Images.Media.MIME_TYPE, "image/x-adobe-dng")
@@ -990,6 +1148,8 @@ class CameraController(
         resolver.openOutputStream(uri)!!.use(block)
         values.clear(); values.put(MediaStore.Images.Media.IS_PENDING, 0)
         resolver.update(uri, values, null, null)
+        // 79a: the screen records a fast shot's crop with the photo as soon as it hears of it
+        fastCropFocal?.let { FastShot.savedCrops[uri.toString()] = it }
         onSaved(uri)
     }
 
@@ -997,7 +1157,9 @@ class CameraController(
 
     private fun fileBase(kind: String = "RAW"): String {
         val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
-        return "LATENT_${stamp}_${Lenses.effectiveLabel(lens, controls.zoom).replace(".", "_")}x_$kind"
+        // 79a: a fast shot is named by its focal length (LATENT_..._35mm_RAW)
+        val label = if (fastShot && fastFocal > 0) "${fastFocal}mm" else Lenses.effectiveLabel(lens, controls.zoom).replace(".", "_") + "x"
+        return "LATENT_${stamp}_${label}_$kind"
     }
 
     /** Nearest known base name within 100 ms of a timestamp (JPEG and RAW stamps can differ slightly). */
@@ -1196,6 +1358,8 @@ class CameraController(
         session = null
         try { device?.close() } catch (_: Exception) {}
         device = null
+        while (zsl.isNotEmpty()) zsl.removeFirst().close()
+        zslResults.clear()
         rawReader?.close(); rawReader = null
         jpegReader?.close(); jpegReader = null
         hdrReader?.close(); hdrReader = null
@@ -1204,7 +1368,7 @@ class CameraController(
         burst = null
     }
 
-    fun destroy() { close(); handler.post { thread.quitSafely() } }
+    fun destroy() { close(); handler.post { zslWriter.shutdown(); thread.quitSafely() } }
 
     private fun status(s: String) { Log.i("Latent", s); onStatus(s) }
     internal fun log(s: String) { Log.i("Latent", s); onLog(s) }
