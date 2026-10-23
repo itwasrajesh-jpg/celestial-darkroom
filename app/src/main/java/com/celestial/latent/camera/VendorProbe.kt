@@ -317,6 +317,226 @@ class VendorProbe(private val context: Context) {
         return sb.toString()
     }
 
+    /**
+     * 80a proof: zero lag in normal mode. On one lens at a locked exposure: how fast the viewfinder runs
+     * without and with the RAW stream, then five presses about a second apart. Each press saves two DNGs of
+     * the same moment to Pictures/Latent probe — the kept frame nearest the press (_ZSL, zero lag) and a
+     * fresh still capture (_STILL, today's way) — and logs how far each is from the press by the sensor's
+     * own clock, and whether the two RAWs match. Normal shooting is not changed by any of it.
+     */
+    @SuppressLint("MissingPermission")
+    fun zeroLagTest(path: String, lens: Lens, zoom: Int, progress: (String) -> Unit): String {
+        val mode = if (zoom > 1) Lenses.sensorZoomMode(lens, zoom.toFloat()) else null
+        val label = lens.name + if (mode != null) " · in-sensor ×$zoom (mode $mode)" else ""
+        val sb = StringBuilder("CELESTIAL DARKROOM ZERO LAG A/B · path=$path lens=${lens.physicalId} ($label)\n" +
+            "Keep the phone still, pointed at something with detail and some shadow.\n")
+        if (zoom > 1 && mode == null) return sb.appendLine("This lens has no in-sensor ×$zoom.").toString()
+        val direct = path == "direct"
+        val chars = try { cm.getCameraCharacteristics(lens.physicalId) } catch (t: Throwable) { return sb.appendLine("no characteristics: ${t.message}").toString() }
+        val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) ?: return sb.appendLine("no stream map").toString()
+        val rawSize = map.getOutputSizes(ImageFormat.RAW_SENSOR)?.maxByOrNull { it.width.toLong() * it.height } ?: return sb.appendLine("this lens has no RAW").toString()
+        // a stand-in for the viewfinder, drained like a screen would: 4:3, at most 1440 wide
+        val viewSize = map.getOutputSizes(ImageFormat.PRIVATE)?.filter { it.width <= 1440 && Math.abs(it.width * 3 - it.height * 4) < 8 }
+            ?.maxByOrNull { it.width.toLong() * it.height } ?: android.util.Size(1280, 960)
+        val realtime = chars.get(CameraCharacteristics.SENSOR_INFO_TIMESTAMP_SOURCE) == CameraCharacteristics.SENSOR_INFO_TIMESTAMP_SOURCE_REALTIME
+        val white = chars.get(CameraCharacteristics.SENSOR_INFO_WHITE_LEVEL) ?: 1023
+        sb.appendLine("RAW ${rawSize.width}x${rawSize.height} · viewfinder stand-in ${viewSize.width}x${viewSize.height} · sensor clock ${if (realtime) "realtime (lags are exact)" else "NOT realtime (lags cannot be measured)"}")
+
+        val view = ImageReader.newInstance(viewSize.width, viewSize.height, ImageFormat.PRIVATE, 4)
+        view.setOnImageAvailableListener({ r -> r.acquireLatestImage()?.close() }, handler)
+        val raw = ImageReader.newInstance(rawSize.width, rawSize.height, ImageFormat.RAW_SENSOR, 10)
+        val lock = Object()
+        val images = java.util.TreeMap<Long, android.media.Image>()     // the kept stream frames, and stills on their way
+        val results = java.util.TreeMap<Long, TotalCaptureResult>()
+        val keep = HashSet<Long>()                                        // frames reserved for saving
+        val frameTs = ArrayList<Long>()                                   // viewfinder frame times, for the frame rate
+        raw.setOnImageAvailableListener({ r ->
+            val img = r.acquireNextImage() ?: return@setOnImageAvailableListener
+            synchronized(lock) {
+                images[img.timestamp] = img
+                while (images.size > 5) { val k = images.keys.firstOrNull { it !in keep } ?: break; images.remove(k)?.close() }
+            }
+        }, handler)
+        val streamCb = object : CameraCaptureSession.CaptureCallback() {
+            override fun onCaptureCompleted(s: CameraCaptureSession, rq: CaptureRequest, res: TotalCaptureResult) {
+                val ts = res.get(CaptureResult.SENSOR_TIMESTAMP) ?: return
+                synchronized(lock) {
+                    results[ts] = res; frameTs += ts
+                    while (results.size > 40) { val k = results.keys.firstOrNull { it !in keep } ?: break; results.remove(k) }
+                }
+            }
+        }
+        fun phys(r: CaptureResult): CaptureResult = if (direct) r else ((r as? TotalCaptureResult)?.physicalCameraResults?.get(lens.physicalId) ?: r)
+
+        var device: CameraDevice? = null
+        var session: CameraCaptureSession? = null
+        var failure: String? = null
+        val ready = CountDownLatch(1)
+        fun cleanup() {
+            try { session?.close() } catch (_: Throwable) {}
+            try { device?.close() } catch (_: Throwable) {}
+            synchronized(lock) { images.values.forEach { it.close() }; images.clear() }
+            Thread.sleep(300); raw.close(); view.close(); Thread.sleep(400)
+        }
+        progress("opening the ${lens.name}…")
+        try {
+            cm.openCamera(if (direct) lens.physicalId else path, object : CameraDevice.StateCallback() {
+                override fun onOpened(cam: CameraDevice) {
+                    device = cam
+                    try {
+                        val outs = listOf(OutputConfiguration(view.surface), OutputConfiguration(raw.surface))
+                        if (!direct) outs.forEach { it.setPhysicalCameraId(lens.physicalId) }
+                        cam.createCaptureSession(SessionConfiguration(SessionConfiguration.SESSION_REGULAR, outs, executor, object : CameraCaptureSession.StateCallback() {
+                            override fun onConfigured(s: CameraCaptureSession) { session = s; ready.countDown() }
+                            override fun onConfigureFailed(s: CameraCaptureSession) { failure = "session refused"; ready.countDown() }
+                        }))
+                    } catch (t: Throwable) { failure = "session: ${t.message}"; ready.countDown() }
+                }
+                override fun onDisconnected(cam: CameraDevice) { failure = "disconnected"; ready.countDown() }
+                override fun onError(cam: CameraDevice, error: Int) { failure = "device error $error"; ready.countDown() }
+            }, handler)
+        } catch (t: Throwable) { return sb.appendLine("open: ${t.message}").toString() }
+        if (!ready.await(8, TimeUnit.SECONDS) || failure != null || session == null) { cleanup(); return sb.appendLine("could not start: ${failure ?: "timeout"}").toString() }
+        val cam = device!!; val s = session!!
+
+        fun request(template: Int, withRaw: Boolean, exp: Pair<Long, Int>?): CaptureRequest.Builder = cam.createCaptureRequest(template).apply {
+            addTarget(view.surface); if (withRaw) addTarget(raw.surface)
+            if (mode != null) set(CaptureRequest.Key(Lenses.SENSOR_MODE_KEY, Int::class.javaObjectType), mode)
+            if (exp != null) {
+                set(CaptureRequest.CONTROL_AE_MODE, android.hardware.camera2.CameraMetadata.CONTROL_AE_MODE_OFF)
+                set(CaptureRequest.SENSOR_EXPOSURE_TIME, exp.first); set(CaptureRequest.SENSOR_SENSITIVITY, exp.second)
+                set(CaptureRequest.SENSOR_FRAME_DURATION, maxOf(33_333_333L, exp.first))
+            }
+        }
+        /** Viewfinder frames per second over 2.5 s, after half a second to settle. */
+        fun fps(): Float {
+            Thread.sleep(500); synchronized(lock) { frameTs.clear() }
+            Thread.sleep(2500)
+            synchronized(lock) { return if (frameTs.size < 2) 0f else (frameTs.size - 1) * 1e9f / (frameTs.last() - frameTs.first()) }
+        }
+        try {
+            // 1. let the phone meter, then lock what it chose so every frame below is comparable
+            progress("metering…")
+            s.setRepeatingRequest(request(CameraDevice.TEMPLATE_PREVIEW, false, null).build(), streamCb, handler)
+            Thread.sleep(2000)
+            val metered = synchronized(lock) { results.lastEntry()?.value }?.let { phys(it) }
+            val exp = metered?.let { (it.get(CaptureResult.SENSOR_EXPOSURE_TIME) ?: 0L) to (it.get(CaptureResult.SENSOR_SENSITIVITY) ?: 0) }
+            if (exp == null || exp.first == 0L) { cleanup(); return sb.appendLine("could not meter").toString() }
+            sb.appendLine("locked at ${"%.2f".format(exp.first / 1e6)} ms, ISO ${exp.second}\n")
+
+            // 2. the viewfinder without and with the RAW stream
+            progress("viewfinder speed without RAW…")
+            s.setRepeatingRequest(request(CameraDevice.TEMPLATE_PREVIEW, false, exp).build(), streamCb, handler)
+            val fpsOff = fps()
+            progress("viewfinder speed with RAW…")
+            s.setRepeatingRequest(request(CameraDevice.TEMPLATE_PREVIEW, true, exp).build(), streamCb, handler)
+            val fpsOn = fps()
+            val slower = if (fpsOff > 0f) (1 - fpsOn / fpsOff) * 100 else 0f
+            sb.appendLine("VIEWFINDER: %.1f fps without RAW · %.1f fps with RAW (%s)".format(fpsOff, fpsOn,
+                if (slower > 1f) "%.0f%% slower".format(slower) else "no slower"))
+
+            // 3. five presses
+            sb.appendLine("\nPRESSES (ms from the press, by the sensor clock; ZSL is before the press, STILL after it)")
+            val rnd = java.util.Random()
+            val zslLags = ArrayList<Long>(); val stillLags = ArrayList<Long>()
+            val noiseRatios = ArrayList<Float>(); val levelRatios = ArrayList<Float>()
+            val diffs = LinkedHashSet<String>()
+            val stamp = java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US).format(java.util.Date())
+            for (i in 1..5) {
+                progress("press $i of 5…")
+                Thread.sleep(700L + rnd.nextInt(600))
+                val pressNs = android.os.SystemClock.elapsedRealtimeNanos()
+                val zslTs = synchronized(lock) {
+                    images.keys.filter { it in results && (!realtime || it <= pressNs) }.maxOrNull()?.also { keep += it }
+                }
+                var stillTs = 0L
+                var stillRes: TotalCaptureResult? = null
+                val stillDone = CountDownLatch(1)
+                s.capture(request(CameraDevice.TEMPLATE_STILL_CAPTURE, true, exp).build(), object : CameraCaptureSession.CaptureCallback() {
+                    override fun onCaptureStarted(ss: CameraCaptureSession, rq: CaptureRequest, timestamp: Long, frame: Long) { synchronized(lock) { keep += timestamp } }
+                    override fun onCaptureCompleted(ss: CameraCaptureSession, rq: CaptureRequest, res: TotalCaptureResult) {
+                        stillTs = res.get(CaptureResult.SENSOR_TIMESTAMP) ?: 0L; stillRes = res; stillDone.countDown()
+                    }
+                    override fun onCaptureFailed(ss: CameraCaptureSession, rq: CaptureRequest, f: android.hardware.camera2.CaptureFailure) { stillDone.countDown() }
+                }, handler)
+                stillDone.await(4, TimeUnit.SECONDS)
+                // the still's RAW can land a moment after its result
+                var zslImg: android.media.Image? = null; var stillImg: android.media.Image? = null; var zslRes: TotalCaptureResult? = null
+                for (t in 0 until 20) {
+                    synchronized(lock) {
+                        if (zslImg == null && zslTs != null) { zslImg = images.remove(zslTs); zslRes = results[zslTs] }
+                        if (stillImg == null && stillTs != 0L) stillImg = images.remove(stillTs)
+                    }
+                    if ((zslImg != null || zslTs == null) && (stillImg != null || stillTs == 0L)) break
+                    Thread.sleep(50)
+                }
+                synchronized(lock) { keep.clear() }
+                val zi = zslImg; val si = stillImg; val zr = zslRes; val sr = stillRes
+                if (zi == null || si == null || zr == null || sr == null) {
+                    sb.appendLine("press $i: missing ${if (zi == null || zr == null) "the kept frame" else "the still"}"); zi?.close(); si?.close(); continue
+                }
+                val zLag = (pressNs - zslTs!!) / 1_000_000; val sLag = (stillTs - pressNs) / 1_000_000
+                if (realtime) { zslLags += zLag; stillLags += sLag }
+                val zp = phys(zr); val sp = phys(sr)
+                val base = "LATENT_PROBE_${stamp}_${lens.physicalId}${if (mode != null) "_x$zoom" else ""}_$i"
+                val savedZ = saveProbeDng("${base}_ZSL.dng", chars, zp, zi); val savedS = saveProbeDng("${base}_STILL.dng", chars, sp, si)
+                val (zNoise, _, zMean) = runCatching { metrics(zi, white) }.getOrDefault(Triple(0f, 0f, 0f))
+                val (sNoise, _, sMean) = runCatching { metrics(si, white) }.getOrDefault(Triple(0f, 0f, 0f))
+                zi.close(); si.close()
+                if (sNoise > 0f) noiseRatios += zNoise / sNoise
+                if (sMean > 0f) levelRatios += zMean / sMean
+                fun <T> cmp(name: String, k: CaptureResult.Key<T>, show: (T?) -> String = { it.toString() }) {
+                    val a = show(zp.get(k)); val b = show(sp.get(k)); if (a != b) diffs += "$name: ZSL $a · STILL $b"
+                }
+                cmp("black level", CaptureResult.SENSOR_DYNAMIC_BLACK_LEVEL) { it?.joinToString() ?: "-" }
+                cmp("white level", CaptureResult.SENSOR_DYNAMIC_WHITE_LEVEL)
+                cmp("exposure", CaptureResult.SENSOR_EXPOSURE_TIME)
+                cmp("ISO", CaptureResult.SENSOR_SENSITIVITY)
+                cmp("lens shading", CaptureResult.SHADING_MODE)
+                cmp("shading map in DNG", CaptureResult.STATISTICS_LENS_SHADING_MAP_MODE)
+                cmp("hot pixel", CaptureResult.HOT_PIXEL_MODE)
+                cmp("noise reduction", CaptureResult.NOISE_REDUCTION_MODE)
+                cmp("stabiliser (OIS)", CaptureResult.LENS_OPTICAL_STABILIZATION_MODE)
+                cmp("sensor mode", CaptureResult.Key(Lenses.SENSOR_MODE_KEY, Int::class.javaObjectType)) { it?.toString() ?: "not reported" }
+                sb.appendLine("press $i: ZSL ${if (realtime) "$zLag ms before" else "?"} · STILL ${if (realtime) "$sLag ms after" else "?"} · " +
+                    "shadow noise %.2f vs %.2f · mean %.0f vs %.0f · %s".format(zNoise, sNoise, zMean, sMean,
+                        if (savedZ && savedS) "both DNGs saved" else "SAVE FAILED"))
+            }
+
+            // 4. summary
+            fun median(v: List<Long>) = if (v.isEmpty()) "?" else v.sorted()[v.size / 2].toString()
+            sb.appendLine("\nSUMMARY")
+            sb.appendLine("today's way (STILL): the frame is taken ${median(stillLags)} ms after the press (median)")
+            sb.appendLine("zero lag (ZSL): the frame is from ${median(zslLags)} ms before the press (median)")
+            sb.appendLine("the JPEG in normal mode is the still capture, so it lands at the STILL time")
+            if (noiseRatios.isNotEmpty()) sb.appendLine("ZSL vs STILL: shadow noise %+.1f%%, level %+.1f%%".format((noiseRatios.average() - 1) * 100, (levelRatios.average() - 1) * 100))
+            sb.appendLine(if (diffs.isEmpty()) "settings: identical in every press" else "settings that differ:\n  " + diffs.joinToString("\n  "))
+            sb.appendLine("\nDNGs are in Pictures/Latent probe (names end _ZSL and _STILL). Send me those with this text.")
+        } catch (t: Throwable) {
+            sb.appendLine("stopped: ${t.javaClass.simpleName} ${t.message}")
+        } finally { cleanup() }
+        return sb.toString()
+    }
+
+    /** One probe DNG into Pictures/Latent probe (kept out of the roll, which reads DCIM/Latent). */
+    private fun saveProbeDng(name: String, chars: CameraCharacteristics, meta: CaptureResult, img: android.media.Image): Boolean = try {
+        val values = android.content.ContentValues().apply {
+            put(android.provider.MediaStore.Images.Media.DISPLAY_NAME, name)
+            put(android.provider.MediaStore.Images.Media.MIME_TYPE, "image/x-adobe-dng")
+            put(android.provider.MediaStore.Images.Media.RELATIVE_PATH, "Pictures/Latent probe")
+            put(android.provider.MediaStore.Images.Media.IS_PENDING, 1)
+        }
+        val resolver = context.contentResolver
+        val uri = resolver.insert(android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)!!
+        android.hardware.camera2.DngCreator(chars, meta).use { dng ->
+            dng.setOrientation(android.media.ExifInterface.ORIENTATION_ROTATE_90)
+            resolver.openOutputStream(uri)!!.use { dng.writeImage(it, img) }
+        }
+        values.clear(); values.put(android.provider.MediaStore.Images.Media.IS_PENDING, 0)
+        resolver.update(uri, values, null, null)
+        true
+    } catch (t: Throwable) { android.util.Log.e("Latent", "probe DNG $name", t); false }
+
     /** Sweep sensor mode indices via sensor_meta_data.current_mode, at a locked exposure. */
     @SuppressLint("MissingPermission")
     fun sensorModeSweep(path: String, lens: Lens, from: Int, to: Int, progress: (String) -> Unit): String {
