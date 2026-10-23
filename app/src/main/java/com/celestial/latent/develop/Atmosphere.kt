@@ -220,6 +220,8 @@ data class Atmosphere(
                 while (n < buf.size) { val r = s.read(buf, n, buf.size - n); if (r <= 0) break; n += r }
                 buf.copyOf(n)
             } ?: return null
+            // a PNG print (78b) keeps its note in a text chunk
+            PngFile.readNote(head)?.let { text -> return if (text.startsWith(HEADER)) parseNote(text)?.copy(noteText = text) else null }
             if (head.size < 4 || head[0] != 0xFF.toByte() || head[1] != 0xD8.toByte()) return null
             var at = 2
             while (at + 4 <= head.size && head[at] == 0xFF.toByte()) {

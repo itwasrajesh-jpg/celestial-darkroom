@@ -100,6 +100,8 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
     var recipe by remember { mutableStateOf((ownRecipe ?: initial).copy(autoExposure = false)) }
     // An export choice, not part of the look — see DarkroomPrefs for why it lives apart.
     var printSize by remember { mutableStateOf(com.celestial.latent.develop.DarkroomPrefs.printSize(context)) }
+    // ...and so is the kind of file (78b): JPEG, Ultra HDR, PNG 8-bit or 16-bit
+    var fileFormat by remember { mutableStateOf(com.celestial.latent.develop.DarkroomPrefs.fileFormat(context)) }
     var full by remember { mutableStateOf(false) }
     // PRINT mode: test strips (and, later, the ring-around and dodge & burn) instead of sliders.
     var printing by remember { mutableStateOf(false) }
@@ -230,12 +232,12 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                 val lithFrame = if (cropFraction < 1f) (1f - cropFraction) / 2f else 0f
                 val (bytes, _) = Develop.render(context, target, r, preview = true, exposureMap = map, softenMask = softenMap, saturationMap = sat,
                     lith = lithLook, lithFrame = if (lithFrame > 0f) com.celestial.latent.develop.Region(lithFrame, lithFrame, 1f - lithFrame, 1f - lithFrame) else null,
-                    hdrGlow = if (hdrView) hdrGlow.also { glowUsed = it } else 0f) { m -> status = m }
+                    hdrGlow = if (hdrView && fileFormat == com.celestial.latent.develop.DarkroomPrefs.FILE_ULTRA_HDR) hdrGlow.also { glowUsed = it } else 0f) { m -> status = m }
                 lastRenderMs = ((System.nanoTime() - t0) / 1_000_000).toInt()
                 // 78a: the glow slider may have moved while this developed: shown at its strength now
                 val got = BitmapFactory.decodeByteArray(bytes, 0, bytes.size).let { b ->
                     val g = hdrGlow
-                    if (hdrView && g != glowUsed && com.celestial.latent.develop.HdrGlow.has(b)) com.celestial.latent.develop.HdrGlow.retuned(b, g) else b
+                    if (hdrView && glowUsed > 0f && g != glowUsed && com.celestial.latent.develop.HdrGlow.has(b)) com.celestial.latent.develop.HdrGlow.retuned(b, g) else b
                 }
                 // The quick pass is only the centre: shown at its real size and place over the last
                 // whole preview, not stretched to fill the box (which read as a zoom in and back out).
@@ -292,7 +294,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
             Develop.cropRegion(whole, region).use { part ->
                 val (bytes, _) = Develop.render(context, part, r.copy(previewMaxSize = edge), preview = true,
                     exposureMap = masks.dodge?.crop(region), softenMask = masks.soften, saturationMap = masks.saturation?.crop(region),
-                    lith = masks.lith, lithFrame = region, hdrGlow = if (hdrView) hdrGlow else 0f)
+                    lith = masks.lith, lithFrame = region, hdrGlow = if (hdrView && fileFormat == com.celestial.latent.develop.DarkroomPrefs.FILE_ULTRA_HDR) hdrGlow else 0f)
                 BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
             }
         } catch (t: Throwable) {
@@ -370,6 +372,11 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
         val g = hdrGlow
         if (hdrGlowTouched) kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { com.celestial.latent.develop.HdrGlows.save(context, source, g) }
         if (hdrView && !printing && src != null && g >= 0.125f && !com.celestial.latent.develop.HdrGlow.has(preview)) render(fast = false)
+    }
+    // 78b: another kind of file: remembered, and in HDR view the preview shows (or drops) the glow
+    LaunchedEffect(fileFormat) {
+        com.celestial.latent.develop.DarkroomPrefs.setFileFormat(context, fileFormat)
+        if (hdrView && !printing && src != null) render(fast = false)
     }
     // HDR view on or off: the window's mode, and a preview with (or without) its glow
     LaunchedEffect(hdrView) {
@@ -487,7 +494,13 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
             (if (com.celestial.latent.develop.Wet.wanted(wetMap)) " · WET" else "") +
             (if (com.celestial.latent.develop.Rain.wanted(wetLook.window)) " · RAIN ON GLASS" else "") +
             (if (lithLook.on) " · LITH" else "") +
-            (if (com.celestial.latent.develop.HdrGlow.wanted(hdrGlow, lithLook)) " · ULTRA HDR ${com.celestial.latent.develop.HdrGlow.label(hdrGlow)}" else "")
+            when (fileFormat) {
+                com.celestial.latent.develop.DarkroomPrefs.FILE_ULTRA_HDR ->
+                    if (com.celestial.latent.develop.HdrGlow.wanted(hdrGlow, lithLook)) " · ULTRA HDR ${com.celestial.latent.develop.HdrGlow.label(hdrGlow)}" else " · JPEG"
+                com.celestial.latent.develop.DarkroomPrefs.FILE_PNG8 -> " · PNG 8-BIT"
+                com.celestial.latent.develop.DarkroomPrefs.FILE_PNG16 -> " · PNG 16-BIT, BIG FILE"
+                else -> " · JPEG"
+            }
     }
 
     /** The full-size print (75b: started from the DEVELOP tab, in SIMPLE/FULL and in PRINT alike). */
@@ -498,7 +511,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
             context, source, isRaw, recipe, upscale = printSize, exposureMap = exposureMap, softenMask = softenMap, pairFirst = pairFirst, framing = framing,
             fogMask = fogMap, fogLook = fogLook, raysMask = raysMap, raysLook = raysLook, extraLights = extraLights, depthSplit = depthSplit,
             saturationMap = saturationMap, lith = lithLook, wetMask = wetMap, wetLook = wetLook, rainMask = rainMap,
-            hdrGlow = hdrGlow,
+            hdrGlow = hdrGlow, format = fileFormat,
             onStatus = { m ->
                 status = "full size: $m"
                 if (m.startsWith("failed")) fullError =
@@ -548,10 +561,25 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
         }
         Note(if (printSize > 1f) "Finer grain at the larger size, no new detail; about ${"%.1f".format(printSize * printSize)}× as long to develop."
             else "The photo's own size. Larger sizes keep the grain fine instead of enlarging it.")
+        // 78b: the kind of file, remembered like the print size
+        Head("FILE", null) {}
+        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            com.celestial.latent.develop.DarkroomPrefs.fileFormats().forEach { (id, label) ->
+                val on = fileFormat == id
+                Text(label, color = if (on) LatentColors.AmberInk else LatentColors.Text, fontSize = 11.sp,
+                    modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(if (on) LatentColors.Amber else LatentColors.Surface)
+                        .combinedClickable(onClick = { if (!fullRunning) { Haptics.tick(context); fileFormat = id } }).padding(horizontal = 12.dp, vertical = 6.dp))
+            }
+        }
+        Note(when (fileFormat) {
+            com.celestial.latent.develop.DarkroomPrefs.FILE_ULTRA_HDR -> "A JPEG with the glow behind it. HDR screens show the glow; every other screen shows the print."
+            com.celestial.latent.develop.DarkroomPrefs.FILE_PNG8 -> "The same pixels as the JPEG with nothing lost to compression. About 5× bigger (around 15 MB)."
+            com.celestial.latent.develop.DarkroomPrefs.FILE_PNG16 -> "Every fine step the film made, for grading later. Big: around 65 MB, 4× that at 2×. Grain hides the difference on most photos."
+            else -> "Small, shares anywhere. About 3 MB."
+        })
         // 78a: Ultra HDR glow, this photo's own; the saved JPEG is the same print with a hidden glow map behind it
-        Head("ULTRA HDR GLOW", null) {}
-        if (!com.celestial.latent.develop.HdrGlow.supported) Note("Needs Android 14 or newer. Prints are saved as plain JPEGs.")
-        else {
+        if (fileFormat == com.celestial.latent.develop.DarkroomPrefs.FILE_ULTRA_HDR) {
+            Head("ULTRA HDR GLOW", null) {}
             val glowOn = !lithLook.on
             Row(Modifier.fillMaxWidth().padding(top = 6.dp), horizontalArrangement = Arrangement.SpaceBetween) {
                 Text("Glow in the brightest lights", color = if (glowOn) LatentColors.Text else LatentColors.Line, fontSize = 11.sp)
@@ -922,6 +950,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                     // why nothing glows, when HDR view is on and something stops it
                     if (hdrView && !frameOpen) {
                         val why = when {
+                            fileFormat != com.celestial.latent.develop.DarkroomPrefs.FILE_ULTRA_HDR -> "file is not Ultra HDR · DEVELOP tab"
                             lithLook.on -> "lith prints never glow"
                             hdrGlow < 0.125f -> "glow is Off for this photo · DEVELOP tab"
                             !com.celestial.latent.develop.HdrGlow.screenCan(context) -> "this screen does not report HDR"

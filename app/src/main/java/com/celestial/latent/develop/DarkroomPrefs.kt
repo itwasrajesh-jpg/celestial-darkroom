@@ -49,6 +49,33 @@ object DarkroomPrefs {
         context.getSharedPreferences(FILE, Context.MODE_PRIVATE).edit().putFloat("photoShare", value.coerceIn(PHOTO_SHARE_MIN, PHOTO_SHARE_MAX)).apply()
     }
 
+    /**
+     * The kind of file a develop saves (78b), remembered like the print size. Ultra HDR only exists on
+     * Android 14 and newer; older phones get a plain JPEG for it. The JPEG is the default on those.
+     */
+    const val FILE_JPEG = "jpeg"
+    const val FILE_ULTRA_HDR = "uhdr"
+    const val FILE_PNG8 = "png8"
+    const val FILE_PNG16 = "png16"
+
+    /** The chips, in order: the id and what the chip says. */
+    fun fileFormats(): List<Pair<String, String>> = listOfNotNull(
+        FILE_JPEG to "JPEG", (FILE_ULTRA_HDR to "Ultra HDR").takeIf { HdrGlow.supported },
+        FILE_PNG8 to "PNG 8-bit", FILE_PNG16 to "PNG 16-bit",
+    )
+
+    fun fileFormat(context: Context): String {
+        val start = if (HdrGlow.supported) FILE_ULTRA_HDR else FILE_JPEG
+        val f = context.getSharedPreferences(FILE, Context.MODE_PRIVATE).getString("fileFormat", start) ?: start
+        return f.takeIf { id -> fileFormats().any { it.first == id } } ?: FILE_JPEG
+    }
+
+    fun setFileFormat(context: Context, format: String) {
+        context.getSharedPreferences(FILE, Context.MODE_PRIVATE).edit().putString("fileFormat", format).apply()
+    }
+
+    fun isPng(format: String) = format == FILE_PNG8 || format == FILE_PNG16
+
     fun setPrintSize(context: Context, value: Float) {
         context.getSharedPreferences(FILE, Context.MODE_PRIVATE).edit().putFloat("printSize", value).apply()
     }

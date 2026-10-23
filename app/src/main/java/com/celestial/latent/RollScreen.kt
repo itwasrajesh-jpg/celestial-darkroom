@@ -103,10 +103,10 @@ fun RollScreen(
             val all = ArrayList<Pair<Uri, String>>()
             val dates = HashMap<Uri, Long>()
             while (c.moveToNext()) { val u = ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, c.getLong(0)); all += u to c.getString(1); dates[u] = c.getLong(2) }
-            // A developed file is named <capture>_<film>.jpg, so its stem identifies the capture.
+            // A developed file is named <capture>_<film>.jpg (or .png, 78b), so its stem identifies the capture.
             val copies = HashMap<String, MutableList<Uri>>()
             val allStems = all.mapTo(HashSet()) { it.second.substringBeforeLast('.') }
-            all.forEach { (u, n) -> if (n.endsWith(".jpg", true) && n.contains('_')) {
+            all.forEach { (u, n) -> if ((n.endsWith(".jpg", true) || n.endsWith(".png", true)) && n.contains('_')) {
                 val capture = n.substringBeforeLast('.').substringBeforeLast('_')
                 developedStems += capture; copies.getOrPut(capture) { ArrayList() } += u
             } }

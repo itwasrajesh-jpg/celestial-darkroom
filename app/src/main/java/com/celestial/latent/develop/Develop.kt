@@ -606,6 +606,7 @@ object Develop {
     fun render(context: Context, source: Source, recipe: Recipe, preview: Boolean, upscale: Float = 1f,
                exposureMap: ExposureMap? = null, softenMask: ExposureMap? = null, saturationMap: ExposureMap? = null,
                lith: LithLook = LithLook(), lithFrame: Region? = null, hdrGlow: Float = 0f,
+               png: PngTarget? = null,
                log: (String) -> Unit = {}): Pair<ByteArray, Pair<Int, Int>> {
         val t = System.nanoTime()
         Log.i("Latent", "render start: source ${source.width}x${source.height}, preview=$preview, cap=${recipe.previewMaxSize}")
@@ -651,10 +652,15 @@ object Develop {
                     // film-still bars and the lith paper's border, around the full-size print only:
                     // previews stay the bare picture, so painting, zoom and masks all line up with what they draw on
                     val (bd, bw, bh) = if (!preview) Lith.border(r.data, r.width, r.height, r.colorSpace, lith) else Triple(r.data, r.width, r.height)
-                    if (!preview && source.letterbox) {
-                        val (data, w, h) = letterbox(bd, bw, bh)
-                        dims = w to h; toJpeg(data, w, h, r.colorSpace, ourSpace, glowMap?.let { HdrGlow.framed(it, bw, bh, w, h) to hdrGlow })
-                    } else { dims = bw to bh; toJpeg(bd, bw, bh, r.colorSpace, ourSpace, glowMap?.let { it to hdrGlow }) }
+                    val (data, w, h) = if (!preview && source.letterbox) letterbox(bd, bw, bh) else Triple(bd, bw, bh)
+                    dims = w to h
+                    // 78b: a PNG print streams into its file (a 50 MP 16-bit print is too big to hold as bytes)
+                    if (!preview && png != null) {
+                        val tp = System.nanoTime()
+                        writePng(data, w, h, r.colorSpace, ourSpace, png)
+                        Log.i("Latent", "png ${png.bits}-bit ${w}x$h: ${png.file.length() / 1024} KB in ${(System.nanoTime() - tp) / 1_000_000} ms")
+                        ByteArray(0)
+                    } else toJpeg(data, w, h, r.colorSpace, ourSpace, glowMap?.let { if (w == bw && h == bh) it to hdrGlow else HdrGlow.framed(it, bw, bh, w, h) to hdrGlow })
                 }
             }
         } finally {
@@ -786,6 +792,25 @@ object Develop {
         bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 95, out)
         bmp.recycle()
         return out.toByteArray()
+    }
+
+    /** Where and how a full develop writes a PNG print (78b): [bits] 8 or 16, the film [note] inside it. */
+    class PngTarget(val file: File, val bits: Int, val note: String?)
+
+    /**
+     * The print as a PNG ([PngFile]), tagged with the colour chunks Android itself writes for this space: a
+     * 1×1 bitmap tagged as the JPEG would be is encoded by Android and its chunks are copied.
+     */
+    private fun writePng(data: ByteBuffer, w: Int, h: Int, colorSpace: com.spectrafilm.engine.ColorSpace, ourSpace: String, png: PngTarget) {
+        val colour = runCatching {
+            val one = taggedBitmap(1, 1, colorSpace, ourSpace)
+            val tiny = ByteArrayOutputStream().also { one.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it) }.toByteArray()
+            one.recycle()
+            PngFile.colourChunks(tiny)
+        }.getOrElse { emptyList() }.ifEmpty { listOf("sRGB" to byteArrayOf(0)) }
+        java.io.BufferedOutputStream(java.io.FileOutputStream(png.file), 1 shl 16).use { out ->
+            PngFile.write(out, data, w, h, png.bits, ourSpace, colour, png.note)
+        }
     }
 
     /** Bitmap tagged with the engine's output colour space, falling back to sRGB. */
@@ -971,7 +996,7 @@ object Develop {
                     extraLights: List<RaysLook> = emptyList(),
                     depthSplit: ExposureMap? = null, saturationMap: ExposureMap? = null, lith: LithLook = LithLook(),
                     wetMask: ExposureMap? = null, wetLook: WetLook = WetLook(), rainMask: ExposureMap? = null,
-                    hdrGlow: Float = 0f, log: (String) -> Unit = {}): Uri {
+                    hdrGlow: Float = 0f, format: String = DarkroomPrefs.FILE_JPEG, log: (String) -> Unit = {}): Uri {
         log(if (maxEdge > 0) "decoding…" else "decoding at full size…")
         val pair = pairFirst != null && isRaw
         val opened = if (pair) openPair(context, pairFirst!!, source, maxEdge, log)
@@ -988,8 +1013,6 @@ object Develop {
             prepareStages(context, source, s, iso, recipe, framing, softenMask, fogMask, fogLook, raysMask, raysLook, extraLights,
                 depthSplit, wetMask, wetLook, rainMask, log)
             log("developing ${s.width}×${s.height}…")
-            val (bytes, dims) = render(context, s, recipe, preview = false, upscale = upscale, exposureMap = exposureMap, softenMask = softenMask, saturationMap = saturationMap, lith = lith, hdrGlow = hdrGlow, log = log)
-            log("saving ${dims.first}×${dims.second}, ${bytes.size / 1024} KB")
             // The fog and light travel inside the file, so the Film Builder can read them exactly
             // later — even if the file is renamed or the original's fog is changed afterwards.
             val atmo = Atmosphere(
@@ -1000,8 +1023,24 @@ object Develop {
             )
             // Written on every full develop: even without fog or light, the texture it used —
             // grain, halation, the diffusion filter, glare — is worth knowing exactly later.
-            saveDeveloped(context, bytes, source, recipe.film, tag = if (pair) "DX" else null,
-                note = atmo.note(Texture.noteOf(recipe)))
+            val note = atmo.note(Texture.noteOf(recipe))
+            val tag = if (pair) "DX" else null
+            // 78b: the kind of file — a JPEG (with the Ultra HDR glow only when that is the choice) or a PNG
+            val bits = when (format) { DarkroomPrefs.FILE_PNG16 -> 16; DarkroomPrefs.FILE_PNG8 -> 8; else -> 0 }
+            if (bits == 0) {
+                val (bytes, dims) = render(context, s, recipe, preview = false, upscale = upscale, exposureMap = exposureMap, softenMask = softenMask, saturationMap = saturationMap, lith = lith,
+                    hdrGlow = if (format == DarkroomPrefs.FILE_ULTRA_HDR) hdrGlow else 0f, log = log)
+                log("saving ${dims.first}×${dims.second}, ${bytes.size / 1024} KB")
+                saveDeveloped(context, bytes, source, recipe.film, tag = tag, note = note)
+            } else {
+                val tmp = File(context.cacheDir, "develop-${System.nanoTime()}.png")
+                try {
+                    val (_, dims) = render(context, s, recipe, preview = false, upscale = upscale, exposureMap = exposureMap, softenMask = softenMask, saturationMap = saturationMap, lith = lith,
+                        png = PngTarget(tmp, bits, note), log = log)
+                    log("saving ${dims.first}×${dims.second}, PNG $bits-bit, ${tmp.length() / 1024} KB")
+                    saveDevelopedFile(context, tmp, source, recipe.film, tag = tag)
+                } finally { tmp.delete() }
+            }
         }
     }
 
@@ -1159,8 +1198,8 @@ object Develop {
         return context.contentResolver.query(
             MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
             arrayOf(MediaStore.Images.Media._ID, MediaStore.Images.Media.DISPLAY_NAME),
-            "${MediaStore.Images.Media.RELATIVE_PATH} LIKE ? AND ${MediaStore.Images.Media.DISPLAY_NAME} LIKE ?",
-            arrayOf("DCIM/Latent%", "$stem!_%.jpg"),
+            "${MediaStore.Images.Media.RELATIVE_PATH} LIKE ? AND (${MediaStore.Images.Media.DISPLAY_NAME} LIKE ? OR ${MediaStore.Images.Media.DISPLAY_NAME} LIKE ?)",
+            arrayOf("DCIM/Latent%", "$stem!_%.jpg", "$stem!_%.png"),
             "${MediaStore.Images.Media.DATE_ADDED} DESC",
         )?.use { c -> if (c.moveToFirst()) android.content.ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, c.getLong(0)) else null }
     }
@@ -1171,6 +1210,10 @@ object Develop {
      */
     fun saveDeveloped(context: Context, bytes: ByteArray, source: Uri, film: String, tag: String? = null, note: String? = null): Uri =
         save(context, note?.let { Atmosphere.withNote(bytes, it) } ?: bytes, baseNameOf(context, source) + (if (tag != null) "_$tag" else "") + "_" + film.substringAfterLast('_') + ".jpg")
+
+    /** The same name for a PNG print (78b), streamed from [file] (its note is already inside). */
+    fun saveDevelopedFile(context: Context, file: File, source: Uri, film: String, tag: String? = null): Uri =
+        save(context, null, baseNameOf(context, source) + (if (tag != null) "_$tag" else "") + "_" + film.substringAfterLast('_') + ".png", from = file)
 
     /**
      * An 85B filter on the lens, as gains on the linear ProPhoto light: the ratio of 3200K to
@@ -1237,17 +1280,17 @@ object Develop {
         }
     }
 
-    private fun save(context: Context, bytes: ByteArray, name: String): Uri {
+    private fun save(context: Context, bytes: ByteArray?, name: String, from: File? = null): Uri {
         val unique = uniqueName(context, name)
         val values = ContentValues().apply {
             put(MediaStore.Images.Media.DISPLAY_NAME, unique)
-            put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
+            put(MediaStore.Images.Media.MIME_TYPE, if (name.endsWith(".png", true)) "image/png" else "image/jpeg")
             put(MediaStore.Images.Media.RELATIVE_PATH, "DCIM/Latent")
             put(MediaStore.Images.Media.IS_PENDING, 1)
         }
         val resolver = context.contentResolver
         val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)!!
-        resolver.openOutputStream(uri)!!.use { it.write(bytes) }
+        resolver.openOutputStream(uri)!!.use { out -> if (from != null) from.inputStream().use { it.copyTo(out, 1 shl 16) } else out.write(bytes!!) }
         values.clear(); values.put(MediaStore.Images.Media.IS_PENDING, 0)
         resolver.update(uri, values, null, null)
         Log.i("Latent", "developed file saved: $unique")

@@ -421,7 +421,7 @@ object HelpText {
                     "Tap Measure GPU vs CPU on a cool, idle phone first, and keep whichever is faster."),
             )))),
 
-        Topic("develop", "DEVELOP", "DARKROOM TABS", "Print size, HDR glow, Live, reset, clear and save",
+        Topic("develop", "DEVELOP", "DARKROOM TABS", "Print size, file, HDR glow, Live, reset, clear and save",
             "Everything about the finished file, with the Develop button at the top. In PRINT the same page is the last step, DEVELOP. While a develop runs, a thin line under the handle shows its progress in every tab.",
             listOf(
                 Section("DEVELOP", items = listOf(
@@ -429,8 +429,11 @@ object HelpText {
                         "How big the saved file is. The film's grain is made at the larger size, so it stays fine instead of being enlarged. No new detail is added.",
                         "The photo's own size, fastest.", "A bigger file with finer grain; 2× takes about 4× as long.",
                         "1× for sharing; 1.5× or 2× for large prints."),
+                    Item("File", "JPEG · Ultra HDR · PNG 8-bit · PNG 16-bit",
+                        "The kind of file Develop saves, remembered for every photo and for the photos the camera develops. Ultra HDR is a JPEG with the glow behind it (Android 14 and newer). PNG keeps every pixel exactly, with nothing lost to compression; 16-bit keeps the film's finest steps too.",
+                        use = "JPEG or Ultra HDR for sharing. PNG 16-bit only when you will grade the photo further, or use a wide colour space: film grain hides the difference on most photos, and the files are big (around 65 MB)."),
                     Item("Ultra HDR glow", "Off · +¼ … +2 stops",
-                        "Saves the print as an Ultra HDR JPEG: the normal print, plus a hidden map that lets an HDR screen (Android 14 and newer) make the brightest lights shine brighter than white. Only places that were really bright in the RAW and look bright on the print glow, so skin and mid-tones stay as printed. Each photo keeps its own; Settings sets where new photos start. Tap HDR on the photo to see it while you edit. Lith prints never glow. Some apps (WhatsApp) drop the glow when sharing.",
+                        "With FILE set to Ultra HDR, saves the print as an Ultra HDR JPEG: the normal print, plus a hidden map that lets an HDR screen (Android 14 and newer) make the brightest lights shine brighter than white. Only places that were really bright in the RAW and look bright on the print glow, so skin and mid-tones stay as printed. Each photo keeps its own; Settings sets where new photos start. Tap HDR on the photo to see it while you edit. Lith prints never glow. Some apps (WhatsApp) drop the glow when sharing.",
                         "Off: a plain JPEG, exactly the print.", "+2: lights up to 4× brighter than white, on a screen with that much to spare.",
                         "+1 to +1½ for lamps, candles and sunsets; Off for soft portraits."),
                     Item("This develop", "", "A summary of what the full-size develop will include: RAW or JPEG, diffusion (slow), framing, fog, light, wet, lith and so on.",
