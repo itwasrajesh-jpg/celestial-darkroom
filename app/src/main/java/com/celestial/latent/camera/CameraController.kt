@@ -112,12 +112,14 @@ class CameraController(
     private val zslWriter = java.util.concurrent.Executors.newSingleThreadExecutor()
     /**
      * Which way of running DCG works. After a driver crash the next way is tried by itself, and the one
-     * that works is kept for as long as the app runs (so at most one crash per launch):
+     * that works is saved (82a, [DCG_WAY_KEY]) so the next launch starts there with no crash:
      *  0 = auto exposure, held at 30 fps;
      *  1 = manual exposure at 30 fps — exactly MotionCam's profile, proven on the phone in 67d;
      *  2 = manual, with white balance and focus also fixed, and the plainest requests.
      */
-    @Volatile private var dcgAttempt = 0
+    private val cameraPrefs = context.getSharedPreferences("latent_camera", Context.MODE_PRIVATE)
+    private val DCG_WAY_KEY = "dcgWay"
+    @Volatile private var dcgAttempt = cameraPrefs.getInt(DCG_WAY_KEY, 0).coerceIn(0, 2)
     private val DCG_OPMODE = 37379
     private val DCG_MODE = 24
     private val DCG_FRAME_NS = 16_666_666L
@@ -230,8 +232,10 @@ class CameraController(
             closeInternal()
             val gen = ++openGeneration
             opening = true
-            openSignature = sessionSignature()        // claim these settings now, so a sync during the open does not loop
             this.lens = lens
+            // Claim these settings now, so a sync during the open does not loop. 82a: after the lens is set,
+            // so the signature is this lens's (it used to be the previous lens's, read one line too early).
+            openSignature = sessionSignature()
             this.previewSurface = surface
             // A zoom ratio on a logical multi-camera lets the driver hand the frame to another sensor
             // (visible switch + refocus). Opening the lens directly keeps it on the sensor we chose.
@@ -292,7 +296,11 @@ class CameraController(
                             log("DCG: camera error $error on way ${dcgAttempt - 1}; trying way $dcgAttempt")
                             status("DCG: one moment, trying again…")
                             handler.postDelayed({ previewSurface?.let { open(lens, it) } }, 800)
-                        } else status(if (dcgOn()) "Camera error $error with DCG on (all 3 ways tried); switch DCG off" else "Camera error $error")
+                        } else {
+                            // 82a: forget a saved way that no longer works, so the next launch tries them all again.
+                            if (dcgOn()) { cameraPrefs.edit().remove(DCG_WAY_KEY).apply(); dcgAttempt = 0 }
+                            status(if (dcgOn()) "Camera error $error with DCG on (all 3 ways tried); switch DCG off" else "Camera error $error")
+                        }
                     }
                 }, handler)
             } catch (e: Exception) {
@@ -313,6 +321,18 @@ class CameraController(
         val dev = device ?: return
         val prev = previewSurface ?: return
         val reader = rawReader ?: return
+        // 82a: a setting that arrived while the camera was opening (the saved settings reach the controller
+        // just after the first open at launch) is skipped by syncSession. The camera, the path and the RAW
+        // size were picked for the old settings, so building the session with the new ones mixes the two:
+        // DCG's opmode and sensor mode through the logical camera, which crashed the camera service at
+        // every launch with DCG on. Open again with the current settings instead.
+        if (openSignature != sessionSignature()) {
+            log("settings changed while the camera was opening → opening again with them")
+            try { dev.close() } catch (_: Exception) {}
+            device = null; opening = false
+            open(lens, prev)
+            return
+        }
         val outputs = ArrayList<OutputConfiguration>()
         try {
             outputs += OutputConfiguration(prev)
@@ -1057,6 +1077,10 @@ class CameraController(
         val fd = r.get(CaptureResult.SENSOR_FRAME_DURATION) ?: 0L
         val exp = r.get(CaptureResult.SENSOR_EXPOSURE_TIME) ?: 0L
         val mode = runCatching { r.get(CaptureResult.Key(Lenses.SENSOR_MODE_KEY, Int::class.javaObjectType)) }.getOrNull()
+        if (mode == DCG_MODE && cameraPrefs.getInt(DCG_WAY_KEY, -1) != dcgAttempt) {
+            cameraPrefs.edit().putInt(DCG_WAY_KEY, dcgAttempt).apply()
+            log("DCG: way $dcgAttempt works here; saved, so the next launch starts with it")
+        }
         log("DCG check ($what): frame ${"%.1f".format(fd / 1e6)} ms (${if (fd > 0) "%.0f".format(1e9 / fd) else "?"} fps) · " +
             "shutter 1/${if (exp > 0) "%.0f".format(1e9 / exp) else "?"} s · ISO ${r.get(CaptureResult.SENSOR_SENSITIVITY) ?: 0} · " +
             "sensor mode reported ${mode ?: "not reported"} (MotionCam's DCG shows $DCG_MODE)")
