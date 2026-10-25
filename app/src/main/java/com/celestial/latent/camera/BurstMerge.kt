@@ -399,8 +399,9 @@ object BurstMerge {
      * noise), and not at all where any of its colours is near clipping; the darkest frame always counts
      * a little, so a spot clipped everywhere else still has its value. Per 32 px tile, a frame that
      * disagrees with the middle one (something moved) fades out, as in [burst]. The result stays at the
-     * darkest frame's level, so nothing clips; [Result.baseline] says how many stops brighter the middle
-     * frame was, and the darkroom develops it that bright (the DNG's BaselineExposure).
+     * darkest frame's level, so nothing clips; [Result.baseline] says how many stops brighter the
+     * brightest frame was (86c: the one the user set so the shadows look right), and the darkroom develops
+     * it that bright (the DNG's BaselineExposure); the highlights then sit above white for the film's shoulder.
      */
     fun bracket(frames: Int, read: (Int) -> ShortArray, w: Int, h: Int, black: Int, white: Int, cfa: ByteArray, exposure: DoubleArray,
                 progress: (String) -> Unit = {}): Result {
@@ -484,8 +485,8 @@ object BurstMerge {
         progress("Finishing…")
         val scale = scaleFor(white)
         for (k in 0 until 4) { val s = sum[k]; for (p in s.indices) s[p] = black + s[p] / wsum[p].coerceAtLeast(1e-6f) }
-        val baseline = Math.log(exposure[ref] / eDark) / Math.log(2.0)
         val span = Math.log(exposure.maxOrNull()!! / eDark) / Math.log(2.0)
+        val baseline = span
         notes.add(0, "%.1f stops, kept at frame %d's level, develops +%.2f EV".format(java.util.Locale.US, span, dark + 1, baseline))
         return Result(bayer(sum, w, h, scale), scale, ref, used, notes.joinToString(", "), baseline)
     }
