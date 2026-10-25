@@ -61,19 +61,20 @@ object BurstRollFiles {
      * The whole roll merged into one RAW (68b) in DCIM/Latent: a burst averaged on its sharpest frame
      * (`<stem>_MERGED.dng`), or a focus stack blended front to back (`<stem>_STACKED.dng`). Values
      * are kept at higher precision (x16 for 10-bit, x4 for 14-bit DCG) with black and white scaled the same.
+     * [picks] (86d): an HDR bracket's areas picked by hand in the merge editor.
      */
-    fun merge(context: Context, reader: BurstRoll.Reader, rollName: String, progress: (String) -> Unit): Uri {
+    fun merge(context: Context, reader: BurstRoll.Reader, rollName: String, picks: List<MergePicks.Pick> = emptyList(), progress: (String) -> Unit): Uri {
         val c = reader.index.common; val n = reader.index.frames.size
         val focus = c.kind == BurstRoll.KIND_FOCUS
         val bracket = c.kind == BurstRoll.KIND_BRACKET
         val t0 = System.nanoTime()
         val r = if (focus) BurstMerge.focus(n, reader::pixels, c.width, c.height, c.black, c.white, c.cfa, progress)
-                else if (bracket) BurstMerge.bracket(n, reader::pixels, c.width, c.height, c.black, c.white, c.cfa, exposures(reader), progress)
+                else if (bracket) BurstMerge.bracket(n, reader::pixels, c.width, c.height, c.black, c.white, c.cfa, exposures(reader), progress, picks, c.orientation == 6)
                 else BurstMerge.burst(n, reader::pixels, c.width, c.height, c.black, c.white, c.cfa, reader.sharpest, progress)
         val secs = (System.nanoTime() - t0) / 1e9
         val hdr = c.kind == BurstRoll.KIND_HDR
         val desc = if (focus) "Celestial Darkroom focus stack of $n frames - ${c.lens}${if (c.dcg) " (DCG)" else ""}"
-                   else if (bracket) "Celestial Darkroom HDR bracket: ${r.used} of $n frames, merged on frame ${r.ref + 1} - ${c.lens}${if (c.dcg) " (DCG)" else ""}"
+                   else if (bracket) "Celestial Darkroom HDR bracket: ${r.used} of $n frames, merged on frame ${r.ref + 1}${if (picks.isNotEmpty()) ", ${picks.size} area(s) picked by hand" else ""} - ${c.lens}${if (c.dcg) " (DCG)" else ""}"
                    else if (hdr) "Celestial Darkroom HDR stack: ${r.used} of $n frames shot ${"%.1f".format(c.brighten)} stops dark, merged on frame ${r.ref + 1} - ${c.lens}${if (c.dcg) " (DCG)" else ""}"
                    else "Celestial Darkroom merge of ${r.used} of $n frames on frame ${r.ref + 1} - ${c.lens}${if (c.dcg) " (DCG)" else ""}"
         val m = reader.dngMeta(r.ref, desc)
