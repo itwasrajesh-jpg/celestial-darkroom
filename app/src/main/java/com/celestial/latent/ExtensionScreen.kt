@@ -42,6 +42,8 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
@@ -86,6 +88,7 @@ class ExtensionCamera(private val context: android.content.Context, private val 
     private var surfaceTexture: SurfaceTexture? = null
     @Volatile var zoom = 1f
     var onZoomSupport: (Boolean) -> Unit = {}
+    private val reopenToken = Any()
 
     /** What this extension lets us set. Filled on open, reported via onCaps. */
     data class Caps(val keys: List<String>, val zoom: Boolean, val ev: Boolean, val manual: Boolean, val afRegions: Boolean, val isz: Boolean, val evRange: android.util.Range<Int>?, val expRange: android.util.Range<Long>?, val isoRange: android.util.Range<Int>?)
@@ -269,15 +272,20 @@ class ExtensionCamera(private val context: android.content.Context, private val 
         } catch (e: Exception) { onStatus("capture: ${e.message}") }
     }
 
-    fun switchTo(ext: Int) { extension = ext; openOnTexture() }
+    fun switchTo(ext: Int) { handler.removeCallbacksAndMessages(reopenToken); extension = ext; openOnTexture() }
     /** After Android took the camera away (background / gallery), reopen on the same texture. */
     fun reopenIfNeeded() = handler.post { if (device == null && surfaceTexture != null) { android.util.Log.i("Latent", "extension: reopening after resume"); openOnTexture() } }
     fun applyZoom(z: Float) {
         zoom = z
         // Night honours a live zoom change; Auto/Portrait only read zoom when the session is created.
-        if (extension == CameraExtensionCharacteristics.EXTENSION_NIGHT) refresh() else openOnTexture()
+        if (extension == CameraExtensionCharacteristics.EXTENSION_NIGHT) { refresh(); return }
+        // 83a: each reopen restarts Xiaomi's camera (~0.7 s). Fast taps replace the one still
+        // waiting, so the camera restarts once, for the last lens tapped.
+        handler.removeCallbacksAndMessages(reopenToken)
+        handler.postAtTime({ openOnTexture() }, reopenToken, android.os.SystemClock.uptimeMillis() + 150)
     }
-    fun close() = handler.post { closeInternal() }
+    // a lens change still waiting must not reopen the camera after we were closed (pause, screen gone)
+    fun close() { handler.removeCallbacksAndMessages(reopenToken); handler.post { closeInternal() } }
     private fun closeInternal() {
         try { session?.close() } catch (_: Exception) {}; session = null
         try { device?.close() } catch (_: Exception) {}; device = null
@@ -304,6 +312,9 @@ fun ExtensionScreen(settings: AppSettings, onSettingsChange: (AppSettings) -> Un
     var thumb by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
     var toast by remember { mutableStateOf("") }
     var focusTap by remember { mutableStateOf<androidx.compose.ui.geometry.Offset?>(null) }
+    // 83a: the film cards fold here too, sharing the main screen's setting
+    val uiPrefs = remember { context.getSharedPreferences("latent_camera_ui", android.content.Context.MODE_PRIVATE) }
+    var filmsFolded by remember { mutableStateOf(runCatching { uiPrefs.getBoolean("films_folded", false) }.getOrDefault(false)) }
     val cam = remember {
         ExtensionCamera(context) { s -> status = s }.also {
             it.onZoomSupport = { ok -> zoomOk = ok }; it.onCaps = { c -> caps = c }
@@ -361,32 +372,50 @@ fun ExtensionScreen(settings: AppSettings, onSettingsChange: (AppSettings) -> Un
                     }
                 }
             })
+            // 83a: the focus box sits under the lens row and film cards, as on the main screen.
+            // Drawn last it covered them, and a lens tap became a new focus tap.
+            caps?.let { c ->
+                FocusEvOverlay(
+                    point = focusTap, evIndex = ev,
+                    evRange = (c.evRange?.let { it.lower..it.upper } ?: 0..0),
+                    onEv = { n -> if (c.ev) { ev = n; cam.evIndex = n; cam.refresh() } },
+                    onDismiss = { focusTap = null },
+                )
+            }
             Text("XIAOMI " + extName(mode) + " · JPG", color = LatentColors.TextBright, fontSize = 10.sp, letterSpacing = 1.sp, modifier = Modifier.align(Alignment.TopStart).padding(12.dp))
             caps?.let { c -> Text(listOfNotNull(if (c.zoom) "ZOOM" else null, if (c.ev) "EV" else null, if (c.manual) "MANUAL" else null, if (c.afRegions) "TAP-AF" else null, if (c.isz) "ISZ" else null).ifEmpty { listOf("AUTO ONLY") }.joinToString(" · "),
                 color = LatentColors.Amber, fontSize = 10.sp, letterSpacing = 1.sp, modifier = Modifier.align(Alignment.TopEnd).padding(12.dp)) }
-            // Same row as the main screen: lens ratios, then ×2 relative to the chosen lens (sent as one zoom ratio).
-            var baseZoom by remember { mutableStateOf(1f) }
+            // 83a: the main screen's lens row (76a): one see-through dark pill, the chosen lens in a light
+            // circle, the phone's own lens list. Here a lens is a zoom ratio on Xiaomi's camera, and ×2
+            // doubles it (no in-sensor ×4: these modes don't take that key). It follows the film cards down.
+            val filmsLift by androidx.compose.animation.core.animateDpAsState(if (filmsFolded) 0.dp else 32.dp, label = "films")
+            var lensSel by remember { mutableStateOf(com.celestial.latent.camera.Lenses.ALL.firstOrNull { it.isMain } ?: com.celestial.latent.camera.Lenses.ALL.first()) }
             var x2 by remember { mutableStateOf(false) }
-            fun send() { zoom = baseZoom * (if (x2) 2f else 1f); cam.applyZoom(zoom) }
-            // The look strip is two lines tall, so the lens row sits well clear of it —
-            // the same spacing as the camera screen.
-            if (zoomOk) Row(Modifier.align(Alignment.BottomCenter).padding(bottom = 84.dp), verticalAlignment = Alignment.CenterVertically) {
-                listOf(0.6f to "0.6", 1f to "1", 3f to "3", 4.3f to "4.3").forEach { (z, label) ->
-                    val on = baseZoom == z
-                    Text(if (on) "$label×" else label, color = if (on) LatentColors.TextBright else LatentColors.Text, fontSize = if (on) 15.sp else 12.sp,
-                        modifier = Modifier.combinedClickable(onClick = { if (!on) { Haptics.tick(context); baseZoom = z; send() } }).padding(horizontal = 11.dp, vertical = 6.dp))
+            fun send() { zoom = lensSel.label.toFloat() * (if (x2) 2f else 1f); cam.applyZoom(zoom) }
+            if (zoomOk) Row(Modifier.align(Alignment.BottomCenter).padding(bottom = 52.dp + filmsLift).clip(RoundedCornerShape(999.dp)).background(PICTURE_PILL)
+                .padding(horizontal = 4.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                com.celestial.latent.camera.Lenses.ALL.forEach { l ->
+                    val on = l == lensSel
+                    Text(if (on) l.label + "×" else l.label, color = if (on) LatentColors.Background else LatentColors.TextBright, fontSize = if (on) 14.sp else 12.sp,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                        modifier = Modifier.then(if (on) Modifier.clip(CircleShape).background(LatentColors.TextBright).size(38.dp).wrapContentHeight(Alignment.CenterVertically) else Modifier)
+                            .combinedClickable(onClick = { if (!on) { Haptics.tick(context); lensSel = l; send() } })
+                            .then(if (on) Modifier else Modifier.padding(horizontal = 11.dp, vertical = 6.dp)))
                 }
-                Spacer(Modifier.size(6.dp))
-                val effective = String.format("%.1f", baseZoom * 2).removeSuffix(".0")
+                Spacer(Modifier.width(6.dp))
+                val z2 = lensSel.label.toFloat() * 2f
+                val effective = if (z2 >= 10f) String.format(Locale.US, "%.0f", z2) else String.format(Locale.US, "%.1f", z2).removeSuffix(".0")
                 Text(if (x2) "$effective×" else "×2", color = if (x2) LatentColors.AmberInk else LatentColors.Amber, fontSize = 11.sp,
-                    modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(if (x2) LatentColors.Amber else androidx.compose.ui.graphics.Color.Transparent).border(0.5.dp, LatentColors.Amber, RoundedCornerShape(999.dp))
+                    modifier = Modifier.padding(end = 4.dp).clip(RoundedCornerShape(999.dp)).background(if (x2) LatentColors.Amber else androidx.compose.ui.graphics.Color.Transparent).border(0.5.dp, LatentColors.Amber, RoundedCornerShape(999.dp))
                         .combinedClickable(onClick = { Haptics.tick(context); x2 = !x2; send() }).padding(horizontal = 9.dp, vertical = 3.dp))
                 if (caps?.isz == true) Text(if (iszOn) "ISZ" else "isz", color = if (iszOn) LatentColors.AmberInk else LatentColors.Amber, fontSize = 11.sp,
-                    modifier = Modifier.padding(start = 6.dp).clip(RoundedCornerShape(999.dp)).background(if (iszOn) LatentColors.Amber else androidx.compose.ui.graphics.Color.Transparent).border(0.5.dp, LatentColors.Amber, RoundedCornerShape(999.dp))
+                    modifier = Modifier.padding(end = 4.dp).clip(RoundedCornerShape(999.dp)).background(if (iszOn) LatentColors.Amber else androidx.compose.ui.graphics.Color.Transparent).border(0.5.dp, LatentColors.Amber, RoundedCornerShape(999.dp))
                         .combinedClickable(onClick = { Haptics.tick(context); iszOn = !iszOn; cam.isz = iszOn; cam.refresh() }).padding(horizontal = 8.dp, vertical = 3.dp))
             }
-            Text((if (zoomOk) "LENS VIA ZOOM" else "LENS BY XIAOMI") + " · FILM OVER JPEG", color = LatentColors.TextDim, fontSize = 10.sp, letterSpacing = 1.sp, modifier = Modifier.align(Alignment.BottomStart).padding(start = 12.dp, bottom = 122.dp))
-            FilmStrip(settings.preset, Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp)) { id ->
+            Text((if (zoomOk) "LENS VIA ZOOM" else "LENS BY XIAOMI") + " · FILM OVER JPEG", color = LatentColors.TextDim, fontSize = 10.sp, letterSpacing = 1.sp, modifier = Modifier.align(Alignment.BottomStart).padding(start = 12.dp, bottom = 90.dp + filmsLift))
+            FilmStrip(settings.preset, Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp),
+                folded = filmsFolded,
+                onFold = { filmsFolded = it; runCatching { uiPrefs.edit().putBoolean("films_folded", it).apply() } }) { id ->
                 if (id.startsWith("stock:")) {
                     com.celestial.latent.develop.Recipes.load(context, id.removePrefix("stock:"))?.let { r ->
                         onSettingsChange(settings.copy(preset = id, film = r.film))
@@ -400,14 +429,6 @@ fun ExtensionScreen(settings: AppSettings, onSettingsChange: (AppSettings) -> Un
                 }
             }
             if (toast.isNotEmpty()) Text(toast, color = LatentColors.TextBright, fontSize = 11.sp, modifier = Modifier.align(Alignment.Center).padding(24.dp).clip(RoundedCornerShape(8.dp)).background(androidx.compose.ui.graphics.Color(0xCC161615)).padding(12.dp))
-            caps?.let { c ->
-                FocusEvOverlay(
-                    point = focusTap, evIndex = ev,
-                    evRange = (c.evRange?.let { it.lower..it.upper } ?: 0..0),
-                    onEv = { n -> if (c.ev) { ev = n; cam.evIndex = n; cam.refresh() } },
-                    onDismiss = { focusTap = null },
-                )
-            }
         }
         // Control strip: only what this extension accepts
         val c = caps
