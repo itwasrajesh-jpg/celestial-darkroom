@@ -891,7 +891,7 @@ internal fun FocusEvOverlay(
 private const val FOCUS_FRAMES = 12
 
 /** A see-through dark backing for words drawn over the live picture (76a). */
-private val PICTURE_PILL = Color(0x73000000)
+internal val PICTURE_PILL = Color(0x73000000)
 
 /** Words over the live picture sit on a small dark pill, readable over a bright scene as well as a dark one (76a). */
 private fun Modifier.onPicture(): Modifier =
