@@ -18,50 +18,70 @@ import java.nio.ByteOrder
  */
 object ChromaDenoise {
 
+    /** Rows worked out at once (81b): the working arrays are a band, not the photo. */
+    private const val BAND = 256
+
     /**
      * @param strength 0 = off, 1 = strong. The blur radius scales with this.
      * Works in place on a linear RGB float buffer (width*height*3 floats).
+     *
+     * 81b: in bands of [BAND] rows, each read with three blur radii of rows above and below it (three
+     * box passes reach that far), so the result is the whole-picture one to rounding while the working
+     * arrays stay a few megabytes: whole, they were four photo-sized arrays, 800 MB at 50 MP. A band is
+     * written only after the next band has read its rows, so every band reads the untouched picture.
      */
     fun apply(data: ByteBuffer, width: Int, height: Int, strength: Float) {
         if (strength <= 0.001f || width < 8 || height < 8) return
         val t0 = System.nanoTime()
         val f = data.order(ByteOrder.nativeOrder()).asFloatBuffer()
-        val n = width * height
-
-        // Brightness, and the two colour differences. Chroma is what gets blurred.
-        val y = FloatArray(n)
-        val cb = FloatArray(n)
-        val cr = FloatArray(n)
-        for (i in 0 until n) {
-            val r = f.get(i * 3); val g = f.get(i * 3 + 1); val b = f.get(i * 3 + 2)
-            val lum = 0.2126f * r + 0.7152f * g + 0.0722f * b
-            y[i] = lum
-            cb[i] = b - lum
-            cr[i] = r - lum
-        }
 
         // Radius grows with strength; three box passes approximate a Gaussian closely enough
         // and stay linear in cost regardless of radius.
         val radius = (1 + (strength * 6f)).toInt().coerceIn(1, 12)
-        repeat(3) {
-            boxBlur(cb, width, height, radius)
-            boxBlur(cr, width, height, radius)
+        val margin = 3 * radius
+        // the arrays for the largest band, made once and reused for every band
+        val most = width * minOf(height, BAND + 2 * margin)
+        val cb = FloatArray(most); val cr = FloatArray(most); val tmp = FloatArray(most)
+        var out = FloatArray(width * minOf(height, BAND) * 3); var pending = FloatArray(out.size)
+        var pendingY0 = -1; var pendingRows = 0
+        fun flush() { if (pendingY0 >= 0) for (k in 0 until pendingRows * width * 3) f.put(pendingY0 * width * 3 + k, pending[k]) }
+        var y0 = 0
+        while (y0 < height) {
+            val y1 = minOf(height, y0 + BAND)
+            val a0 = maxOf(0, y0 - margin); val a1 = minOf(height, y1 + margin); val bh = a1 - a0
+            val n = width * bh
+            // The two colour differences of the band and its margins. Chroma is what gets blurred.
+            for (k in 0 until n) {
+                val i = a0 * width + k
+                val r = f.get(i * 3); val g = f.get(i * 3 + 1); val b = f.get(i * 3 + 2)
+                val lum = 0.2126f * r + 0.7152f * g + 0.0722f * b
+                cb[k] = b - lum
+                cr[k] = r - lum
+            }
+            repeat(3) {
+                boxBlur(cb, width, bh, radius, tmp)
+                boxBlur(cr, width, bh, radius, tmp)
+            }
+            // The band's own rows, put back together; brightness from the untouched picture.
+            for (k in 0 until width * (y1 - y0)) {
+                val i = y0 * width + k; val j = k + (y0 - a0) * width
+                val lum = 0.2126f * f.get(i * 3) + 0.7152f * f.get(i * 3 + 1) + 0.0722f * f.get(i * 3 + 2)
+                val b = cb[j] + lum
+                val r = cr[j] + lum
+                // Green is recovered from the others so brightness is preserved exactly.
+                val g = (lum - 0.2126f * r - 0.0722f * b) / 0.7152f
+                out[k * 3] = r; out[k * 3 + 1] = g; out[k * 3 + 2] = b
+            }
+            flush()
+            val t = pending; pending = out; out = t; pendingY0 = y0; pendingRows = y1 - y0
+            y0 = y1
         }
-
-        for (i in 0 until n) {
-            val lum = y[i]
-            val b = cb[i] + lum
-            val r = cr[i] + lum
-            // Green is recovered from the others so brightness is preserved exactly.
-            val g = (lum - 0.2126f * r - 0.0722f * b) / 0.7152f
-            f.put(i * 3, r); f.put(i * 3 + 1, g); f.put(i * 3 + 2, b)
-        }
+        flush()
         Log.i("Latent", "chroma denoise: strength ${"%.2f".format(strength)}, radius $radius, ${width}x$height in ${(System.nanoTime() - t0) / 1_000_000} ms")
     }
 
-    /** Separable running-sum box blur: cost does not grow with radius. */
-    private fun boxBlur(v: FloatArray, w: Int, h: Int, r: Int) {
-        val tmp = FloatArray(v.size)
+    /** Separable running-sum box blur: cost does not grow with radius. [tmp] is scratch of the same size. */
+    private fun boxBlur(v: FloatArray, w: Int, h: Int, r: Int, tmp: FloatArray) {
         val span = 2 * r + 1
         // Horizontal
         for (row in 0 until h) {

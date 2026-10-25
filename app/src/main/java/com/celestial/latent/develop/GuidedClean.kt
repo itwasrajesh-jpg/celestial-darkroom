@@ -43,6 +43,16 @@ object GuidedClean {
     fun factors(f: FloatBuffer, w: Int, h: Int, amount: Float): FloatArray {
         val out = FloatArray(w * h) { 1f }
         if (amount <= 0f) return out
+        bands(f, w, h, amount) { y0, band -> band.copyInto(out, y0 * w) }
+        return out
+    }
+
+    /**
+     * The factors one band of rows at a time (81b): [emit] gets the band's first row and its factors,
+     * row by row. Each band reads the picture's rows just above and below it, so a caller that changes
+     * the picture must hold a band back until the next one has been worked out ([applyInPlace]).
+     */
+    private fun bands(f: FloatBuffer, w: Int, h: Int, amount: Float, emit: (Int, FloatArray) -> Unit) {
         val r = max(1, (2f * min(w, h) / 960f).roundToInt())         // 2 px at a 1280-wide picture, as tested
         val e = 0.004f + 0.012f * amount; val eps = e * e
         // the perceptual brightness of one row (clamped at the picture's edges)
@@ -89,6 +99,7 @@ object GuidedClean {
                 }
             }
             // second average of a and b, and the cleaned brightness for the output band
+            val band = FloatArray((y1 - y0) * w)
             val ha = FloatArray(w); val hb = FloatArray(w)
             val HA = Array(m) { FloatArray(w) }; val HB = Array(m) { FloatArray(w) }
             for (j in 0 until m) { hbox(A[j], ha, pre); hbox(B[j], hb, pre); ha.copyInto(HA[j]); hb.copyInto(HB[j]) }
@@ -102,21 +113,28 @@ object GuidedClean {
                     val s0 = s[ks][x]
                     val sc = ma * s0 + mb
                     val mix = s0 + (sc - s0) * amount
-                    out[y * w + x] = if (s0 > 1e-4f) ((mix / s0) * (mix / s0)).coerceIn(0f, 4f) else 1f
+                    band[(y - y0) * w + x] = if (s0 > 1e-4f) ((mix / s0) * (mix / s0)).coerceIn(0f, 4f) else 1f
                 }
             }
+            emit(y0, band)
             y0 = y1
         }
-        return out
     }
 
     /** Cleans the picture's brightness noise in place: each pixel's RGB times its factor. */
     fun applyInPlace(f: FloatBuffer, w: Int, h: Int, amount: Float) {
         if (amount <= 0f) return
-        val k = factors(f, w, h, amount)
-        for (i in 0 until w * h) {
-            val o = i * 3; val m = k[i]
-            if (m != 1f) { f.put(o, f.get(o) * m); f.put(o + 1, f.get(o + 1) * m); f.put(o + 2, f.get(o + 2) * m) }
+        // 81b: a band at a time, written once the next band has read the rows it needs, so the
+        // filter sees the untouched picture everywhere and only two bands of factors are ever kept
+        // (whole, they were a photo-sized array: 200 MB at 50 MP).
+        var pending: FloatArray? = null; var pendingY0 = 0
+        fun write(y0: Int, k: FloatArray) {
+            for (j in k.indices) {
+                val o = (y0 * w + j) * 3; val m = k[j]
+                if (m != 1f) { f.put(o, f.get(o) * m); f.put(o + 1, f.get(o + 1) * m); f.put(o + 2, f.get(o + 2) * m) }
+            }
         }
+        bands(f, w, h, amount) { y0, band -> pending?.let { write(pendingY0, it) }; pending = band; pendingY0 = y0 }
+        pending?.let { write(pendingY0, it) }
     }
 }
