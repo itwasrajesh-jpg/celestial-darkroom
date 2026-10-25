@@ -87,6 +87,7 @@ fun BurstScreen(
     val page = pager.currentPage.coerceAtMost((frames.size - 1).coerceAtLeast(0))
     val rollName = item?.name ?: "LATENT_BURST.${BurstRoll.EXT}"
     val focusStack = r?.index?.common?.kind == BurstRoll.KIND_FOCUS
+    val hdrStack = r?.index?.common?.kind == BurstRoll.KIND_HDR
 
     fun runBusy(label: String, work: suspend () -> Unit) {
         if (busy != null) return
@@ -100,7 +101,7 @@ fun BurstScreen(
     Column(Modifier.fillMaxSize().background(LatentColors.Background).statusBarsPadding().navigationBarsPadding().padding(horizontal = 14.dp)) {
         Row(Modifier.fillMaxWidth().padding(vertical = 10.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             Text("‹", color = LatentColors.Text, fontSize = 22.sp, modifier = Modifier.combinedClickable(onClick = onBack).padding(horizontal = 6.dp))
-            Text((if (focusStack) "FOCUS STACK" else "BURST") + (if (frames.isNotEmpty()) " · ${frames.size} FRAMES" else "") + (r?.index?.common?.let { if (it.dcg) " · DCG" else "" } ?: ""),
+            Text((if (focusStack) "FOCUS STACK" else if (hdrStack) "HDR STACK" else "BURST") + (if (frames.isNotEmpty()) " · ${frames.size} FRAMES" else "") + (r?.index?.common?.let { if (it.dcg) " · DCG" else "" } ?: ""),
                 color = LatentColors.Text, fontSize = 12.sp, letterSpacing = 3.sp)
             Text(item?.let { "%.0f MB".format(it.sizeBytes / 1e6) } ?: "", color = LatentColors.TextDim, fontSize = 11.sp, modifier = Modifier.padding(6.dp))
         }
@@ -165,7 +166,8 @@ fun BurstScreen(
                 runBusy(if (focusStack) "Stacking…" else "Merging…") {
                     val uri = withContext(Dispatchers.Default) { BurstRollFiles.merge(context, r, rollName) { busy = it } }
                     merged = uri
-                    note = (if (focusStack) "Stacked" else "Merged") + " · saved to DCIM/Latent"
+                    note = (if (focusStack) "Stacked" else "Merged") + " · saved to DCIM/Latent" +
+                        (if (hdrStack) " · develops ${"%+.1f".format(r.index.common.brighten)} EV brighter" else "")
                 }
             }
             merged?.let { u -> Action("Develop it") { onOpenDarkroom(u) } }

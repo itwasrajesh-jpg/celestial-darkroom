@@ -40,6 +40,7 @@ object BurstRoll {
         val illuminant1: Int, val illuminant2: Int?, val orientation: Int,
         val model: String, val lens: String, val dcg: Boolean,
         val kind: Int = KIND_BURST,
+        val brighten: Float = 0f,   // 86a: stops the frames were shot darker than the preview (HDR stack), 0 otherwise
     )
 
     /** One frame: its own exposure and white balance, where its data sits, and how sharp it is. */
@@ -56,12 +57,14 @@ object BurstRoll {
 
     const val KIND_BURST = 0   // every frame at the same focus (68a)
     const val KIND_FOCUS = 1   // a focus bracket: each frame focused a little farther away (69a)
+    const val KIND_HDR = 2     // an HDR stack: every frame the same, a few stops dark, for skies (86a)
 
     class Index(val common: Common, val frames: List<Frame>) {
         fun write(out: DataOutputStream) {
             val c = common
             // Version 2 (69a) adds the kind of roll, and each frame's focus distance and whether the lens was moving.
-            out.writeInt(2)
+            // Version 3 (86a) adds how many stops dark the frames were shot (after the frames).
+            out.writeInt(3)
             out.writeUTF(c.model); out.writeUTF(c.lens); out.writeBoolean(c.dcg); out.writeInt(c.kind)
             out.writeInt(c.width); out.writeInt(c.height); out.writeInt(c.black); out.writeInt(c.white); out.writeInt(c.orientation)
             out.write(c.cfa, 0, 4)
@@ -77,12 +80,13 @@ object BurstRoll {
                 out.writeLong(f.prevOff); out.writeInt(f.prevLen)
                 out.writeFloat(f.focusD); out.writeBoolean(f.lensMoving)
             }
+            out.writeFloat(c.brighten)
         }
 
         companion object {
             fun read(inp: DataInputStream): Index {
                 val version = inp.readInt()
-                require(version == 1 || version == 2) { "unknown burst roll version" }
+                require(version in 1..3) { "unknown burst roll version" }
                 val model = inp.readUTF(); val lens = inp.readUTF(); val dcg = inp.readBoolean()
                 val kind = if (version >= 2) inp.readInt() else KIND_BURST
                 val w = inp.readInt(); val h = inp.readInt(); val black = inp.readInt(); val white = inp.readInt(); val orientation = inp.readInt()
@@ -100,7 +104,8 @@ object BurstRoll {
                     val focusD = if (version >= 2) inp.readFloat() else -1f; val moving = if (version >= 2) inp.readBoolean() else false
                     Frame(t, exp, iso, neutral, sharp, mode, hiOff, hiLen, loOff, loLen, prevOff, prevLen, focusD, moving)
                 }
-                return Index(Common(w, h, black, white, cfa, cm1, cm2, fm1, cal1, ill1, ill2, orientation, model, lens, dcg, kind), frames)
+                val brighten = if (version >= 3) inp.readFloat() else 0f
+                return Index(Common(w, h, black, white, cfa, cm1, cm2, fm1, cal1, ill1, ill2, orientation, model, lens, dcg, kind, brighten), frames)
             }
         }
     }
@@ -305,7 +310,8 @@ object BurstRoll {
         fun dngMeta(i: Int, description: String): DngWriter.Meta {
             val c = index.common; val f = index.frames[i]
             return DngWriter.Meta(c.width, c.height, c.black, c.white, c.cfa, c.colorMatrix1, c.colorMatrix2, c.forwardMatrix1,
-                c.calibration1, c.illuminant1, c.illuminant2, f.neutral, c.orientation, c.model, description, f.exposureNs, f.iso)
+                c.calibration1, c.illuminant1, c.illuminant2, f.neutral, c.orientation, c.model, description, f.exposureNs, f.iso,
+                baselineExposure = c.brighten.toDouble())
         }
 
         val sharpest: Int get() = index.frames.indices.maxByOrNull { index.frames[it].sharpness } ?: 0

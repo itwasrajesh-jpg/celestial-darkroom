@@ -69,12 +69,15 @@ object BurstRollFiles {
         val r = if (focus) BurstMerge.focus(n, reader::pixels, c.width, c.height, c.black, c.white, c.cfa, progress)
                 else BurstMerge.burst(n, reader::pixels, c.width, c.height, c.black, c.white, c.cfa, reader.sharpest, progress)
         val secs = (System.nanoTime() - t0) / 1e9
+        val hdr = c.kind == BurstRoll.KIND_HDR
         val desc = if (focus) "Celestial Darkroom focus stack of $n frames - ${c.lens}${if (c.dcg) " (DCG)" else ""}"
+                   else if (hdr) "Celestial Darkroom HDR stack: ${r.used} of $n frames shot ${"%.1f".format(c.brighten)} stops dark, merged on frame ${r.ref + 1} - ${c.lens}${if (c.dcg) " (DCG)" else ""}"
                    else "Celestial Darkroom merge of ${r.used} of $n frames on frame ${r.ref + 1} - ${c.lens}${if (c.dcg) " (DCG)" else ""}"
         val m = reader.dngMeta(r.ref, desc)
         val meta = DngWriter.Meta(m.width, m.height, m.blackLevel * r.scale, m.whiteLevel * r.scale, m.cfaPattern, m.colorMatrix1, m.colorMatrix2,
-            m.forwardMatrix1, m.cameraCalibration1, m.illuminant1, m.illuminant2, m.asShotNeutral, m.orientation, m.uniqueModel, desc, m.exposureNs, m.iso)
-        android.util.Log.i("Latent", "burst merge $rollName: ${if (focus) "focus stack" else "merge"} of ${r.used}/$n, ref #${r.ref + 1}, ${"%.1f".format(secs)} s. ${r.note}")
+            m.forwardMatrix1, m.cameraCalibration1, m.illuminant1, m.illuminant2, m.asShotNeutral, m.orientation, m.uniqueModel, desc, m.exposureNs, m.iso,
+            m.baselineExposure)
+        android.util.Log.i("Latent", "burst merge $rollName: ${if (focus) "focus stack" else if (hdr) "hdr stack (+${"%.2f".format(c.brighten)} EV)" else "merge"} of ${r.used}/$n, ref #${r.ref + 1}, ${"%.1f".format(secs)} s. ${r.note}")
         progress("Saving…")
         val name = "${stem(rollName)}_${if (focus) "STACKED" else "MERGED"}.dng"
         val values = ContentValues().apply {

@@ -517,8 +517,8 @@ object HelpText {
                 Section("CAMERA", items = listOf(
                     Item("Film strip", "tap · long-press", "Choose the look every new shot is developed with. YOUR RECIPES and films built here come first. Long-press opens the darkroom.",
                         use = "Pick the look before you shoot; you can always change it later in the darkroom."),
-                    Item("Burst button", "off · 16 · FS", "16 shoots a burst into one burst roll; FS shoots a focus stack, near to far.",
-                        use = "16 in low light, then Merge in the burst viewer for less noise. FS for close-ups, then Stack."),
+                    Item("Burst button", "off · 16 · FS · HDR", "16 shoots a burst into one burst roll; FS shoots a focus stack, near to far; HDR shoots 16 frames two stops darker than you see, so a bright sky keeps its detail.",
+                        use = "16 in low light, then Merge in the burst viewer for less noise. FS for close-ups, then Stack. HDR for sunsets and bright skies: Merge it, and the darkroom brightens it back while the sky rolls off like film."),
                 )),
                 Section("FAST SHOT", items = listOf(
                     Item("Fast shot", "quick settings ﹀", "Fixed focal lengths 28 · 35 · 50 · 75 · 90 · 135 mm instead of the lenses. Each is made from the nearest real lens and a crop, shown as frame lines; the view outside them is dimmed so you see who is walking in. The RAW keeps the lens's whole frame and prints at the focal length.",

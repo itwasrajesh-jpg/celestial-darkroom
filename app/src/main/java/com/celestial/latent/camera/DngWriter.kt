@@ -39,6 +39,7 @@ object DngWriter {
         val description: String,
         val exposureNs: Long? = null,    // ExposureTime / ISO, when the frame reports them
         val iso: Int? = null,
+        val baselineExposure: Double = 0.0, // 86a: stops to brighten by when developing (an HDR stack shot dark); 0 = not written
     )
 
     fun metaFrom(ch: CameraCharacteristics, result: CaptureResult?, width: Int, height: Int, black: Int, white: Int, orientation: Int, description: String): Meta {
@@ -129,6 +130,7 @@ object DngWriter {
         shorts(50778, meta.illuminant1)
         meta.illuminant2?.let { shorts(50779, it) }
         meta.forwardMatrix1?.let { rationals(50964, it, true) }
+        if (meta.baselineExposure != 0.0) rationals(50730, doubleArrayOf(meta.baselineExposure), true)  // BaselineExposure
         tags.sortBy { it.id }
 
         // Layout: header(8) + IFD(2 + 12n + 4) + out-of-line values + image data.

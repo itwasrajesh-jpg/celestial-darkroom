@@ -161,6 +161,46 @@ object Develop {
         } ?: 0
     } catch (t: Throwable) { 0 }
 
+    /**
+     * 86a: stops to brighten one of OUR DNGs by (its BaselineExposure, tag 50730), else 0. An HDR stack is
+     * shot dark so the sky keeps its detail; this puts its middle tones back where the preview had them,
+     * and the sky lands above 1.0 for the film's shoulder to roll off. Only files our own DngWriter made
+     * (Software "Celestial Darkroom") are trusted: other phones' DNGs develop exactly as before.
+     */
+    fun brightenOf(context: Context, uri: Uri): Float = try {
+        context.contentResolver.openInputStream(uri)?.use { input ->
+            val head = ByteArray(64 * 1024)
+            var n = 0
+            while (n < head.size) { val k = input.read(head, n, head.size - n); if (k < 0) break; n += k }
+            if (n < 16) 0f else ourBaselineEv(head, n)
+        } ?: 0f
+    } catch (t: Throwable) { 0f }
+
+    internal fun ourBaselineEv(b: ByteArray, len: Int): Float {
+        if (b[0] != 'M'.code.toByte() || b[1] != 'M'.code.toByte()) return 0f   // our writer is big-endian
+        fun u16(o: Int) = if (o + 1 >= len) -1 else ((b[o].toInt() and 0xFF) shl 8) or (b[o + 1].toInt() and 0xFF)
+        fun s32(o: Int) = if (o + 3 >= len) 0 else ((b[o].toInt() and 0xFF) shl 24) or ((b[o + 1].toInt() and 0xFF) shl 16) or
+            ((b[o + 2].toInt() and 0xFF) shl 8) or (b[o + 3].toInt() and 0xFF)
+        val ifd = s32(4)
+        val count = u16(ifd)
+        if (ifd <= 0 || count <= 0) return 0f
+        var ours = false; var ev = 0f
+        for (i in 0 until count) {
+            val e = ifd + 2 + i * 12
+            if (e + 12 > len) break
+            val tag = u16(e); val type = u16(e + 2); val cnt = s32(e + 4)
+            if (tag == 305 && type == 2) {
+                val at = if (cnt <= 4) e + 8 else s32(e + 8)
+                val want = "Celestial Darkroom"
+                ours = at >= 0 && at + want.length <= len && String(b, at, want.length, Charsets.US_ASCII) == want
+            } else if (tag == 50730 && type == 10 && cnt == 1) {
+                val at = s32(e + 8); val num = s32(at); val den = s32(at + 4)
+                if (den != 0) ev = num.toFloat() / den
+            }
+        }
+        return if (ours && ev.isFinite()) ev.coerceIn(0f, 4f) else 0f
+    }
+
     /** The size of the picture the darkroom opened for [source] (upright, as the decoder stood it), when still cached (75d). */
     fun openedSize(source: Uri, isRaw: Boolean, maxEdge: Int, pairFirst: Uri? = null): Pair<Int, Int>? {
         val key = if (pairFirst != null && isRaw) "$pairFirst+$source@$maxEdge" else "$source@$maxEdge"
@@ -382,9 +422,12 @@ object Develop {
         val w = decoded.width; val h = decoded.height
         Log.i("Latent", "decode: ${w}x$h in ${(System.nanoTime() - t0) / 1_000_000} ms (asked for max $maxEdge)")
         log("decoded ${w}×$h")
+        val ev = brightenOf(context, dng)
+        if (ev > 0f) { Log.i("Latent", "hdr stack: brightened by +${"%.2f".format(ev)} EV (the file's BaselineExposure)"); log("HDR stack +${"%.1f".format(ev)} EV") }
         val longest = maxOf(w, h)
         if (maxEdge <= 0 || longest <= maxEdge) {
             return Source(LinearImage(decoded.data, w, h, colorSpace = decoded.colorSpace, onClose = { RawDecoder.freeOffHeap(it) }), w, h)
+                .also { if (ev > 0f) brighten(it, ev) }
         }
         // The cap was ignored: shrink it ourselves, then free the big native buffer.
         var step = 1
@@ -415,7 +458,16 @@ object Develop {
             }
         }
         RawDecoder.freeOffHeap(decoded.data)
+        if (ev > 0f) brighten(small, ev)
         return small
+    }
+
+    /** Every value times 2^[ev], in place: linear light, so values may now pass 1.0 (the sky of an HDR stack). */
+    private fun brighten(src: Source, ev: Float) {
+        val k = Math.pow(2.0, ev.toDouble()).toFloat()
+        val f = src.image.data.duplicate().apply { clear() }.order(ByteOrder.nativeOrder()).asFloatBuffer()
+        val n = src.width * src.height * 3
+        for (i in 0 until n) f.put(i, f.get(i) * k)
     }
 
     /** Decode an already-processed image once, linearised for the engine. */
