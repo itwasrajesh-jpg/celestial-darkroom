@@ -69,8 +69,8 @@ private const val BRUSH_STEP = 0.35f
  * roll's small previews at the brightest frame's level, as the darkroom develops it; "Merge with my
  * picks" builds the full RAW with them (BurstMerge.bracket). Picks are kept with the roll.
  *
- * A picked frame tones the area's BRIGHT parts toward how that frame looked (86e): the dark frame's lamp
- * keeps its shape, while the ceiling round it, at mid-grey or darker, stays as the merge has it.
+ * A picked frame makes its area as bright as that frame (86f); the areas are blended into one picture
+ * along the picture's own edges, so rough areas leave no patches. The pixels stay the merge's (the cleanest).
  */
 @Composable
 fun ColumnScope.MergeEditor(
@@ -138,7 +138,7 @@ fun ColumnScope.MergeEditor(
         // the model reads the picture as the merge shows it, once
         if (ok && selReady) {
             val px = argb ?: return@LaunchedEffect; val a = auto ?: return@LaunchedEffect
-            val shot = withContext(Dispatchers.Default) { MergePicks.previewWithPicks(a, px, lw, lh, emptyList(), exposure) }
+            val shot = withContext(Dispatchers.Default) { MergePicks.previewWithPicks(a, lw, lh, emptyList(), exposure) }
             embedding = withContext(Dispatchers.Default) { runCatching { Select.embed(context, shot, lw, lh) }.onFailure { android.util.Log.e("Latent", "merge editor: select", it) }.getOrNull() }
         }
     }
@@ -150,7 +150,7 @@ fun ColumnScope.MergeEditor(
             val picks = MergePicks.picks(areas.toList(), n)
             val w = lw; val h = lh
             val bmp = withContext(Dispatchers.Default) {
-                Bitmap.createBitmap(MergePicks.previewWithPicks(a, px, w, h, picks, exposure), w, h, Bitmap.Config.ARGB_8888)
+                Bitmap.createBitmap(MergePicks.previewWithPicks(a, w, h, picks, exposure), w, h, Bitmap.Config.ARGB_8888)
             }
             shown = bmp
         }
@@ -340,7 +340,7 @@ fun ColumnScope.MergeEditor(
                     .onSuccess {
                         status = "reading the picture…"
                         val px = argb; val au = auto
-                        if (px != null && au != null) embedding = runCatching { Select.embed(context, MergePicks.previewWithPicks(au, px, lw, lh, emptyList(), exposure), lw, lh) }.getOrNull()
+                        if (px != null && au != null) embedding = runCatching { Select.embed(context, MergePicks.previewWithPicks(au, lw, lh, emptyList(), exposure), lw, lh) }.getOrNull()
                         selReady = true; status = if (embedding != null) "" else "the picture could not be read"
                     }
                     .onFailure { t -> status = "not downloaded: ${t.message}" }
@@ -358,7 +358,7 @@ fun ColumnScope.MergeEditor(
         EditorAction("All auto", enabled = busy == null) { areas.clear(); answers.clear(); current = -1; status = "all auto now (Cancel keeps saved picks)"; changed() }
         EditorAction("Cancel", enabled = busy == null) { onClose() }
     }
-    Text(busy ?: "Auto: the merge decides. A frame: the bright parts of that area look as in that frame, with a soft edge.",
+    Text(busy ?: "Auto: the merge decides. A frame: that area as bright as that frame, blended along the picture's edges.",
         color = LatentColors.TextDim, fontSize = 11.sp, modifier = Modifier.padding(top = 8.dp, bottom = 8.dp))
 }
 
