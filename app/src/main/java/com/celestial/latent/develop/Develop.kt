@@ -992,10 +992,33 @@ object Develop {
      * 81a: the longest edge a full develop decodes at. The darkroom's steps before the film (colour
      * cleaning, the diffusion filters) keep several full-size copies in the app's 512 MB of Java memory,
      * and the film engine needs about 100 bytes a pixel, so a 50 MP photo ran out at the colour cleaning.
-     * 4096 is the camera's own RAW (12.5 MP), which develops with room to spare. To be raised once those
-     * steps work in strips (81b) and the phone shows what fits (81c).
+     * 4096 is the camera's own RAW (12.5 MP), which develops with room to spare. 81b made those steps
+     * work in strips; 81c tries 5792 (about 25 MP at 4:3) and logs the memory peaks to set the final cap.
      */
-    const val FULL_EDGE_CAP = 4096
+    const val FULL_EDGE_CAP = 5792
+
+    /**
+     * 81c: watches memory while a full develop runs and logs the highest it saw: the app's Java memory
+     * (limit 512 MB) and native memory (the film engine and 81b's big buffers), with what the phone had free.
+     */
+    private class MemoryPeaks(private val context: Context) {
+        @Volatile private var running = true
+        @Volatile var javaPeak = 0L; @Volatile var nativePeak = 0L
+        private fun sample() {
+            val rt = Runtime.getRuntime()
+            javaPeak = maxOf(javaPeak, rt.totalMemory() - rt.freeMemory())
+            nativePeak = maxOf(nativePeak, android.os.Debug.getNativeHeapAllocatedSize())
+        }
+        private val thread = Thread({ while (running) { sample(); try { Thread.sleep(100) } catch (_: InterruptedException) { break } } }, "memory peaks")
+            .apply { isDaemon = true; start() }
+        fun stop(w: Int, h: Int) {
+            running = false; thread.interrupt(); sample()
+            val mi = android.app.ActivityManager.MemoryInfo()
+            (context.getSystemService(Context.ACTIVITY_SERVICE) as? android.app.ActivityManager)?.getMemoryInfo(mi)
+            Log.i("Latent", "memory peaks for ${w}x$h: Java ${javaPeak shr 20} MB of ${Runtime.getRuntime().maxMemory() shr 20} MB, " +
+                "native ${nativePeak shr 20} MB, phone free now ${mi.availMem shr 20} MB of ${mi.totalMem shr 20} MB")
+        }
+    }
 
     /** What the last full develop had to give up, for the message after it is saved ("" = nothing). */
     @Volatile var lastFullNote = ""
@@ -1058,6 +1081,9 @@ object Develop {
         log(if (maxEdge > 0) "decoding…" else "decoding at full size…")
         lastFullNote = ""
         val cap = if (maxEdge > 0) minOf(maxEdge, FULL_EDGE_CAP) else FULL_EDGE_CAP
+        val peaks = MemoryPeaks(context)
+        var developedW = 0; var developedH = 0
+        try {
         val pair = pairFirst != null && isRaw
         val opened = if (pair) openPair(context, pairFirst!!, source, cap, log)
             else if (isRaw) openRaw(context, source, cap, log) else openImage(context, source, cap)
@@ -1074,6 +1100,7 @@ object Develop {
             val (fw, fh) = framing.outputSize(opened.width, opened.height)
             try { opened.blankSized(fw, fh).also { it.frameFrom(opened, framing) } } finally { opened.close() }
         }
+        developedW = src.width; developedH = src.height
         return src.use { s ->
             // A pair carries the noise of both frames: clean it for the noisier of the two.
             val iso = if (pair) maxOf(isoOf(context, source), isoOf(context, pairFirst!!)) else isoOf(context, source)
@@ -1109,6 +1136,7 @@ object Develop {
                 } finally { tmp.delete() }
             }
         }
+        } finally { peaks.stop(developedW, developedH) }
     }
 
     /**
