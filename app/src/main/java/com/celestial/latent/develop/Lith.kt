@@ -311,7 +311,7 @@ object Lith {
         val fromS = mul(Saturation.fromLms(cs), Saturation.toLms(ColorSpace.SRGB))
         val ls = FloatArray(3) { srgbDecode(pw[it] / 255f) }
         val paper = FloatArray(3) { c -> Saturation.encode(cs, (fromS[c * 3] * ls[0] + fromS[c * 3 + 1] * ls[1] + fromS[c * 3 + 2] * ls[2]).coerceIn(0f, 1f)) }
-        val out = ByteBuffer.allocateDirect(fw * fh * 3 * 4).order(ByteOrder.nativeOrder())
+        val out = Develop.pictureBuffer(fw * fh * 12L)   // 81b: native when big; the render gives it back
         val src = data.duplicate().order(ByteOrder.nativeOrder()).asFloatBuffer()
         val dst = out.asFloatBuffer()
         val line = FloatArray(fw * 3) { paper[it % 3] }

@@ -4,6 +4,7 @@ import android.util.Log
 import org.jtransforms.fft.FloatFFT_2D
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.nio.FloatBuffer
 import kotlin.math.PI
 import kotlin.math.ceil
 import kotlin.math.exp
@@ -133,7 +134,7 @@ object FilmDiffusion {
         coreIntensity: Float, coreSize: Float, haloIntensity: Float, haloSize: Float,
         bloomIntensity: Float, bloomSize: Float, haloWarmth: Float,
         pixelSizeUm: Float,
-        scatter: FloatArray? = null,
+        scatter: ((Int) -> Float)? = null,
     ) {
         val base = FAMILIES[familyName] ?: FAMILIES.getValue("black_pro_mist")
         if (strength <= 0f || spatialScale <= 0f || width < 16 || height < 16) return
@@ -194,20 +195,21 @@ object FilmDiffusion {
         // as diffusing material held over part of a print spreads only the light passing through
         // it. Glow from a softened area spills across the edge of a sharp one instead of stopping
         // dead, so no dark ring; and light is conserved. Null: the whole picture, exactly as before.
-        val amount: FloatArray? = if (scatter == null || scatter.size != n) null
-            else FloatArray(n) { i -> min(mix * max(scatter[i].toDouble(), 0.0), 1.0).toFloat() }
-        val scattered: FloatArray? = if (amount != null) FloatArray(n) else null
-        val plane = FloatArray(n)
-        val sharpOut = FloatArray(n)
-        val bloomOut = FloatArray(n)
+        val painted = scatter != null
+        // 81b: the painting is read where it is needed, not laid out as a photo-sized array first
+        fun scatterAt(i: Int) = min(mix * max(scatter!!(i).toDouble(), 0.0), 1.0).toFloat()
+        // 81b: one photo-sized plane, in native memory, where there were three to five in the app's
+        // 512 MB (a GB at 50 MP). The channel is read straight from the picture (it is only written
+        // once its glow is worked out), the painted light is worked out where it is read, and the
+        // bloom is enlarged where it is added: the same numbers, not kept.
+        val sharpBuf = Develop.nativeBuffer(n * 4L)
+        try {
+        val sharpOut = sharpBuf.asFloatBuffer()
 
         for (c in 0 until 3) {
-            for (i in 0 until n) plane[i] = f.get(i * 3 + c)
+            val plane = Plane { i -> f.get(i * 3 + c) }
             // the light each place sends into the glow: all of it scaled by mix, or by the painting
-            val src: FloatArray = if (amount != null && scattered != null) {
-                for (i in 0 until n) scattered[i] = plane[i] * amount[i]
-                scattered
-            } else plane
+            val src: Plane = if (painted) Plane { i -> f.get(i * 3 + c) * scatterAt(i) } else plane
 
             // Each channel's kernel is normalised as a whole, as the engine does, then split.
             val whole = kernelSum(radius, fam, corePx, coreW, haloPx, haloCh[c], bloomPx, bloomW)
@@ -222,13 +224,14 @@ object FilmDiffusion {
             }
             convolve(src, width, height, main, mainRadius, sharpOut)
 
+            var bloom: FloatArray? = null; var bsw = 0; var bsh = 0
             if (split) {
                 val sw = width / bloomStep
                 val sh = height / bloomStep
                 val small = FloatArray(sw * sh)
                 for (y in 0 until sh) for (x in 0 until sw) {
                     var acc = 0f
-                    for (dy in 0 until bloomStep) for (dx in 0 until bloomStep) acc += src[(y * bloomStep + dy) * width + (x * bloomStep + dx)]
+                    for (dy in 0 until bloomStep) for (dx in 0 until bloomStep) acc += src.at((y * bloomStep + dy) * width + (x * bloomStep + dx))
                     small[y * sw + x] = acc / (bloomStep * bloomStep)
                 }
                 val rb = max(radius / bloomStep, 1)
@@ -245,22 +248,26 @@ object FilmDiffusion {
                 val share = bloomShare(radius, fam, bloomPx, bloomW) / whole
                 for (i in kb.indices) kb[i] = (kb[i] / kbSum * share).toFloat()
                 val smallOut = FloatArray(sw * sh)
-                convolve(small, sw, sh, kb, rb, smallOut)
-                upsample(smallOut, sw, sh, bloomOut, width, height)
-            } else {
-                // The bloom is already in the kernel above.
-                java.util.Arrays.fill(bloomOut, 0f)
+                convolve(Plane { small[it] }, sw, sh, kb, rb, FloatBuffer.wrap(smallOut))
+                bloom = smallOut; bsw = sw; bsh = sh
             }
+            // else the bloom is already in the kernel above
 
-            for (i in 0 until n) {
-                val blurred = sharpOut[i] + bloomOut[i]
-                if (amount == null) f.put(i * 3 + c, ((1.0 - mix) * plane[i] + mix * blurred).toFloat())
-                else f.put(i * 3 + c, (plane[i] - src[i] + blurred).toFloat())   // keeps what was not scattered, gains the glow
+            for (y in 0 until height) {
+                val up = bloom?.let { Upsample(sh = bsh, h = height, y = y) }
+                for (x in 0 until width) {
+                    val i = y * width + x
+                    val blurred = sharpOut.get(i) + (if (bloom != null) up!!.at(bloom, bsw, width, x) else 0f)
+                    val p = plane.at(i)
+                    if (!painted) f.put(i * 3 + c, ((1.0 - mix) * p + mix * blurred).toFloat())
+                    else f.put(i * 3 + c, (p - p * scatterAt(i) + blurred).toFloat())   // keeps what was not scattered, gains the glow
+                }
             }
         }
+        } finally { Develop.freeNative(sharpBuf) }
         Log.i(
             "Latent",
-            "diffusion: $familyName strength=$strength mix=${"%.3f".format(mix)}${if (amount != null) " painted" else ""} " +
+            "diffusion: $familyName strength=$strength mix=${"%.3f".format(mix)}${if (painted) " painted" else ""} " +
                 "radius=${radius}px sharp=${mainRadius}px split=$split bloom=1/$bloomStep " +
                 "λcore=${"%.1f".format(corePx.max())}px λhalo=${"%.1f".format(haloPx.max())}px λbloom=${"%.1f".format(bloomPx.max())}px " +
                 "${width}x$height in ${(System.nanoTime() - t0) / 1_000_000} ms",
@@ -312,7 +319,7 @@ object FilmDiffusion {
      * only its valid centre is kept, so memory stays bounded whatever the image size. Verified
      * against a direct reflect-padded convolution — the two agree to rounding (1e-16).
      */
-    private fun convolve(src: FloatArray, w: Int, h: Int, kernel: FloatArray, r: Int, out: FloatArray) {
+    private fun convolve(src: Plane, w: Int, h: Int, kernel: FloatArray, r: Int, out: FloatBuffer) {
         // A tile plus its border must fit an FFT size the library handles well, and the largest
         // buffer we allow wins: fewer, bigger transforms beat many small ones.
         // The transform never exceeds MAX_FFT, whatever the kernel: a kernel too wide for it is
@@ -357,9 +364,9 @@ object FilmDiffusion {
     }
 
     private fun convolveTile(
-        src: FloatArray, w: Int, h: Int,
+        src: Plane, w: Int, h: Int,
         tx: Int, ty: Int, tw: Int, th: Int,
-        r: Int, fftSize: Int, out: FloatArray,
+        r: Int, fftSize: Int, out: FloatBuffer,
         fft: FloatFFT_2D, a: FloatArray, b: FloatArray,
     ) {
         val n = fftSize
@@ -370,7 +377,7 @@ object FilmDiffusion {
             val sy = reflect(ty + y - r, h)
             val row = y * n * 2
             for (x in 0 until tw + 2 * r) {
-                a[row + x * 2] = src[sy * w + reflect(tx + x - r, w)]
+                a[row + x * 2] = src.at(sy * w + reflect(tx + x - r, w))
             }
         }
         fft.complexForward(a)
@@ -386,7 +393,7 @@ object FilmDiffusion {
         for (y in 0 until th) {
             val row = (y + 2 * r) * n * 2
             for (x in 0 until tw) {
-                out[(ty + y) * w + (tx + x)] = a[row + (x + 2 * r) * 2]
+                out.put((ty + y) * w + (tx + x), a[row + (x + 2 * r) * 2])
             }
         }
     }
@@ -432,17 +439,19 @@ object FilmDiffusion {
         return if (best == Int.MAX_VALUE) Integer.highestOneBit(n - 1) * 2 else best
     }
 
-    private fun upsample(src: FloatArray, sw: Int, sh: Int, out: FloatArray, w: Int, h: Int) {
-        for (y in 0 until h) {
-            val fy = (y.toFloat() * sh / h).coerceIn(0f, (sh - 1).toFloat())
-            val y0 = fy.toInt(); val y1 = min(y0 + 1, sh - 1); val ty = fy - y0
-            for (x in 0 until w) {
-                val fx = (x.toFloat() * sw / w).coerceIn(0f, (sw - 1).toFloat())
-                val x0 = fx.toInt(); val x1 = min(x0 + 1, sw - 1); val tx = fx - x0
-                val a = src[y0 * sw + x0] * (1 - tx) + src[y0 * sw + x1] * tx
-                val b = src[y1 * sw + x0] * (1 - tx) + src[y1 * sw + x1] * tx
-                out[y * w + x] = a * (1 - ty) + b * ty
-            }
+    /** One value of a plane, by its index: read from wherever the plane really is (81b). */
+    private fun interface Plane { fun at(i: Int): Float }
+
+    /** The quarter-scale bloom enlarged bilinearly, one row at a time and only where it is added (81b). */
+    private class Upsample(sh: Int, h: Int, y: Int) {
+        private val fy = (y.toFloat() * sh / h).coerceIn(0f, (sh - 1).toFloat())
+        private val y0 = fy.toInt(); private val y1 = min(y0 + 1, sh - 1); private val ty = fy - y0
+        fun at(src: FloatArray, sw: Int, w: Int, x: Int): Float {
+            val fx = (x.toFloat() * sw / w).coerceIn(0f, (sw - 1).toFloat())
+            val x0 = fx.toInt(); val x1 = min(x0 + 1, sw - 1); val tx = fx - x0
+            val a = src[y0 * sw + x0] * (1 - tx) + src[y0 * sw + x1] * tx
+            val b = src[y1 * sw + x0] * (1 - tx) + src[y1 * sw + x1] * tx
+            return a * (1 - ty) + b * ty
         }
     }
 }

@@ -107,16 +107,10 @@ object Develop {
         }
 
         /** An empty image of a given size, to be framed into. */
-        fun blankSized(w: Int, h: Int): Source {
-            val buf = java.nio.ByteBuffer.allocateDirect(w * h * 3 * 4).order(java.nio.ByteOrder.nativeOrder())
-            return Source(LinearImage(buf, w, h, colorSpace = image.colorSpace), w, h)
-        }
+        fun blankSized(w: Int, h: Int): Source = pictureSource(w, h, image.colorSpace)
 
         /** An empty copy of the same shape, to be refilled. */
-        fun blankLike(): Source {
-            val dup = java.nio.ByteBuffer.allocateDirect(image.data.capacity()).order(java.nio.ByteOrder.nativeOrder())
-            return Source(LinearImage(dup, width, height, colorSpace = image.colorSpace), width, height)
-        }
+        fun blankLike(): Source = pictureSource(width, height, image.colorSpace)
         override fun close() = image.close()
     }
 
@@ -399,8 +393,8 @@ object Develop {
         Log.i("Latent", "decoder ignored the cap; downsampling 1/$step to ${outW}x$outH")
         log("downsampling to ${outW}×$outH")
         val src = decoded.data.order(ByteOrder.nativeOrder()).asFloatBuffer()
-        val out = ByteBuffer.allocateDirect(outW * outH * 3 * 4).order(ByteOrder.nativeOrder())
-        val of = out.asFloatBuffer()
+        val small = pictureSource(outW, outH, decoded.colorSpace)
+        val of = small.image.data.asFloatBuffer()
         val acc = FloatArray(3)
         for (y in 0 until outH) {
             for (x in 0 until outW) {
@@ -421,7 +415,7 @@ object Develop {
             }
         }
         RawDecoder.freeOffHeap(decoded.data)
-        return Source(LinearImage(out, outW, outH, colorSpace = decoded.colorSpace), outW, outH)
+        return small
     }
 
     /** Decode an already-processed image once, linearised for the engine. */
@@ -431,8 +425,8 @@ object Develop {
         val scale = if (maxEdge > 0) minOf(1f, maxEdge.toFloat() / maxOf(src.width, src.height)) else 1f
         val bmp = if (scale < 1f) android.graphics.Bitmap.createScaledBitmap(src, (src.width * scale).toInt(), (src.height * scale).toInt(), true) else src
         val w = bmp.width; val h = bmp.height
-        val buf = ByteBuffer.allocateDirect(w * h * 3 * 4).order(ByteOrder.nativeOrder())
-        val f = buf.asFloatBuffer()
+        val out = pictureSource(w, h, "ProPhoto RGB")
+        val f = out.image.data.asFloatBuffer()
         val row = IntArray(w)
         // sRGB's curve removed, then sRGB primaries → ProPhoto primaries. The engine always
         // reads incoming pixels as linear ProPhoto regardless of the label, so this conversion
@@ -453,7 +447,7 @@ object Develop {
         }
         if (bmp !== src) bmp.recycle()
         src.recycle()
-        return Source(LinearImage(buf, w, h, colorSpace = "ProPhoto RGB"), w, h)
+        return out
     }
 
     /**
@@ -556,9 +550,9 @@ object Develop {
         // Painted: how much of each place's own light scatters, as a multiple of the setting
         // (0 sharp, 1 the filter as set, 2 twice as much). A mask of exactly 1 everywhere is the
         // plain setting, so it takes the plain path and stays identical to it.
-        val scatter: FloatArray? = softenMask?.takeUnless { m -> m.stops.all { it == 1f } }?.let { m ->
+        val scatter: ((Int) -> Float)? = softenMask?.takeUnless { m -> m.stops.all { it == 1f } }?.let { m ->
             val w = source.width; val h = source.height
-            FloatArray(w * h) { i -> m.sample((i % w + 0.5f) / w, (i / w + 0.5f) / h) }
+            { i: Int -> m.sample((i % w + 0.5f) / w, (i / w + 0.5f) / h) }
         }
         FilmDiffusion.apply(
             source.image.data, source.width, source.height,
@@ -654,6 +648,7 @@ object Develop {
                     val (bd, bw, bh) = if (!preview) Lith.border(r.data, r.width, r.height, r.colorSpace, lith) else Triple(r.data, r.width, r.height)
                     val (data, w, h) = if (!preview && source.letterbox) letterbox(bd, bw, bh) else Triple(bd, bw, bh)
                     dims = w to h
+                    try {
                     // 78b: a PNG print streams into its file (a 50 MP 16-bit print is too big to hold as bytes)
                     if (!preview && png != null) {
                         val tp = System.nanoTime()
@@ -661,6 +656,11 @@ object Develop {
                         Log.i("Latent", "png ${png.bits}-bit ${w}x$h: ${png.file.length() / 1024} KB in ${(System.nanoTime() - tp) / 1_000_000} ms")
                         ByteArray(0)
                     } else toJpeg(data, w, h, r.colorSpace, ourSpace, glowMap?.let { if (w == bw && h == bh) it to hdrGlow else HdrGlow.framed(it, bw, bh, w, h) to hdrGlow })
+                    } finally {
+                        // 81b: the bars and the paper border are copies; a big one is native and goes back now
+                        if (data !== bd) freeNative(data)
+                        if (bd !== r.data) freeNative(bd)
+                    }
                 }
             }
         } finally {
@@ -745,7 +745,7 @@ object Develop {
         val fw = if (landscape) w else maxOf(w, Math.round(h * 9f / 16f))
         val fh = if (landscape) maxOf(h, Math.round(w * 9f / 16f)) else h
         if (fw == w && fh == h) return Triple(data, w, h)
-        val out = ByteBuffer.allocateDirect(fw * fh * 3 * 4).order(ByteOrder.nativeOrder())   // zeroed: black
+        val out = pictureBuffer(fw * fh * 12L, zero = true)   // zeroed: black
         val src = data.duplicate().order(ByteOrder.nativeOrder()).asFloatBuffer()
         val dst = out.asFloatBuffer()
         val x0 = (fw - w) / 2; val y0 = (fh - h) / 2
@@ -1012,6 +1012,39 @@ object Develop {
             if (o.outWidth > 0 && o.outHeight > 0) o.outWidth to o.outHeight else null
         }
     }.getOrNull()
+
+    // ---- 81b: big picture buffers live in native memory ----------------------------------------
+
+    /**
+     * From this size a picture buffer is kept out of the app's 512 MB of Java memory (64 MB: a picture
+     * of about 2.3 MP). ByteBuffer.allocateDirect is NOT native on Android: it is a byte array on that
+     * same 512 MB heap, so a 50 MP photo's three copies (decoded, framed, a step's working copy) alone
+     * were most of it. Small ones (every preview) stay where they were, freed by the collector as before.
+     */
+    private const val NATIVE_FROM = 64L shl 20
+    private val nativeOnes: MutableSet<ByteBuffer> = java.util.Collections.newSetFromMap(java.util.IdentityHashMap())
+
+    /** A buffer in native memory, outside the app's 512 MB; zeroed when [zero]. Give it back with [freeNative]. */
+    internal fun nativeBuffer(bytes: Long, zero: Boolean = false): ByteBuffer {
+        val b = (com.spectrafilm.engine.SimResult.allocDirectBuffer(bytes) ?: throw OutOfMemoryError("no room in the phone for ${bytes shr 20} MB"))
+            .order(ByteOrder.nativeOrder())
+        if (zero) { val z = ByteArray(1 shl 16); while (b.hasRemaining()) b.put(z, 0, minOf(z.size, b.remaining())); b.clear() }
+        synchronized(nativeOnes) { nativeOnes += b }
+        return b
+    }
+
+    /** Frees a buffer from [nativeBuffer] (or [pictureBuffer]); anything else is left to the collector. */
+    internal fun freeNative(b: ByteBuffer) {
+        if (synchronized(nativeOnes) { nativeOnes.remove(b) }) com.spectrafilm.engine.SimResult.freeDirectBuffer(b)
+    }
+
+    /** A picture-sized buffer: native when big ([NATIVE_FROM]), else the app's own as before. Give it back with [freeNative]. */
+    internal fun pictureBuffer(bytes: Long, zero: Boolean = false): ByteBuffer =
+        if (bytes >= NATIVE_FROM) nativeBuffer(bytes, zero) else ByteBuffer.allocateDirect(bytes.toInt()).order(ByteOrder.nativeOrder())
+
+    /** An empty picture (linear RGB floats) that frees its buffer when closed. */
+    internal fun pictureSource(w: Int, h: Int, colorSpace: String): Source =
+        Source(LinearImage(pictureBuffer(w * h * 12L), w, h, colorSpace = colorSpace, onClose = { freeNative(it) }), w, h)
 
     /** Full-resolution develop with progress, logging and a new file each time. */
     fun developFull(context: Context, source: Uri, isRaw: Boolean, recipe: Recipe, maxEdge: Int = 0, upscale: Float = 1f,
