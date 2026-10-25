@@ -43,6 +43,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.celestial.latent.camera.BurstRoll
 import com.celestial.latent.camera.BurstRollFiles
+import com.celestial.latent.camera.MergePicks
 import com.celestial.latent.ui.LatentColors
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -69,6 +70,7 @@ fun BurstScreen(
     var note by remember { mutableStateOf("") }
     var armDelete by remember { mutableStateOf(false) }
     var merged by remember { mutableStateOf<Uri?>(null) }
+    var editing by remember { mutableStateOf(false) }
 
     LaunchedEffect(roll) {
         withContext(Dispatchers.IO) {
@@ -113,6 +115,20 @@ fun BurstScreen(
         }
         if (r == null) {
             Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = LatentColors.Amber) }
+            return@Column
+        }
+
+        // 86d: the merge editor takes the whole screen below the title
+        if (hdrBracket && editing) {
+            MergeEditor(r, rollName, busy,
+                onMerge = { picks ->
+                    runBusy("Merging…") {
+                        val uri = withContext(Dispatchers.Default) { BurstRollFiles.merge(context, r, rollName, picks) { busy = it } }
+                        merged = uri; editing = false
+                        note = "Merged" + (if (picks.isEmpty()) "" else " with ${picks.size} picked area${if (picks.size > 1) "s" else ""}") + " · saved to DCIM/Latent"
+                    }
+                },
+                onClose = { if (busy == null) editing = false })
             return@Column
         }
 
@@ -172,6 +188,7 @@ fun BurstScreen(
                         (if (hdrBracket) " · sky from the darkest frame, shadows from the brightest" else "")
                 }
             }
+            if (hdrBracket) Action("Edit merge") { armDelete = false; note = ""; editing = true }
             merged?.let { u -> Action("Develop it") { onOpenDarkroom(u) } }
         }
         Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -201,6 +218,7 @@ fun BurstScreen(
                 else runBusy("Deleting…") {
                     runCatching { r.close() }
                     val ok = withContext(Dispatchers.IO) { BurstRollFiles.delete(context, roll) }
+                    if (ok) MergePicks.delete(context.filesDir, rollName)
                     if (ok) onBack() else { note = "Could not delete it"; armDelete = false }
                 }
             }
