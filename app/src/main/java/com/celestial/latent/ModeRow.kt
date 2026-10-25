@@ -13,7 +13,20 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Text
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.draw.blur
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -86,4 +99,65 @@ fun ModeRow(current: String, onPick: (String) -> Unit, modifier: Modifier = Modi
             placeables.forEach { p -> p.place(x, 0); x += p.width }
         }
     }
+}
+
+/**
+ * 85a: while the camera restarts for another mode, the last picture stays on screen, softly blurred,
+ * instead of black, and fades out on the new mode's first frame (as Xiaomi's camera does).
+ * Each switch also logs how long it took from the tap to that first frame.
+ */
+object ModeSwitch {
+    var frozen by mutableStateOf<ImageBitmap?>(null)
+        private set
+    @Volatile private var startedAt = 0L
+    @Volatile private var what = ""
+
+    /** Takes the picture now on [view] (a TextureView, or the film preview's SurfaceView), then runs [then]. */
+    fun begin(view: android.view.View?, what: String, then: () -> Unit) {
+        startedAt = android.os.SystemClock.elapsedRealtime(); this.what = what
+        val w = ((view?.width ?: 0) / 6).coerceAtLeast(1); val h = ((view?.height ?: 0) / 6).coerceAtLeast(1)
+        when {
+            view is android.view.TextureView && view.isAvailable -> {
+                frozen = runCatching { view.getBitmap(w, h)?.asImageBitmap() }.getOrNull(); then()
+            }
+            view is android.view.SurfaceView && view.holder.surface?.isValid == true -> {
+                // the film preview draws with GL into a SurfaceView: copy its pixels, then switch
+                val bmp = android.graphics.Bitmap.createBitmap(w, h, android.graphics.Bitmap.Config.ARGB_8888)
+                val main = android.os.Handler(android.os.Looper.getMainLooper())
+                try {
+                    android.view.PixelCopy.request(view, bmp, { r -> if (r == android.view.PixelCopy.SUCCESS) frozen = bmp.asImageBitmap(); then() }, main)
+                } catch (_: Exception) { then() }
+            }
+            else -> then()
+        }
+    }
+
+    /** The new mode's first frame: log the time and let the picture show. Any thread. */
+    fun firstFrame() {
+        val t0 = startedAt
+        if (t0 == 0L) return
+        startedAt = 0L
+        android.util.Log.i("Latent", "mode switch: $what in ${android.os.SystemClock.elapsedRealtime() - t0} ms (tap to first picture)")
+        frozen = null
+    }
+
+    internal fun giveUp() { if (startedAt != 0L) android.util.Log.i("Latent", "mode switch: $what — no first picture after 3 s"); startedAt = 0L; frozen = null }
+}
+
+/** Draws [ModeSwitch.frozen] over a viewfinder: blurred, fading out once the new picture arrives. */
+@Composable
+fun FreezeFrame() {
+    val f = ModeSwitch.frozen
+    var held by remember { mutableStateOf<ImageBitmap?>(null) }
+    LaunchedEffect(f) {
+        if (f != null) {
+            held = f
+            // never leave the picture frozen if the camera does not come back (an error, the app paused)
+            kotlinx.coroutines.delay(3000)
+            if (ModeSwitch.frozen === f) ModeSwitch.giveUp()
+        }
+    }
+    val alpha by animateFloatAsState(if (f != null) 1f else 0f, tween(if (f != null) 0 else 220), label = "freeze",
+        finishedListener = { if (it == 0f) held = null })
+    (f ?: held)?.let { Image(it, contentDescription = null, contentScale = ContentScale.Crop, alpha = alpha, modifier = Modifier.fillMaxSize().blur(16.dp)) }
 }
