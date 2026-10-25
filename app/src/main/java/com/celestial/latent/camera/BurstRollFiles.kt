@@ -65,19 +65,22 @@ object BurstRollFiles {
     fun merge(context: Context, reader: BurstRoll.Reader, rollName: String, progress: (String) -> Unit): Uri {
         val c = reader.index.common; val n = reader.index.frames.size
         val focus = c.kind == BurstRoll.KIND_FOCUS
+        val bracket = c.kind == BurstRoll.KIND_BRACKET
         val t0 = System.nanoTime()
         val r = if (focus) BurstMerge.focus(n, reader::pixels, c.width, c.height, c.black, c.white, c.cfa, progress)
+                else if (bracket) BurstMerge.bracket(n, reader::pixels, c.width, c.height, c.black, c.white, c.cfa, exposures(reader), progress)
                 else BurstMerge.burst(n, reader::pixels, c.width, c.height, c.black, c.white, c.cfa, reader.sharpest, progress)
         val secs = (System.nanoTime() - t0) / 1e9
         val hdr = c.kind == BurstRoll.KIND_HDR
         val desc = if (focus) "Celestial Darkroom focus stack of $n frames - ${c.lens}${if (c.dcg) " (DCG)" else ""}"
+                   else if (bracket) "Celestial Darkroom HDR bracket: ${r.used} of $n frames, merged on frame ${r.ref + 1} - ${c.lens}${if (c.dcg) " (DCG)" else ""}"
                    else if (hdr) "Celestial Darkroom HDR stack: ${r.used} of $n frames shot ${"%.1f".format(c.brighten)} stops dark, merged on frame ${r.ref + 1} - ${c.lens}${if (c.dcg) " (DCG)" else ""}"
                    else "Celestial Darkroom merge of ${r.used} of $n frames on frame ${r.ref + 1} - ${c.lens}${if (c.dcg) " (DCG)" else ""}"
         val m = reader.dngMeta(r.ref, desc)
         val meta = DngWriter.Meta(m.width, m.height, m.blackLevel * r.scale, m.whiteLevel * r.scale, m.cfaPattern, m.colorMatrix1, m.colorMatrix2,
             m.forwardMatrix1, m.cameraCalibration1, m.illuminant1, m.illuminant2, m.asShotNeutral, m.orientation, m.uniqueModel, desc, m.exposureNs, m.iso,
-            m.baselineExposure)
-        android.util.Log.i("Latent", "burst merge $rollName: ${if (focus) "focus stack" else if (hdr) "hdr stack (+${"%.2f".format(c.brighten)} EV)" else "merge"} of ${r.used}/$n, ref #${r.ref + 1}, ${"%.1f".format(secs)} s. ${r.note}")
+            if (bracket) r.baseline else m.baselineExposure)
+        android.util.Log.i("Latent", "burst merge $rollName: ${if (focus) "focus stack" else if (hdr) "hdr stack (+${"%.2f".format(c.brighten)} EV)" else if (bracket) "hdr bracket" else "merge"} of ${r.used}/$n, ref #${r.ref + 1}, ${"%.1f".format(secs)} s. ${r.note}")
         progress("Saving…")
         val name = "${stem(rollName)}_${if (focus) "STACKED" else "MERGED"}.dng"
         val values = ContentValues().apply {
@@ -92,6 +95,18 @@ object BurstRollFiles {
         values.clear(); values.put(MediaStore.Images.Media.IS_PENDING, 0)
         resolver.update(uri, values, null, null)
         return uri
+    }
+
+    /**
+     * 86b: each frame's exposure (shutter x ISO) as the camera reported it. A frame missing a number
+     * gets its neighbour's (the merge then treats them as the same exposure).
+     */
+    fun exposures(reader: BurstRoll.Reader): DoubleArray {
+        val fr = reader.index.frames
+        val e = DoubleArray(fr.size) { i -> val f = fr[i]; if (f.exposureNs != null && f.iso != null && f.exposureNs > 0 && f.iso > 0) f.exposureNs.toDouble() * f.iso else 0.0 }
+        val known = e.firstOrNull { it > 0 } ?: 1.0
+        for (i in e.indices) if (e[i] <= 0) e[i] = (if (i > 0) e[i - 1] else known)
+        return e
     }
 
     /** The DNG already exported for frame [i], if any (so Develop does not make a second copy). */

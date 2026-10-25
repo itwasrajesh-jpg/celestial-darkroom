@@ -111,6 +111,8 @@ fun CameraScreen(
     var focusTap by remember { mutableStateOf<Offset?>(null) }
     var focusTapAt by remember { mutableStateOf(0L) }
     var drawerOpen by remember { mutableStateOf(false) }
+    // 86b: the HDR BRACKET card (hold the HDR button)
+    var bracketOpen by remember { mutableStateOf(false) }
     var lastUri by remember { mutableStateOf<Uri?>(null) }
     var lastRawUri by remember { mutableStateOf<Uri?>(null) }
     // Double exposure: the held first frame (it survives the app closing, like film not wound on),
@@ -244,15 +246,20 @@ fun CameraScreen(
 
     fun push(c: Controls) { controls = c; controller.setControls(c) }
 
+    // 86b: HDR is the user's bracket; until both ends are set the shutter opens the card instead
+    fun fireMulti() {
+        if (settings.focusStack) controller.captureBurst(FOCUS_FRAMES, focus = true)
+        else if (settings.hdrStack) bracketPlan(settings)?.let { controller.captureBurst(bracket = it) } ?: run { bracketOpen = true }
+        else controller.captureBurst(16)
+    }
     fun shoot(single: Boolean) {
+        if (!single && settings.hdrStack && bracketPlan(settings) == null) { Haptics.tick(context); bracketOpen = true; return }
         Haptics.heavy(context)
-        val fire = { if (single) controller.captureSingle() else if (settings.focusStack) controller.captureBurst(FOCUS_FRAMES, focus = true)
-            else if (settings.hdrStack) controller.captureBurst(16, hdr = true) else controller.captureBurst(16) }
+        val fire = { if (single) controller.captureSingle() else fireMulti() }
         if (settings.timerSeconds > 0) countdown = settings.timerSeconds else fire()
     }
     LaunchedEffect(countdown) {
-        if (countdown > 0) { delay(1000); countdown -= 1; if (countdown == 0) { if (settings.focusStack) controller.captureBurst(FOCUS_FRAMES, focus = true) else if (settings.hdrStack) controller.captureBurst(16, hdr = true)
-            else if (settings.burstMode) controller.captureBurst(16) else controller.captureSingle() } }
+        if (countdown > 0) { delay(1000); countdown -= 1; if (countdown == 0) { if (settings.focusStack || settings.hdrStack || settings.burstMode) fireMulti() else controller.captureSingle() } }
     }
 
     DisposableEffect(Unit) {
@@ -571,7 +578,7 @@ fun CameraScreen(
                 if (settings.fastShot) "FAST SHOT" else null,
                 if (settings.inSensorZoomJpeg && Lenses.isXiaomi15Ultra && controls.zoom > 1.001f && !settings.fastShot) "ISZ" else null,
                 if (settings.dcgTest && !settings.fastShot && Lenses.isXiaomi15Ultra && lens.physicalId == Lenses.MAIN_ID && controls.zoom <= 1.001f) "DCG" else null,
-                if (settings.burstMode) "BURST" else null, if (settings.focusStack) "FOCUS STACK" else null, if (settings.hdrStack) "HDR STACK" else null, if (settings.timerSeconds > 0) "${settings.timerSeconds}S" else null,
+                if (settings.burstMode) "BURST" else null, if (settings.focusStack) "FOCUS STACK" else null, if (settings.hdrStack) (bracketPlan(settings)?.let { "HDR · ${it.size}" } ?: "HDR BRACKET") else null, if (settings.timerSeconds > 0) "${settings.timerSeconds}S" else null,
             )
             val tagLabels = remember(settings.vendorTags, lens) { if (controller.hasCharacteristics) controller.activeTagLabels() else emptyList() }
             val allLabels = modes + tagLabels
@@ -669,6 +676,14 @@ fun CameraScreen(
                         com.celestial.latent.develop.LookBaker.invalidate()
                     }
                 }
+            // 86b: the bracket card, above the lens row; the strip below stays free for dialling S and ISO
+            if (bracketOpen && settings.hdrStack) BracketCard(settings, onSettingsChange,
+                current = {
+                    val ns = controls.shutterNs ?: readout.shutterNs; val iso = controls.iso ?: readout.iso
+                    if (ns > 0 && iso > 0) ns to iso else null
+                },
+                onClose = { bracketOpen = false },
+                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 128.dp + filmsLift))
             if (toast.isNotEmpty()) Text(toast, color = LatentColors.TextBright, fontSize = 11.sp, modifier = Modifier.align(Alignment.Center).padding(24.dp).clip(RoundedCornerShape(8.dp)).background(Color(0xCC161615)).padding(12.dp))
             // Quick-settings drawer over the lower part of the viewfinder.
             if (drawerOpen) {
@@ -778,22 +793,29 @@ fun CameraScreen(
                     .combinedClickable(onClick = { shoot(single = !multi) }, onLongClick = { shoot(single = multi) }),
                 contentAlignment = Alignment.Center,
             ) { Box(Modifier.size(62.dp).clip(CircleShape).background(if (multi) LatentColors.Amber else LatentColors.TextBright)) }
-            // Tap cycles: off → 16 (burst) → FS (focus stack, 69a) → HDR (dark stack for skies, 86a) → off.
-            Box(Modifier.size(46.dp).clip(CircleShape).border(0.5.dp, if (multi) LatentColors.Amber else LatentColors.Line, CircleShape)
+            // Tap cycles: off → 16 (burst) → FS (focus stack, 69a) → HDR (bracket, 86b) → off.
+            // Hold: HDR with its bracket card open (86b).
+            Box(Modifier.size(46.dp).clip(CircleShape).border(if (settings.hdrStack) 1.dp else 0.5.dp, if (multi) LatentColors.Amber else LatentColors.Line, CircleShape)
                 .combinedClickable(onClick = {
                     Haptics.tick(context)
-                    onSettingsChange(when {
+                    val next = when {
                         settings.hdrStack -> settings.copy(burstMode = false, focusStack = false, hdrStack = false)
                         settings.focusStack -> settings.copy(burstMode = false, focusStack = false, hdrStack = true)
                         settings.burstMode -> settings.copy(burstMode = false, focusStack = true, hdrStack = false)
                         else -> settings.copy(burstMode = true, focusStack = false, hdrStack = false)
-                    })
+                    }
+                    bracketOpen = next.hdrStack && bracketPlan(next) == null
+                    onSettingsChange(next)
+                }, onLongClick = {
+                    Haptics.tick(context)
+                    if (!settings.hdrStack) onSettingsChange(settings.copy(burstMode = false, focusStack = false, hdrStack = true))
+                    bracketOpen = true
                 }), contentAlignment = Alignment.Center) {
                 Text(if (settings.hdrStack) "HDR" else if (settings.focusStack) "FS" else "16", color = if (multi) LatentColors.Amber else LatentColors.Text, fontSize = 13.sp, fontWeight = FontWeight.Light)
             }
         }
         val filmLabel = Develop.FILMS.firstOrNull { it.first == settings.film }?.second?.uppercase() ?: "FILM"
-        Text(filmLabel + (if (developing > 0) " · DEVELOPING $developing" else if (settings.focusStack) " · FOCUS STACK" else if (settings.hdrStack) " · HDR STACK" else if (settings.burstMode) " · BURST" else ""), color = LatentColors.Line, fontSize = 9.sp, letterSpacing = 1.5.sp,
+        Text(filmLabel + (if (developing > 0) " · DEVELOPING $developing" else if (settings.focusStack) " · FOCUS STACK" else if (settings.hdrStack) " · HDR BRACKET" else if (settings.burstMode) " · BURST" else ""), color = LatentColors.Line, fontSize = 9.sp, letterSpacing = 1.5.sp,
             modifier = Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 12.dp), textAlign = androidx.compose.ui.text.style.TextAlign.Center)
     }
 }

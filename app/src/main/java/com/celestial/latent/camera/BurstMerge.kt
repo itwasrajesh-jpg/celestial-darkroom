@@ -25,7 +25,8 @@ import kotlin.math.sqrt
  */
 object BurstMerge {
 
-    class Result(val pixels: ShortArray, val scale: Int, val ref: Int, val used: Int, val note: String)
+    /** [baseline] (86b): stops the result is to be brightened by when developed (a bracket is kept at its darkest frame's level). */
+    class Result(val pixels: ShortArray, val scale: Int, val ref: Int, val used: Int, val note: String, val baseline: Double = 0.0)
 
     // ---- planes and green ---------------------------------------------------------------------
 
@@ -362,6 +363,131 @@ object BurstMerge {
         val scale = scaleFor(white)
         for (k in 0 until 4) { val s = sum[k]; for (p in s.indices) s[p] /= wsum[p] }
         return Result(bayer(sum, w, h, scale), scale, ref, used, notes.joinToString(", "))
+    }
+
+    // ---- HDR bracket (86b) -----------------------------------------------------------------------
+
+    /**
+     * Green like [green], but of a frame brought to the reference's exposure ([gain] = reference
+     * exposure / this frame's) and cut off at [cap], so a pair of frames clip at the same level and the
+     * clipped sky of one does not look like a difference from the other.
+     */
+    private fun greenAt(pl: Array<FloatArray>, cfa: ByteArray, black: Int, white: Int, gain: Float, cap: Float): FloatArray {
+        val gi = (0 until 4).filter { cfa[it].toInt() == 1 }
+        val a = pl[gi[0]]; val b = pl[gi.getOrElse(1) { gi[0] }]
+        val k = gain / (white - black)
+        return FloatArray(a.size) { i -> sqrt(((0.5f * (a[i] + b[i]) - black) * k).coerceIn(0f, cap)) }
+    }
+
+    /** A raw frame at the reference's exposure, clipped at [cap] of white: for [Align]'s coarse shift only. */
+    private fun leveled(px: ShortArray, black: Int, white: Int, gain: Float, cap: Float): ShortArray {
+        val top = black + cap * (white - black)
+        val out = ShortArray(px.size)
+        par(px.size / 4096 + 1) { c ->
+            val end = minOf(px.size, (c + 1) * 4096)
+            for (i in c * 4096 until end) out[i] = (black + ((px[i].toInt() and 0xFFFF) - black) * gain).coerceIn(0f, top).roundToInt().toShort()
+        }
+        return out
+    }
+
+    /**
+     * Frames of different exposure ([exposure] = shutter x ISO of each, as the camera reported it)
+     * merged into one RAW with the darkest frame's highlights and the brighter frames' clean shadows.
+     *
+     * Every frame is brought to the darkest frame's level (divided by how much more light it got) and
+     * lined up on the middle frame. Per pixel a frame counts by how much light it got (more light, less
+     * noise), and not at all where any of its colours is near clipping; the darkest frame always counts
+     * a little, so a spot clipped everywhere else still has its value. Per 32 px tile, a frame that
+     * disagrees with the middle one (something moved) fades out, as in [burst]. The result stays at the
+     * darkest frame's level, so nothing clips; [Result.baseline] says how many stops brighter the middle
+     * frame was, and the darkroom develops it that bright (the DNG's BaselineExposure).
+     */
+    fun bracket(frames: Int, read: (Int) -> ShortArray, w: Int, h: Int, black: Int, white: Int, cfa: ByteArray, exposure: DoubleArray,
+                progress: (String) -> Unit = {}): Result {
+        val pw = w / 2; val ph = h / 2
+        val dark = exposure.indices.minByOrNull { exposure[it] }!!
+        val eDark = exposure[dark]
+        // the reference: the frame nearest the middle of the bracket, in stops
+        val mid = Math.sqrt(exposure.maxOrNull()!! * eDark)
+        val ref = exposure.indices.minByOrNull { abs(Math.log(exposure[it] / mid)) }!!
+        progress("Reading frame ${ref + 1}…")
+        val refPx = read(ref)
+        val refPl = planes(refPx, w, h)
+        val range = (white - black).toFloat()
+        val sum = Array(4) { FloatArray(pw * ph) }; val wsum = FloatArray(pw * ph)
+        val t = 32; val tx = pw / t; val ty = ph / t
+        val warped = Array(4) { FloatArray(pw * ph) }
+        var used = 0; val notes = ArrayList<String>()
+        // the darkest frame last, so its small fallback weight can see what the others left uncovered
+        val order = (0 until frames).filter { it != dark } + dark
+        for (i in order) {
+            progress("Lining up frame ${i + 1} of $frames…")
+            val px = if (i == ref) refPx else runCatching { read(i) }.getOrNull() ?: continue
+            val pl = if (i == ref) refPl else planes(px, w, h)
+            val toRef = (exposure[ref] / exposure[i]).toFloat()       // this frame at the reference's exposure
+            val toDark = (eDark / exposure[i]).toFloat()              // this frame at the darkest frame's exposure
+            val tw: FloatArray?
+            val a: DoubleArray
+            if (i == ref) { a = IDENTITY; tw = null }
+            else {
+                val cap = minOf(1f, toRef)                            // the brighter frame clips here, in reference units
+                val refG = greenAt(refPl, cfa, black, white, 1f, cap)
+                val g = greenAt(pl, cfa, black, white, toRef, cap)
+                val prior = run {
+                    val (dx, dy) = Align.findShift(Align.pyramid(leveled(refPx, black, white, 1f, cap), w, h), Align.pyramid(leveled(px, black, white, toRef, cap), w, h))
+                    doubleArrayOf(1.0, 0.0, dx.toDouble(), 0.0, 1.0, dy.toDouble())
+                }
+                a = align(Prepared(refG, pw, ph), g, prior)
+                val wg = warp(g, pw, ph, a)
+                val d = FloatArray(tx * ty)
+                par(ty) { j -> for (k in 0 until tx) {
+                    var s = 0f
+                    for (y in j * t until (j + 1) * t step 2) for (x in k * t until (k + 1) * t step 2) s += abs(wg[y * pw + x] - refG[y * pw + x])
+                    d[j * tx + k] = s / (t * t / 4)
+                } }
+                val typical = d.sorted()[d.size / 2]
+                tw = FloatArray(tx * ty) { (2f - (d[it] / (2.5f * typical + 1e-6f) - 1f).coerceIn(0f, 1f) * 2f).coerceIn(0f, 2f) / 2f }
+                if (i != dark && tw.count { it > 0.5f } < tw.size / 4) { notes += "#${i + 1} left out (moved)"; continue }
+            }
+            for (k in 0 until 4) if (i == ref) System.arraycopy(pl[k], 0, warped[k], 0, pw * ph) else warpCubic(pl[k], pw, ph, a, warped[k])
+            // how near clipping each spot is (its brightest colour), as a weight: 1 below 80% of white, 0 from 95%
+            val hat = FloatArray(pw * ph)
+            if (i == dark) hat.fill(1f) else par(ph) { y ->
+                val row = y * pw
+                for (x in 0 until pw) {
+                    val p = row + x
+                    val m = (maxOf(maxOf(warped[0][p], warped[1][p]), maxOf(warped[2][p], warped[3][p])) - black) / range
+                    hat[p] = ((0.95f - m) / 0.15f).coerceIn(0f, 1f)
+                }
+            }
+            // soften the hand-over between frames, never letting a clipped spot back in
+            val soft = if (i == dark) hat else blur(hat, pw, ph, 2f).also { b -> for (p in b.indices) b[p] = minOf(b[p], hat[p]) }
+            val light = 1f / toDark                                     // 1 for the darkest frame, 2 for one stop brighter, ...
+            used++
+            par(ph) { y ->
+                val row = y * pw
+                val fy = ((y + 0.5f) / t - 0.5f).coerceIn(0f, ty - 1f); val j0 = fy.toInt().coerceAtMost(ty - 2).coerceAtLeast(0); val vy = fy - j0
+                for (x in 0 until pw) {
+                    val p = row + x
+                    var wt = soft[p] * light
+                    if (tw != null) {
+                        val fx = ((x + 0.5f) / t - 0.5f).coerceIn(0f, tx - 1f); val k0 = fx.toInt().coerceAtMost(tx - 2).coerceAtLeast(0); val vx = fx - k0
+                        val i0 = j0 * tx + k0
+                        val top = tw[i0] + (tw[i0 + 1] - tw[i0]) * vx; val bot = tw[i0 + tx] + (tw[i0 + tx + 1] - tw[i0 + tx]) * vx
+                        wt *= top + (bot - top) * vy
+                    }
+                    if (i == dark) wt = maxOf(wt, 0.01f)
+                    if (wt > 0f) { wsum[p] += wt; for (k in 0 until 4) sum[k][p] += wt * (warped[k][p] - black) * toDark }
+                }
+            }
+        }
+        progress("Finishing…")
+        val scale = scaleFor(white)
+        for (k in 0 until 4) { val s = sum[k]; for (p in s.indices) s[p] = black + s[p] / wsum[p].coerceAtLeast(1e-6f) }
+        val baseline = Math.log(exposure[ref] / eDark) / Math.log(2.0)
+        val span = Math.log(exposure.maxOrNull()!! / eDark) / Math.log(2.0)
+        notes.add(0, "%.1f stops, kept at frame %d's level, develops +%.2f EV".format(java.util.Locale.US, span, dark + 1, baseline))
+        return Result(bayer(sum, w, h, scale), scale, ref, used, notes.joinToString(", "), baseline)
     }
 
     // ---- focus stack ---------------------------------------------------------------------------
