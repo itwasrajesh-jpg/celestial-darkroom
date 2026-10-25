@@ -10,8 +10,9 @@ import kotlin.math.pow
 import kotlin.math.sqrt
 
 /**
- * The merge editor's picks (86d): areas of an HDR bracket that come from ONE frame only, as that
- * frame looked (its own brightness), instead of from the merge. Everywhere else the merge decides.
+ * The merge editor's picks (86d, 86e): areas of an HDR bracket whose bright parts take a darker
+ * frame's look (and its pixels), smoothly; mid-tones and shadows stay the merge's. Everywhere else
+ * the merge decides.
  *
  * An area is a soft mask on a small grid ([GRID] cells across the long side) in the picture's upright
  * coordinates, the same as the previews in the roll. It is made of two layers: the tap-to-select
@@ -19,9 +20,8 @@ import kotlin.math.sqrt
  * hand-over has a soft edge. Where areas overlap, the later one is on top.
  *
  * Kept with the roll in the app's own storage (`files/merge-picks/<roll name>.picks`), so reopening
- * the editor shows them again; deleting the roll deletes them. Proven in Python first (proof/picks.py,
- * 3 real HDR+ scenes as synthetic brackets): outside every area the merge is unchanged; inside, the
- * result is the picked frame at its own level (ratio 1.0000).
+ * the editor shows them again; deleting the roll deletes them. Proven in Python first
+ * (exposure-stack/86e/scripts): outside the soft edge the merge is unchanged, mid-tones are never darkened.
  */
 object MergePicks {
     /** Cells across the picture's long side. */
@@ -154,29 +154,81 @@ object MergePicks {
         return sum
     }
 
-    /** [auto] with the picks laid over it (each picked area as its frame looked), ready to show (ARGB). */
-    fun previewWithPicks(auto: FloatArray, frames: List<IntArray>, w: Int, h: Int, picks: List<Pick>): IntArray {
-        val (sh, all) = shares(picks.map { it.mask })
-        val gw = picks.firstOrNull()?.gw ?: 2; val gh = picks.firstOrNull()?.gh ?: 2
-        val pf = if (picks.isEmpty()) null else Field(all, gw, gh, w, h, false)
-        val af = sh.map { Field(it, gw, gh, w, h, false) }
-        val out = IntArray(w * h)
-        for (y in 0 until h) for (x in 0 until w) {
-            val p = y * w + x; val q = 3 * p
-            var r = auto[q]; var g = auto[q + 1]; var b = auto[q + 2]
-            if (pf != null) {
-                val keep = 1f - pf.at(x, y); r *= keep; g *= keep; b *= keep
-                for (a in picks.indices) {
-                    val s = af[a].at(x, y); if (s <= 0f) continue
-                    val c = frames[picks[a].frame][p]
-                    r += s * LIN[(c shr 16) and 0xFF]; g += s * LIN[(c shr 8) and 0xFF]; b += s * LIN[c and 0xFF]
+    /**
+     * [auto] with the picks laid over it, ready to show (ARGB): the same toning as the full merge
+     * (BurstMerge.applyPicks), on the previews. [exposure] as for [previewAuto].
+     */
+    fun previewWithPicks(auto: FloatArray, frames: List<IntArray>, w: Int, h: Int, picks: List<Pick>, exposure: DoubleArray): IntArray {
+        val eB = exposure.maxOrNull()!!
+        val out = FloatArray(auto.size).also { System.arraycopy(auto, 0, it, 0, auto.size) }
+        if (picks.isNotEmpty()) {
+            val gw = picks[0].gw; val gh = picks[0].gh
+            val key = Key(FloatArray(w * h) { auto[3 * it + 1] }, w, h)
+            val inside = shares(picks.map { it.mask }).first
+            val edge = shares(picks.map { wide(it.mask, gw, gh) }).first
+            val logGain = FloatArray(w * h)
+            for ((ai, pk) in picks.withIndex()) {
+                val px = frames[pk.frame]
+                val r = (exposure[pk.frame] / eB).toFloat(); val lnr = ln(r); val up = 1f / r
+                val fi = Field(inside[ai], gw, gh, w, h, false); val fe = Field(edge[ai], gw, gh, w, h, false)
+                for (y in 0 until h) for (x in 0 until w) {
+                    val t = tone(key.at(x, y), r); if (t <= 0f) continue
+                    val wv = fe.at(x, y) * t; if (wv <= 0f) continue
+                    val p = y * w + x; val q = 3 * p
+                    logGain[p] += wv * lnr
+                    val c0 = px[p]
+                    val fr = LIN[(c0 shr 16) and 0xFF]; val fg = LIN[(c0 shr 8) and 0xFF]; val fb = LIN[c0 and 0xFF]
+                    val c = fi.at(x, y) * ((0.95f - maxOf(fr, maxOf(fg, fb))) / 0.15f).coerceIn(0f, 1f) * wv
+                    if (c > 0f) { out[q] += c * (fr * up - out[q]); out[q + 1] += c * (fg * up - out[q + 1]); out[q + 2] += c * (fb * up - out[q + 2]) }
                 }
             }
-            out[p] = (0xFF shl 24) or (SRGB[(shoulder(r).coerceIn(0f, 1f) * 4095).toInt()] shl 16) or
-                (SRGB[(shoulder(g).coerceIn(0f, 1f) * 4095).toInt()] shl 8) or SRGB[(shoulder(b).coerceIn(0f, 1f) * 4095).toInt()]
+            for (p in 0 until w * h) if (logGain[p] != 0f) { val g = exp(logGain[p]); val q = 3 * p; out[q] *= g; out[q + 1] *= g; out[q + 2] *= g }
         }
-        return out
+        val img = IntArray(w * h)
+        for (p in 0 until w * h) {
+            val q = 3 * p
+            img[p] = (0xFF shl 24) or (SRGB[(shoulder(out[q]).coerceIn(0f, 1f) * 4095).toInt()] shl 16) or
+                (SRGB[(shoulder(out[q + 1]).coerceIn(0f, 1f) * 4095).toInt()] shl 8) or SRGB[(shoulder(out[q + 2]).coerceIn(0f, 1f) * 4095).toInt()]
+        }
+        return img
     }
+
+    // ---- toning (86e) ---------------------------------------------------------------------------
+
+    /** Where the toning starts: the merge at mid-grey or darker is never darkened. */
+    const val MID = 0.5f
+    /** The brightness key's blur, as a share of the long side: the toning follows the light, not each pixel. */
+    const val KEY_BLUR = 0.02f
+    /** The wide soft edge the toning fades over round an area, as a share of the long side. */
+    const val TONE_EDGE = 0.08f
+
+    /**
+     * The merge's brightness round each pixel (green, at the level it develops at), as its log, blurred:
+     * worked out at about 256 px across and read back smoothly.
+     */
+    class Key(lum: FloatArray, w: Int, h: Int) {
+        private val f = maxOf(1, maxOf(w, h) / 256)
+        private val lw = maxOf(2, w / f); private val lh = maxOf(2, h / f)
+        private val field: Field
+        init {
+            val g = FloatArray(lw * lh)
+            for (j in 0 until lh) for (i in 0 until lw) {
+                var s = 0f; var n = 0
+                for (y in j * f until minOf(h, (j + 1) * f)) for (x in i * f until minOf(w, (i + 1) * f)) { s += ln(maxOf(lum[y * w + x], 1e-4f)); n++ }
+                g[j * lw + i] = if (n > 0) s / n else ln(1e-4f)
+            }
+            field = Field(BurstMerge.blur(g, lw, lh, KEY_BLUR * maxOf(lw, lh)), lw, lh, w, h, false)
+        }
+        /** The log of the key at a pixel. */
+        fun at(x: Int, y: Int) = field.at(x, y)
+    }
+
+    /** How far toward the picked frame's look ([r] = its light / the brightest frame's), 0..1, from the log key. */
+    fun tone(logKey: Float, r: Float): Float = if (r >= 1f) 0f else ((logKey - ln(MID)) / -ln(r)).coerceIn(0f, 1f)
+
+    /** An area's mask spread over a wide soft edge, for the toning (the picture inside still uses [Area.mask]). */
+    fun wide(mask: FloatArray, gw: Int, gh: Int): FloatArray =
+        BurstMerge.blur(mask, gw, gh, TONE_EDGE * maxOf(gw, gh)).also { m -> for (i in m.indices) m[i] = minOf(1f, 1.6f * m[i]) }
 
     // ---- kept with the roll -----------------------------------------------------------------
 

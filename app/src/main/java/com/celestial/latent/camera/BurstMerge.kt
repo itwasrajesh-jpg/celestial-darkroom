@@ -403,12 +403,9 @@ object BurstMerge {
      * brightest frame was (86c: the one the user set so the shadows look right), and the darkroom develops
      * it that bright (the DNG's BaselineExposure); the highlights then sit above white for the film's shoulder.
      *
-     * [picks] (86d, the merge editor): areas that come from one frame only, as that frame looked. Inside
-     * one, that frame's value is kept at its own brightness (stored darker by its distance from the
-     * brightest frame, so the develop brings it back to exactly how it was shot), soft-edged by the
-     * area's mask; the merge fills the rest. A picked frame is used even where it clipped or moved:
-     * the user chose it. [upright6]: the masks are upright and the frames are stored a quarter turn
-     * round (orientation 6).
+     * [picks] (86d, the merge editor; 86e): areas whose BRIGHT parts take a darker frame's look. See
+     * [applyPicks]. [upright6]: the masks are upright and the frames are stored a quarter turn round
+     * (orientation 6).
      */
     fun bracket(frames: Int, read: (Int) -> ShortArray, w: Int, h: Int, black: Int, white: Int, cfa: ByteArray, exposure: DoubleArray,
                 progress: (String) -> Unit = {}, picks: List<MergePicks.Pick> = emptyList(), upright6: Boolean = false): Result {
@@ -426,18 +423,7 @@ object BurstMerge {
         val t = 32; val tx = pw / t; val ty = ph / t
         val warped = Array(4) { FloatArray(pw * ph) }
         var used = 0; val notes = ArrayList<String>()
-        // 86d: each picked frame's share of the picture (later areas on top), and how much is picked at all
-        val eB = exposure.maxOrNull()!!
-        val (shares, pickedAll) = MergePicks.shares(picks.map { it.mask })
-        val pickOf = HashMap<Int, MergePicks.Field>()
-        if (picks.isNotEmpty()) {
-            val gw = picks[0].gw; val gh = picks[0].gh
-            picks.indices.groupBy { picks[it].frame }.forEach { (f, idx) ->
-                val g = FloatArray(gw * gh); for (a in idx) { val s = shares[a]; for (c in g.indices) g[c] += s[c] }
-                pickOf[f] = MergePicks.Field(g, gw, gh, pw, ph, upright6)
-            }
-        }
-        val pickSum = if (picks.isEmpty()) null else Array(4) { FloatArray(pw * ph) }
+        val maps = arrayOfNulls<DoubleArray>(frames)               // each frame's lining up, for the picks (86e)
         // the darkest frame last, so its small fallback weight can see what the others left uncovered
         val order = (0 until frames).filter { it != dark } + dark
         for (i in order) {
@@ -467,12 +453,10 @@ object BurstMerge {
                 } }
                 val typical = d.sorted()[d.size / 2]
                 tw = FloatArray(tx * ty) { (2f - (d[it] / (2.5f * typical + 1e-6f) - 1f).coerceIn(0f, 1f) * 2f).coerceIn(0f, 2f) / 2f }
-                if (i != dark && tw.count { it > 0.5f } < tw.size / 4) {
-                    notes += "#${i + 1} left out (moved)"
-                    if (i !in pickOf) continue
-                    tw.fill(0f)   // picked by hand: used only inside its areas
-                }
+                maps[i] = a
+                if (i != dark && tw.count { it > 0.5f } < tw.size / 4) { notes += "#${i + 1} left out (moved)"; continue }
             }
+            if (i == ref) maps[i] = IDENTITY
             for (k in 0 until 4) if (i == ref) System.arraycopy(pl[k], 0, warped[k], 0, pw * ph) else warpCubic(pl[k], pw, ph, a, warped[k])
             // how near clipping each spot is (its brightest colour), as a weight: 1 below 80% of white, 0 from 95%
             val hat = FloatArray(pw * ph)
@@ -487,8 +471,6 @@ object BurstMerge {
             // soften the hand-over between frames, never letting a clipped spot back in
             val soft = if (i == dark) hat else blur(hat, pw, ph, 2f).also { b -> for (p in b.indices) b[p] = minOf(b[p], hat[p]) }
             val light = 1f / toDark                                     // 1 for the darkest frame, 2 for one stop brighter, ...
-            val mine = pickOf[i]
-            val asShot = (toDark * exposure[i] / eB).toFloat()          // this frame's own look, at the merge's level
             used++
             par(ph) { y ->
                 val row = y * pw
@@ -504,25 +486,68 @@ object BurstMerge {
                     }
                     if (i == dark) wt = maxOf(wt, 0.01f)
                     if (wt > 0f) { wsum[p] += wt; for (k in 0 until 4) sum[k][p] += wt * (warped[k][p] - black) * toDark }
-                    if (mine != null) { val s = mine.at(x, y); if (s > 0f) for (k in 0 until 4) pickSum!![k][p] += s * (warped[k][p] - black) * asShot }
                 }
             }
         }
         progress("Finishing…")
         val scale = scaleFor(white)
-        if (pickSum == null) for (k in 0 until 4) { val s = sum[k]; for (p in s.indices) s[p] = black + s[p] / wsum[p].coerceAtLeast(1e-6f) }
-        else {
-            val all = MergePicks.Field(pickedAll, picks[0].gw, picks[0].gh, pw, ph, upright6)
-            par(ph) { y -> for (x in 0 until pw) {
-                val p = y * pw + x; val keep = 1f - all.at(x, y); val inv = 1f / wsum[p].coerceAtLeast(1e-6f)
-                for (k in 0 until 4) sum[k][p] = black + keep * sum[k][p] * inv + pickSum[k][p]
-            } }
+        for (k in 0 until 4) { val s = sum[k]; for (p in s.indices) s[p] = s[p] / wsum[p].coerceAtLeast(1e-6f) }
+        if (picks.isNotEmpty()) {
+            applyPicks(sum, picks, read, maps, w, h, black, white, cfa, exposure, upright6, warped, progress)
             notes += "${picks.size} area(s) picked by hand"
         }
+        for (k in 0 until 4) { val s = sum[k]; for (p in s.indices) s[p] += black }
         val span = Math.log(exposure.maxOrNull()!! / eDark) / Math.log(2.0)
         val baseline = span
         notes.add(0, "%.1f stops, kept at frame %d's level, develops +%.2f EV".format(java.util.Locale.US, span, dark + 1, baseline))
         return Result(bayer(sum, w, h, scale), scale, ref, used, notes.joinToString(", "), baseline)
+    }
+
+    /**
+     * The merge editor's picks (86e), on the finished merge [m] (four planes, black taken off, at the
+     * darkest frame's level). Inside an area, its bright parts are toned down toward how the picked frame
+     * looked, by a gain that follows the light: a blurred brightness key ([MergePicks.Key]) of the merge
+     * as the darkroom develops it (at the brightest frame's level). Where that key is at mid-grey or
+     * darker nothing changes; at the picked frame's own white it is fully that frame's look
+     * ([MergePicks.tone]). The toning fades over a wide soft edge round the area ([MergePicks.wide]), and
+     * where it acts the pixels come from the picked frame itself (where it did not clip), so a lamp
+     * shows the dark frame's own detail. 86d took the whole area at the frame's brightness, which cut a
+     * dark disc into everything brushed round a lamp (phone, 25 Oct).
+     */
+    private fun applyPicks(m: Array<FloatArray>, picks: List<MergePicks.Pick>, read: (Int) -> ShortArray, maps: Array<DoubleArray?>,
+                           w: Int, h: Int, black: Int, white: Int, cfa: ByteArray, exposure: DoubleArray, upright6: Boolean,
+                           warped: Array<FloatArray>, progress: (String) -> Unit) {
+        val pw = w / 2; val ph = h / 2
+        val eD = exposure.minOrNull()!!; val eB = exposure.maxOrNull()!!
+        val range = (white - black).toFloat()
+        val gi = (0 until 4).filter { cfa[it].toInt() == 1 }; val g0 = m[gi[0]]; val g1 = m[gi.getOrElse(1) { gi[0] }]
+        val toB = (eB / eD).toFloat() / range
+        val key = MergePicks.Key(FloatArray(pw * ph) { 0.5f * (g0[it] + g1[it]) * toB }, pw, ph)
+        val gw = picks[0].gw; val gh = picks[0].gh
+        val inside = MergePicks.shares(picks.map { it.mask }).first
+        val edge = MergePicks.shares(picks.map { MergePicks.wide(it.mask, gw, gh) }).first
+        val logGain = FloatArray(pw * ph)
+        for ((f, idx) in picks.indices.groupBy { picks[it].frame }) {
+            val a = maps.getOrNull(f) ?: continue
+            progress("Your picks: frame ${f + 1}…")
+            val pl = runCatching { planes(read(f), w, h) }.getOrNull() ?: continue
+            for (k in 0 until 4) warpCubic(pl[k], pw, ph, a, warped[k])
+            val toDark = (eD / exposure[f]).toFloat()
+            val r = (exposure[f] / eB).toFloat(); val lnr = kotlin.math.ln(r)
+            for (ai in idx) {
+                val fi = MergePicks.Field(inside[ai], gw, gh, pw, ph, upright6); val fe = MergePicks.Field(edge[ai], gw, gh, pw, ph, upright6)
+                par(ph) { y -> for (x in 0 until pw) {
+                    val p = y * pw + x
+                    val t = MergePicks.tone(key.at(x, y), r); if (t <= 0f) continue
+                    val wv = fe.at(x, y) * t; if (wv <= 0f) continue
+                    logGain[p] += wv * lnr
+                    val mx = (maxOf(maxOf(warped[0][p], warped[1][p]), maxOf(warped[2][p], warped[3][p])) - black) / range
+                    val c = fi.at(x, y) * ((0.95f - mx) / 0.15f).coerceIn(0f, 1f) * wv
+                    if (c > 0f) for (k in 0 until 4) m[k][p] += c * ((warped[k][p] - black) * toDark - m[k][p])
+                } }
+            }
+        }
+        par(ph) { y -> for (x in 0 until pw) { val p = y * pw + x; if (logGain[p] != 0f) { val g = exp(logGain[p]); for (k in 0 until 4) m[k][p] *= g } } }
     }
 
     // ---- focus stack ---------------------------------------------------------------------------
