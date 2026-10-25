@@ -673,8 +673,10 @@ class CameraController(
      * one picture that is sharp from front to back. A focus bracket goes into the roll only (no STACK).
      * With [hdr] (86a) every frame is [HDR_STOPS] darker than the preview, so bright skies are not
      * clipped; merging the roll later brings the shadows' cleanliness back (roll only, no STACK).
+     * With [bracket] (86b) it is an HDR bracket: one frame per step, darkest first, each at the shutter
+     * and ISO the user's plan gives it (roll only, no STACK).
      */
-    fun captureBurst(frames: Int = 16, focus: Boolean = false, hdr: Boolean = false) = handler.post {
+    fun captureBurst(frames: Int = 16, focus: Boolean = false, hdr: Boolean = false, bracket: List<Bracket.Step>? = null) = handler.post {
         val s = session ?: return@post
         if (roll != null) { status("Still saving the last burst…"); return@post }
         if (burst != null || busy) { status("busy"); return@post }
@@ -683,15 +685,18 @@ class CameraController(
         val dcg = dcgOn()
         var rj: RollJob? = null
         try {
+            val steps = bracket?.takeIf { !focus && it.isNotEmpty() }?.let { bracketSteps(it, dcg) }
+            val frames = steps?.size ?: frames
             val focusAt = if (focus) focusBracket(frames) else null
-            val dark = if (hdr && !focus) hdrExposure(dcg) else null
+            val dark = if (hdr && !focus && steps == null) hdrExposure(dcg) else null
             // Every frame goes into one burst roll (68a). Without DCG the frames are also stacked into
             // the cleaner STACK DNG as before; DCG frames (14-bit) are only kept, their merge is 68b.
             // A spool left behind by a burst the app was closed during is no use now.
             context.cacheDir.listFiles { f -> f.name.endsWith(".spool") }?.forEach { it.delete() }
-            val job = if (dcg || focus || dark != null) null else BurstJob(frames, rawSize.width, rawSize.height, System.nanoTime())
-            rj = RollJob(frames, fileBase(if (focus) "FOCUS" else if (dark != null) "HDR" else "BURST"), dcg, System.nanoTime(),
-                kind = if (focus) BurstRoll.KIND_FOCUS else if (dark != null) BurstRoll.KIND_HDR else BurstRoll.KIND_BURST, rollOnly = job == null,
+            val job = if (dcg || focus || dark != null || steps != null) null else BurstJob(frames, rawSize.width, rawSize.height, System.nanoTime())
+            rj = RollJob(frames, fileBase(if (focus) "FOCUS" else if (dark != null) "HDR" else if (steps != null) "BRACKET" else "BURST"), dcg, System.nanoTime(),
+                kind = if (focus) BurstRoll.KIND_FOCUS else if (dark != null) BurstRoll.KIND_HDR else if (steps != null) BurstRoll.KIND_BRACKET else BurstRoll.KIND_BURST,
+                rollOnly = job == null,
                 baseExposure = dark?.base ?: 0.0)
             roll = rj
             burst = job
@@ -712,7 +717,18 @@ class CameraController(
                     set(CaptureRequest.SENSOR_FRAME_DURATION, if (dcg) dcgFrameNs else maxOf(33_333_333L, dark.shutterNs))
                     set(CaptureRequest.CONTROL_AWB_LOCK, true)
                 }
+                if (steps != null) {
+                    // 86b: this step's own shutter and ISO, nothing automatic; colour held across the bracket
+                    val st = steps[i]
+                    set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_OFF)
+                    set(CaptureRequest.SENSOR_EXPOSURE_TIME, st.shutterNs)
+                    set(CaptureRequest.SENSOR_SENSITIVITY, st.iso)
+                    set(CaptureRequest.SENSOR_FRAME_DURATION, if (dcg) dcgFrameNs else maxOf(33_333_333L, st.shutterNs))
+                    set(CaptureRequest.CONTROL_AWB_LOCK, true)
+                }
             }.build() }
+            if (steps != null) log("hdr bracket: ${steps.size} frames " + steps.joinToString(" ") { "${it.shutterNs / 1000}µs/ISO${it.iso}" } +
+                " (${"%.2f".format(Bracket.stops(steps.first(), steps.last()))} stops${if (dcg) ", DCG" else ""})")
             if (dark != null) log("hdr stack: preview ${seenShutterNs / 1000} µs ISO $seenIso -> frames ${dark.shutterNs / 1000} µs ISO ${dark.iso} " +
                 "(${"%.2f".format(Math.log(dark.base / (dark.shutterNs.toDouble() * dark.iso)) / Math.log(2.0))} stops darker)")
             s.captureBurst(reqs, object : CameraCaptureSession.CaptureCallback() {
@@ -723,12 +739,15 @@ class CameraController(
                     if (job != null) { job.failed++; if (job.received + job.failed >= job.frames) finishBurst(job) }
                 }
             }, handler)
-            status(if (focus) "Focus stack of $frames… hold still" else if (dark != null) "HDR stack of $frames… hold still" else "Burst of $frames… hold still")
+            status(if (focus) "Focus stack of $frames… hold still" else if (dark != null) "HDR stack of $frames… hold still"
+                else if (steps != null) "HDR bracket of $frames… hold still" else "Burst of $frames… hold still")
             // A frame whose result never pairs up would leave the roll open; count the missing ones as failed.
+            // A bracket with long shutters is given their time on top.
+            val extraMs = steps?.sumOf { it.shutterNs / 1_000_000 } ?: 0L
             handler.postDelayed({
                 val missing = frames - rj.received.get() - rj.failed.get()
                 if (missing > 0) { log("burst: $missing frames never arrived"); rj.failed.addAndGet(missing); rj.checkDone() }
-            }, 8000)
+            }, 8000 + extraMs)
         } catch (e: Exception) { burst = null; roll = null; rj?.abandon(); status("burst: ${e.message}"); resumeZsl() }
     }
 
@@ -781,7 +800,8 @@ class CameraController(
                 val brighten = if (baseExposure > 0 && got > 0) (Math.log(baseExposure / got) / Math.log(2.0)).toFloat().coerceIn(0f, 4f) else 0f
                 common = BurstRoll.Common(pw, ph, black, white, m.cfaPattern, m.colorMatrix1, m.colorMatrix2, m.forwardMatrix1,
                     m.cameraCalibration1, m.illuminant1, m.illuminant2, 6, m.uniqueModel, lens.name, dcg, kind, brighten)
-                gain = BurstRoll.previewGain(px, black, white)
+                // 86a/86b: an HDR stack or bracket shows each frame as it was exposed, not lifted to look normal
+                gain = if (kind == BurstRoll.KIND_HDR || kind == BurstRoll.KIND_BRACKET) 1f else BurstRoll.previewGain(px, black, white)
                 val values = android.content.ContentValues().apply {
                     put(MediaStore.MediaColumns.DISPLAY_NAME, "$base.${BurstRoll.EXT}")
                     put(MediaStore.MediaColumns.MIME_TYPE, "application/octet-stream")
@@ -886,6 +906,18 @@ class CameraController(
         val shutter = (want / iso0).toLong().coerceIn(shutterRange.lower, shutterRange.upper)
         val iso = Math.round(want / shutter).toInt().coerceIn(isoRange.lower, minOf(iso0, isoRange.upper))
         return DarkExposure(shutter, iso, base)
+    }
+
+    /**
+     * 86b: the user's bracket as this camera can shoot it: shutter and ISO kept inside what the sensor
+     * supports (with DCG, the shutter fits inside its fixed frame time). Nothing else is changed.
+     */
+    private fun bracketSteps(plan: List<Bracket.Step>, dcg: Boolean): List<Bracket.Step> = plan.map { st ->
+        val maxNs = if (dcg) minOf(shutterRange.upper, dcgFrameNs) else shutterRange.upper
+        val ns = st.shutterNs.coerceIn(shutterRange.lower, maxNs)
+        val iso = st.iso.coerceIn(isoRange.lower, isoRange.upper)
+        if (ns != st.shutterNs || iso != st.iso) log("hdr bracket: ${st.shutterNs / 1000}µs ISO ${st.iso} is outside this camera, using ${ns / 1000}µs ISO $iso")
+        Bracket.Step(ns, iso)
     }
 
     /**

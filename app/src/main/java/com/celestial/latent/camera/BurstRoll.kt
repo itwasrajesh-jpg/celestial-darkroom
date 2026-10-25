@@ -58,6 +58,7 @@ object BurstRoll {
     const val KIND_BURST = 0   // every frame at the same focus (68a)
     const val KIND_FOCUS = 1   // a focus bracket: each frame focused a little farther away (69a)
     const val KIND_HDR = 2     // an HDR stack: every frame the same, a few stops dark, for skies (86a)
+    const val KIND_BRACKET = 3 // an HDR bracket: darkest to brightest, shutter and ISO set by the user (86b)
 
     class Index(val common: Common, val frames: List<Frame>) {
         fun write(out: DataOutputStream) {
@@ -311,7 +312,7 @@ object BurstRoll {
             val c = index.common; val f = index.frames[i]
             return DngWriter.Meta(c.width, c.height, c.black, c.white, c.cfa, c.colorMatrix1, c.colorMatrix2, c.forwardMatrix1,
                 c.calibration1, c.illuminant1, c.illuminant2, f.neutral, c.orientation, c.model, description, f.exposureNs, f.iso,
-                baselineExposure = c.brighten.toDouble())
+                baselineExposure = if (c.kind == KIND_HDR) c.brighten.toDouble() else 0.0)
         }
 
         val sharpest: Int get() = index.frames.indices.maxByOrNull { index.frames[it].sharpness } ?: 0

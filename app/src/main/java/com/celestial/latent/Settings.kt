@@ -38,6 +38,12 @@ data class AppSettings(
     val burstMode: Boolean = false,         // tap = 16-frame burst (hold = single)
     val focusStack: Boolean = false,        // 69a: tap = 12-frame focus bracket (hold = single); never on with burstMode
     val hdrStack: Boolean = false,          // 86a: tap = 16 frames two stops dark, merged later for skies (hold = single); never with the other two
+    // 86b: HDR bracket ends the user set by hand (0 = not set yet), and how many frames between them
+    val bracketDarkNs: Long = 0L,
+    val bracketDarkIso: Int = 0,
+    val bracketBrightNs: Long = 0L,
+    val bracketBrightIso: Int = 0,
+    val bracketFrames: Int = 5,
     val haptics: Boolean = true,
     val film: String = "kodak_portra_400",   // film used for the live preview and auto-develop
     val preset: String = "portra400_endura_wedding",  // the authored look; carries per-stock grain etc.
@@ -108,6 +114,11 @@ data class AppSettings(
                 burstMode = p.getBoolean("burstMode", false),
                 focusStack = p.getBoolean("focusStack", false),
                 hdrStack = p.getBoolean("hdrStack", false),
+                bracketDarkNs = p.getLong("bracketDarkNs", 0L),
+                bracketDarkIso = p.getInt("bracketDarkIso", 0),
+                bracketBrightNs = p.getLong("bracketBrightNs", 0L),
+                bracketBrightIso = p.getInt("bracketBrightIso", 0),
+                bracketFrames = p.getInt("bracketFrames", 5),
                 haptics = p.getBoolean("haptics", true),
                 film = p.getString("film", "kodak_portra_400") ?: "kodak_portra_400",
                 preset = p.getString("preset", "portra400_endura_wedding") ?: "portra400_endura_wedding",
@@ -149,6 +160,11 @@ data class AppSettings(
                 .putBoolean("burstMode", s.burstMode)
                 .putBoolean("focusStack", s.focusStack)
                 .putBoolean("hdrStack", s.hdrStack)
+                .putLong("bracketDarkNs", s.bracketDarkNs)
+                .putInt("bracketDarkIso", s.bracketDarkIso)
+                .putLong("bracketBrightNs", s.bracketBrightNs)
+                .putInt("bracketBrightIso", s.bracketBrightIso)
+                .putInt("bracketFrames", s.bracketFrames)
                 .putBoolean("haptics", s.haptics)
                 .putString("film", s.film)
                 .putString("preset", s.preset)
