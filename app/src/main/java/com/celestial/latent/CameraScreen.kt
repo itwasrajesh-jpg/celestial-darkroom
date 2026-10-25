@@ -134,6 +134,8 @@ fun CameraScreen(
         onDispose { listener.disable() }
     }
     var glPreview by remember { mutableStateOf<com.celestial.latent.gl.FilmPreviewView?>(null) }
+    // 85a: the plain path's view, for the freeze-frame when switching to Night/Auto
+    var plainPreview by remember { mutableStateOf<TextureView?>(null) }
     var lookReady by remember { mutableStateOf(false) }
     var baking by remember { mutableStateOf(false) }
     var thumb by remember { mutableStateOf<Bitmap?>(null) }
@@ -206,7 +208,11 @@ fun CameraScreen(
                     }
                 }
             },
-        )
+        ).also {
+            pushSessionSettings(it, settings)
+            // 85a: the first picture of a new session ends a mode switch's freeze-frame
+            it.onFirstFrame = { ModeSwitch.firstFrame() }
+        }
     }
     var surfaceRef by remember { mutableStateOf<Surface?>(null) }
 
@@ -326,16 +332,10 @@ fun CameraScreen(
     }
 
     // Any of these changes the streams or the session tags: push them, then let the controller rebuild if needed.
+    // 85a: they are also pushed once when the controller is made (pushSessionSettings below), before the
+    // first open, so it no longer opens with defaults and then again with these.
     LaunchedEffect(settings.cameraPath, settings.opmode, settings.opmodeLens, settings.vendorTags, settings.saveJpeg, settings.inSensorZoomJpeg, settings.teleZoomDirect, settings.dcgTest, settings.fastShot) {
-        controller.fastShot = settings.fastShot
-        controller.cameraPath = settings.cameraPath
-        controller.opmode = settings.opmode
-        controller.vendorTags = settings.vendorTags.map { CameraController.VendorTagSpec(it.name, it.scope, it.type, it.value, it.lens) }
-        controller.opmodeLens = settings.opmodeLens
-        controller.saveJpeg = settings.saveJpeg
-        controller.inSensorZoomJpeg = settings.inSensorZoomJpeg
-        controller.teleZoomDirect = settings.teleZoomDirect
-        controller.dcgTest = settings.dcgTest
+        pushSessionSettings(controller, settings)
         controller.syncSession()
     }
     DisposableEffect(Unit) {
@@ -447,6 +447,7 @@ fun CameraScreen(
             } else {
                 AndroidView(modifier = Modifier.fillMaxSize(), factory = { ctx ->
                     TextureView(ctx).apply {
+                        plainPreview = this
                         surfaceTextureListener = object : TextureView.SurfaceTextureListener {
                             override fun onSurfaceTextureAvailable(st: SurfaceTexture, width: Int, height: Int) {
                                 val size = controller.previewSizeFor(lens)
@@ -462,6 +463,8 @@ fun CameraScreen(
                     }
                 })
             }
+            // 85a: coming from Night/Auto, their last picture, blurred, until this camera's first frame
+            FreezeFrame()
             // Double exposure: the first frame, faintly, so the second can be framed against it.
             ghost?.let { Image(it.asImageBitmap(), contentDescription = "First exposure", contentScale = ContentScale.Crop,
                 alpha = 0.38f, modifier = Modifier.fillMaxSize()) }
@@ -752,7 +755,8 @@ fun CameraScreen(
                     StripSlider((controls.focusDiopters ?: readout.focusDiopters).coerceIn(0f, maxD), 0f, maxD, 0, { push(controls.copy(focusDiopters = it)) }, { push(controls.copy(focusDiopters = null)) }, "AF") }
                 // 84a: with no slider open, the modes sit here (a slider takes the spot while it is open)
                 null -> ModeRow(CameraModes.of(settings), { m ->
-                    if (m == CameraModes.NIGHT || m == CameraModes.AUTO) { CameraModes.setXiaomi(context, m); onOpenExtension() }
+                    // 85a: the picture stays, blurred, while Xiaomi's camera starts
+                    if (m == CameraModes.NIGHT || m == CameraModes.AUTO) ModeSwitch.begin(if (settings.filmPreview) glPreview else plainPreview, "${CameraModes.of(settings).uppercase()} → ${m.uppercase()}") { CameraModes.setXiaomi(context, m); onOpenExtension() }
                     else onSettingsChange(CameraModes.apply(settings, m))
                 })
             }
@@ -899,3 +903,16 @@ internal val PICTURE_PILL = Color(0x73000000)
 /** Words over the live picture sit on a small dark pill, readable over a bright scene as well as a dark one (76a). */
 private fun Modifier.onPicture(): Modifier =
     clip(RoundedCornerShape(999.dp)).background(PICTURE_PILL).padding(horizontal = 8.dp, vertical = 3.dp)
+
+/** The settings that shape the camera session (85a: pushed before the first open as well as on change). */
+private fun pushSessionSettings(controller: CameraController, settings: AppSettings) {
+    controller.fastShot = settings.fastShot
+    controller.cameraPath = settings.cameraPath
+    controller.opmode = settings.opmode
+    controller.vendorTags = settings.vendorTags.map { CameraController.VendorTagSpec(it.name, it.scope, it.type, it.value, it.lens) }
+    controller.opmodeLens = settings.opmodeLens
+    controller.saveJpeg = settings.saveJpeg
+    controller.inSensorZoomJpeg = settings.inSensorZoomJpeg
+    controller.teleZoomDirect = settings.teleZoomDirect
+    controller.dcgTest = settings.dcgTest
+}

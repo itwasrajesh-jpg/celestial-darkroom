@@ -88,6 +88,11 @@ class ExtensionCamera(private val context: android.content.Context, private val 
     private var surfaceTexture: SurfaceTexture? = null
     @Volatile var zoom = 1f
     var onZoomSupport: (Boolean) -> Unit = {}
+    /** 85a: each session's first preview frame (ends a mode switch's freeze-frame). */
+    var onFirstFrame: () -> Unit = {}
+    /** 85a: an open waiting for Android to say the previous camera is closed. */
+    private var pendingOpen: Runnable? = null
+    private var everOpened = false
     private val reopenToken = Any()
 
     /** What this extension lets us set. Filled on open, reported via onCaps. */
@@ -170,18 +175,33 @@ class ExtensionCamera(private val context: android.content.Context, private val 
         open(Surface(st))
     }
 
-    @SuppressLint("MissingPermission")
     fun open(surface: Surface) = handler.post {
         if (Build.VERSION.SDK_INT < 31) { onStatus("Extensions need Android 12+"); return@post }
+        pendingOpen?.let { handler.removeCallbacks(it) }; pendingOpen = null
+        val hadDevice = device != null
         closeInternal()
-        Thread.sleep(250) // let the previous extension session fully release before the next one
+        // The previous session must be fully released before the next one. 85a: when it was ours, wait
+        // for Android's "closed" (onClosed below), at most 400 ms, instead of a fixed 250 ms. The first
+        // open keeps the 250 ms: the main camera screen is still letting go of the camera then.
+        if (hadDevice) {
+            val r = Runnable { pendingOpen = null; openNow(surface) }
+            pendingOpen = r; handler.postDelayed(r, 400)
+        } else {
+            if (!everOpened) Thread.sleep(250)
+            openNow(surface)
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun openNow(surface: Surface) {
+        everOpened = true
         previewSurface = surface
         onZoomSupport(zoomSupported())
         discover()
         try {
             val ec = cm.getCameraExtensionCharacteristics(cameraId)
-            if (extension !in ec.supportedExtensions) { onStatus("Extension not supported: $extension"); return@post }
-            val jpegSize = ec.getExtensionSupportedSizes(extension, ImageFormat.JPEG).maxByOrNull { it.width.toLong() * it.height } ?: return@post
+            if (extension !in ec.supportedExtensions) { onStatus("Extension not supported: $extension"); return }
+            val jpegSize = ec.getExtensionSupportedSizes(extension, ImageFormat.JPEG).maxByOrNull { it.width.toLong() * it.height } ?: return
             reader = ImageReader.newInstance(jpegSize.width, jpegSize.height, ImageFormat.JPEG, 2).also { r ->
                 r.setOnImageAvailableListener({ rr ->
                     rr.acquireNextImage()?.let { img ->
@@ -229,7 +249,10 @@ class ExtensionCamera(private val context: android.content.Context, private val 
                                 session = s
                                 try {
                                     val req = cam.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply { addTarget(surface); applyAllowed(this) }
-                                    s.setRepeatingRequest(req.build(), executor, object : CameraExtensionSession.ExtensionCaptureCallback() {})
+                                    var first = true
+                                    s.setRepeatingRequest(req.build(), executor, object : CameraExtensionSession.ExtensionCaptureCallback() {
+                                        override fun onCaptureStarted(sess: CameraExtensionSession, request: CaptureRequest, timestamp: Long) { if (first) { first = false; onFirstFrame() } }
+                                    })
                                     onStatus("Ready · ${extName(extension)} · tap the shutter")
                                 } catch (e: Exception) { onStatus("preview: ${e.message}") }
                             }
@@ -237,6 +260,8 @@ class ExtensionCamera(private val context: android.content.Context, private val 
                         })
                     try { cam.createExtensionSession(cfg) } catch (e: Exception) { onStatus("createExtensionSession: ${e.message}") }
                 }
+                // 85a: the previous camera is really closed: start the open that was waiting for it
+                override fun onClosed(cam: CameraDevice) { pendingOpen?.let { handler.removeCallbacks(it); pendingOpen = null; it.run() } }
                 override fun onDisconnected(cam: CameraDevice) { try { session?.close() } catch (_: Exception) {}; session = null; cam.close(); device = null }
                 override fun onError(cam: CameraDevice, error: Int) { onStatus("camera error $error"); cam.close(); device = null }
             }, handler)
@@ -285,7 +310,7 @@ class ExtensionCamera(private val context: android.content.Context, private val 
         handler.postAtTime({ openOnTexture() }, reopenToken, android.os.SystemClock.uptimeMillis() + 150)
     }
     // a lens change still waiting must not reopen the camera after we were closed (pause, screen gone)
-    fun close() { handler.removeCallbacksAndMessages(reopenToken); handler.post { closeInternal() } }
+    fun close() { handler.removeCallbacksAndMessages(reopenToken); handler.post { pendingOpen?.let { handler.removeCallbacks(it) }; pendingOpen = null; closeInternal() } }
     private fun closeInternal() {
         try { session?.close() } catch (_: Exception) {}; session = null
         try { device?.close() } catch (_: Exception) {}; device = null
@@ -314,12 +339,15 @@ fun ExtensionScreen(settings: AppSettings, onSettingsChange: (AppSettings) -> Un
     var thumb by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
     var toast by remember { mutableStateOf("") }
     var focusTap by remember { mutableStateOf<androidx.compose.ui.geometry.Offset?>(null) }
+    // 85a: the viewfinder, for the freeze-frame while the camera restarts
+    var previewView by remember { mutableStateOf<TextureView?>(null) }
     // 83a: the film cards fold here too, sharing the main screen's setting
     val uiPrefs = remember { context.getSharedPreferences("latent_camera_ui", android.content.Context.MODE_PRIVATE) }
     var filmsFolded by remember { mutableStateOf(runCatching { uiPrefs.getBoolean("films_folded", false) }.getOrDefault(false)) }
     val cam = remember {
         ExtensionCamera(context) { s -> status = s }.also {
             it.extension = startMode
+            it.onFirstFrame = { ModeSwitch.firstFrame() }
             it.onZoomSupport = { ok -> zoomOk = ok }; it.onCaps = { c -> caps = c }
             it.onSaved = { uri ->
                 Thread { val b = runCatching { context.contentResolver.loadThumbnail(uri, android.util.Size(192, 192), null) }.getOrNull(); if (b != null) { thumb = b; lastUri = uri } }.start()
@@ -362,6 +390,7 @@ fun ExtensionScreen(settings: AppSettings, onSettingsChange: (AppSettings) -> Un
         }) {
             AndroidView(modifier = Modifier.fillMaxSize(), factory = { ctx ->
                 TextureView(ctx).apply {
+                    previewView = this
                     surfaceTextureListener = object : TextureView.SurfaceTextureListener {
                         override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, h: Int) { cam.attach(st) }
                         override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) {}
@@ -370,6 +399,8 @@ fun ExtensionScreen(settings: AppSettings, onSettingsChange: (AppSettings) -> Un
                     }
                 }
             })
+            // 85a: the last picture, blurred, while the camera restarts (from the main camera, Night ↔ Auto, a lens)
+            FreezeFrame()
             // 83a: the focus box sits under the lens row and film cards, as on the main screen.
             // Drawn last it covered them, and a lens tap became a new focus tap.
             caps?.let { c ->
@@ -389,7 +420,12 @@ fun ExtensionScreen(settings: AppSettings, onSettingsChange: (AppSettings) -> Un
             val filmsLift by androidx.compose.animation.core.animateDpAsState(if (filmsFolded) 0.dp else 32.dp, label = "films")
             var lensSel by remember { mutableStateOf(com.celestial.latent.camera.Lenses.ALL.firstOrNull { it.isMain } ?: com.celestial.latent.camera.Lenses.ALL.first()) }
             var x2 by remember { mutableStateOf(false) }
-            fun send() { zoom = lensSel.label.toFloat() * (if (x2) 2f else 1f); cam.applyZoom(zoom) }
+            fun send() {
+                zoom = lensSel.label.toFloat() * (if (x2) 2f else 1f)
+                // Auto restarts for a new zoom (85a: frozen picture meanwhile); Night changes it live
+                if (mode == CameraExtensionCharacteristics.EXTENSION_NIGHT) cam.applyZoom(zoom)
+                else ModeSwitch.begin(previewView, "AUTO lens → ${String.format(Locale.US, "%.1f", zoom).removeSuffix(".0")}×") { cam.applyZoom(zoom) }
+            }
             if (zoomOk) Row(Modifier.align(Alignment.BottomCenter).padding(bottom = 52.dp + filmsLift).clip(RoundedCornerShape(999.dp)).background(PICTURE_PILL)
                 .padding(horizontal = 4.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                 com.celestial.latent.camera.Lenses.ALL.forEach { l ->
@@ -447,8 +483,12 @@ fun ExtensionScreen(settings: AppSettings, onSettingsChange: (AppSettings) -> Un
                 // 84a: the same mode row as the camera screen; PRO, FAST and CINEMA go back to it
                 else -> ModeRow(if (mode == CameraExtensionCharacteristics.EXTENSION_AUTOMATIC) CameraModes.AUTO else CameraModes.NIGHT, { m ->
                     val ext = when (m) { CameraModes.NIGHT -> CameraExtensionCharacteristics.EXTENSION_NIGHT; CameraModes.AUTO -> CameraExtensionCharacteristics.EXTENSION_AUTOMATIC; else -> null }
-                    if (ext != null) { CameraModes.setXiaomi(context, m); mode = ext; resetManual(); cam.switchTo(ext) }
-                    else { onSettingsChange(CameraModes.apply(settings, m)); onBack() }
+                    // 85a: the picture stays, blurred, until the next mode's first frame
+                    val from = if (mode == CameraExtensionCharacteristics.EXTENSION_AUTOMATIC) "AUTO" else "NIGHT"
+                    ModeSwitch.begin(previewView, "$from → ${m.uppercase()}") {
+                        if (ext != null) { CameraModes.setXiaomi(context, m); mode = ext; resetManual(); cam.switchTo(ext) }
+                        else { onSettingsChange(CameraModes.apply(settings, m)); onBack() }
+                    }
                 })
             }
         }

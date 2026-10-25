@@ -185,6 +185,8 @@ class CameraController(
     }
     @Volatile var onVendorEcho: (String) -> Unit = {}
     @Volatile var onBurstFinished: () -> Unit = {}
+    /** 85a: each new session's first preview frame (ends a mode switch's freeze-frame). Camera thread. */
+    @Volatile var onFirstFrame: () -> Unit = {}
     /** A burst roll was saved: its file and the sharpest frame's preview JPEG (for the last-shot thumbnail). */
     @Volatile var onRollSaved: (android.net.Uri, ByteArray?) -> Unit = { _, _ -> }
     private lateinit var physChars: CameraCharacteristics
@@ -586,7 +588,8 @@ class CameraController(
                 r.get(CaptureResult.COLOR_CORRECTION_TRANSFORM)?.let { lastTransform = it }
                 r.get(CaptureResult.COLOR_CORRECTION_GAINS)?.let { lastGains = it }
             }
-            if (++frameCounter == 45 && Lenses.isXiaomi15Ultra && lens.isMain) logDcgFrame(if (dcgOn()) "preview, DCG on" else "preview, DCG off", r)
+            if (++frameCounter == 1) onFirstFrame()
+            if (frameCounter == 45 && Lenses.isXiaomi15Ultra && lens.isMain) logDcgFrame(if (dcgOn()) "preview, DCG on" else "preview, DCG off", r)
             if (frameCounter % 6 == 0) {
                 val gains = lastGains
                 val af = when (r.get(CaptureResult.CONTROL_AF_STATE)) {
