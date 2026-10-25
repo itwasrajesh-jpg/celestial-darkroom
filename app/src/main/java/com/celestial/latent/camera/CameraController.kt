@@ -209,6 +209,8 @@ class CameraController(
     private var afRegion: MeteringRectangle? = null
     private var afTriggerPending = false
     private var frameCounter = 0
+    /** 85b: opens retried because the previous mode still held the camera (errors 1 and 2). */
+    private var busyRetries = 0
     @Volatile var antibanding: Int = CameraMetadata.CONTROL_AE_ANTIBANDING_MODE_AUTO
 
     /** Ranges of the current lens, for the sliders. */
@@ -281,6 +283,7 @@ class CameraController(
                             if (gen == openGeneration) opening = false
                             return
                         }
+                        busyRetries = 0
                         log("opened camera $idToOpen for lens ${lens.physicalId}${if (directOpen) " (direct)" else ""}"); device = cam; createSession()
                     }
                     override fun onDisconnected(cam: CameraDevice) { log("camera disconnected (background or another app took it)"); try { session?.close() } catch (_: Exception) {}; session = null; cam.close(); device = null }
@@ -293,6 +296,13 @@ class CameraController(
                             log("camera error $error with a JPEG_R stream; Ultra HDR cannot run alongside RAW on this camera — falling back to plain JPEG")
                             status("Ultra HDR needs to be off while shooting RAW on this phone — using plain JPEG")
                             handler.postDelayed({ previewSurface?.let { open(lens, it) } }, 600)
+                        } else if ((error == CameraDevice.StateCallback.ERROR_CAMERA_IN_USE || error == CameraDevice.StateCallback.ERROR_MAX_CAMERAS_IN_USE) && busyRetries < 8) {
+                            // 85b: Night/Auto (Xiaomi's camera) is still letting go of the sensors when the camera
+                            // screen comes back. Not a DCG failure: wait a moment and open the same way again.
+                            busyRetries++
+                            log("camera still held by the previous mode (error $error); opening again in 150 ms ($busyRetries/8)")
+                            status("Camera busy, one moment…")
+                            handler.postDelayed({ previewSurface?.let { open(lens, it) } }, 150)
                         } else if (dcgOn() && error == CameraDevice.StateCallback.ERROR_CAMERA_DEVICE && dcgAttempt < 2) {
                             dcgAttempt++
                             log("DCG: camera error $error on way ${dcgAttempt - 1}; trying way $dcgAttempt")
