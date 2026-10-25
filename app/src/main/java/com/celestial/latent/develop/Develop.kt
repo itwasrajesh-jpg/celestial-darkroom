@@ -989,13 +989,44 @@ object Develop {
         )?.use { it.count > 0 } ?: false
 
     /**
-     * 81a: the longest edge a full develop decodes at. The darkroom's steps before the film (colour
-     * cleaning, the diffusion filters) keep several full-size copies in the app's 512 MB of Java memory,
-     * and the film engine needs about 100 bytes a pixel, so a 50 MP photo ran out at the colour cleaning.
-     * 4096 is the camera's own RAW (12.5 MP), which develops with room to spare. 81b made those steps
-     * work in strips; 81c tries 5792 (about 25 MP at 4:3) and logs the memory peaks to set the final cap.
+     * 81a: the longest edge a full develop decodes at. The darkroom's steps before the film work in
+     * strips since 81b, so what limits a big photo now is the film engine: about 100 bytes a pixel of
+     * native memory (81c on the 15 Ultra: +2580 MB for 4344x5792, with 3682 MB free). 5792 is about
+     * 25 MP at 4:3, the largest size measured to fit. [fullEdgeFor] steps down from it when the phone
+     * has less memory free at the time.
      */
     const val FULL_EDGE_CAP = 5792
+
+    /** 81d: the sizes a full develop tries, largest first, when the phone is short of memory. */
+    private val FULL_EDGES = intArrayOf(FULL_EDGE_CAP, 5120, 4608, 4096, 3072)
+
+    /** 81d: native memory the film engine needs per pixel, with some room over the 81c measurement (~103). */
+    private const val ENGINE_BYTES_PER_PIXEL = 115L
+
+    /** 81d: memory left for the rest of the phone (and the framing, the 16:9 letterbox, the file) after a develop. */
+    private const val RESERVE_BYTES = 600L shl 20
+
+    /**
+     * 81d: the longest edge to develop a [sw]x[sh] photo at, the largest of [FULL_EDGES] whose film
+     * fits in what the phone has free now, [upscale] (print size) included; the smallest if none does.
+     */
+    private fun fullEdgeFor(context: Context, sw: Int, sh: Int, upscale: Float): Int {
+        val mi = ActivityManager.MemoryInfo()
+        (context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager)?.getMemoryInfo(mi) ?: return FULL_EDGE_CAP
+        val room = mi.availMem - RESERVE_BYTES
+        val long = maxOf(sw, sh)
+        for (edge in FULL_EDGES) {
+            val k = minOf(1.0, edge.toDouble() / long)
+            val pixels = sw * k * sh * k * upscale * upscale
+            if ((pixels * ENGINE_BYTES_PER_PIXEL).toLong() <= room) {
+                Log.i("Latent", "full develop size: ${sw}x$sh at edge $edge needs about ${(pixels * ENGINE_BYTES_PER_PIXEL).toLong() shr 20} MB, " +
+                    "phone has ${mi.availMem shr 20} MB free")
+                return edge
+            }
+        }
+        Log.i("Latent", "full develop size: only ${mi.availMem shr 20} MB free, using the smallest edge ${FULL_EDGES.last()}")
+        return FULL_EDGES.last()
+    }
 
     /**
      * 81c: watches memory while a full develop runs and logs the highest it saw: the app's Java memory
@@ -1080,17 +1111,21 @@ object Develop {
                     hdrGlow: Float = 0f, format: String = DarkroomPrefs.FILE_JPEG, log: (String) -> Unit = {}): Uri {
         log(if (maxEdge > 0) "decoding…" else "decoding at full size…")
         lastFullNote = ""
-        val cap = if (maxEdge > 0) minOf(maxEdge, FULL_EDGE_CAP) else FULL_EDGE_CAP
+        val stored = storedSize(context, source, isRaw)
+        val fullEdge = stored?.let { (sw, sh) -> fullEdgeFor(context, sw, sh, upscale) } ?: FULL_EDGE_CAP
+        val cap = if (maxEdge > 0) minOf(maxEdge, fullEdge) else fullEdge
         val peaks = MemoryPeaks(context)
         var developedW = 0; var developedH = 0
         try {
         val pair = pairFirst != null && isRaw
         val opened = if (pair) openPair(context, pairFirst!!, source, cap, log)
             else if (isRaw) openRaw(context, source, cap, log) else openImage(context, source, cap)
-        storedSize(context, source, isRaw)?.let { (sw, sh) ->
+        stored?.let { (sw, sh) ->
             if (maxOf(sw, sh) > cap && maxEdge <= 0) {
-                lastFullNote = "developed at ${opened.width}×${opened.height} of ${sw}×$sh: big photos are kept to $FULL_EDGE_CAP for now"
-                Log.i("Latent", "full develop: ${sw}x$sh is over the ${FULL_EDGE_CAP}px cap, decoded at ${opened.width}x${opened.height}")
+                val mp = "%.1f".format(opened.width * opened.height / 1e6)
+                lastFullNote = "developed at ${opened.width}×${opened.height} ($mp MP) of ${sw}×$sh: " +
+                    if (cap < FULL_EDGE_CAP) "the phone was short of memory, close other apps for a bigger size" else "the largest size that fits in memory"
+                Log.i("Latent", "full develop: ${sw}x$sh is over the ${cap}px cap, decoded at ${opened.width}x${opened.height}")
                 log("big photo: developing at ${opened.width}×${opened.height}")
             }
         }
