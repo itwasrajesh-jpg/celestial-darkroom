@@ -129,6 +129,8 @@ class CameraController(
     private val DCG_BLACK = 1024
     private val DCG_WHITE = 16383
     private val DCG_SKIP_BOTTOM = 512
+    /** 86a: how much darker than the preview an HDR stack's frames are (Python proof on HDR+ bursts: 1.2-3.2 stops worked). */
+    private val HDR_STOPS = 2f
     private var lastFocusD = 0f
     private fun dcgOn(c: Controls = controls) = dcgTest && !fastShot && Lenses.isXiaomi15Ultra && lens.physicalId == Lenses.MAIN_ID && sensorMode(c) == null
     /** The RAW stream runs with the preview: fast shot, and no burst in progress. */
@@ -204,6 +206,10 @@ class CameraController(
     @Volatile var controls: Controls = Controls(); private set
     private var lastAutoShutterNs = 10_000_000L
     private var lastAutoIso = 100
+    // 86a: what the preview is exposing at right now, whatever set it (auto, EV dial, manual, DCG):
+    // an HDR stack goes two stops darker than this
+    private var seenShutterNs = 0L
+    private var seenIso = 0
     private var lastTransform: ColorSpaceTransform? = null
     private var lastGains: RggbChannelVector? = null
     private var afRegion: MeteringRectangle? = null
@@ -588,6 +594,8 @@ class CameraController(
             val dcg = (dcgOn(c) && dcgAttempt >= 1) || (fastShot && fastExposure.learned)
             r.get(CaptureResult.SENSOR_EXPOSURE_TIME)?.let { if (!c.manualExposure && !dcg) lastAutoShutterNs = it }
             r.get(CaptureResult.SENSOR_SENSITIVITY)?.let { if (!c.manualExposure && !dcg) lastAutoIso = it }
+            r.get(CaptureResult.SENSOR_EXPOSURE_TIME)?.let { seenShutterNs = it }
+            r.get(CaptureResult.SENSOR_SENSITIVITY)?.let { seenIso = it }
             if (fastShot) result.get(CaptureResult.SENSOR_TIMESTAMP)?.let { ts ->
                 zslResults[ts] = result
                 while (zslResults.size > 10) zslResults.remove(zslResults.keys.first())
@@ -663,8 +671,10 @@ class CameraController(
      * A burst. With [focus] (69a) it is a focus bracket instead: autofocus off, each frame focused a
      * little farther away, centred on where the focus is now, so the frames can later be stacked into
      * one picture that is sharp from front to back. A focus bracket goes into the roll only (no STACK).
+     * With [hdr] (86a) every frame is [HDR_STOPS] darker than the preview, so bright skies are not
+     * clipped; merging the roll later brings the shadows' cleanliness back (roll only, no STACK).
      */
-    fun captureBurst(frames: Int = 16, focus: Boolean = false) = handler.post {
+    fun captureBurst(frames: Int = 16, focus: Boolean = false, hdr: Boolean = false) = handler.post {
         val s = session ?: return@post
         if (roll != null) { status("Still saving the last burst…"); return@post }
         if (burst != null || busy) { status("busy"); return@post }
@@ -674,13 +684,15 @@ class CameraController(
         var rj: RollJob? = null
         try {
             val focusAt = if (focus) focusBracket(frames) else null
+            val dark = if (hdr && !focus) hdrExposure(dcg) else null
             // Every frame goes into one burst roll (68a). Without DCG the frames are also stacked into
             // the cleaner STACK DNG as before; DCG frames (14-bit) are only kept, their merge is 68b.
             // A spool left behind by a burst the app was closed during is no use now.
             context.cacheDir.listFiles { f -> f.name.endsWith(".spool") }?.forEach { it.delete() }
-            val job = if (dcg || focus) null else BurstJob(frames, rawSize.width, rawSize.height, System.nanoTime())
-            rj = RollJob(frames, fileBase(if (focus) "FOCUS" else "BURST"), dcg, System.nanoTime(),
-                kind = if (focus) BurstRoll.KIND_FOCUS else BurstRoll.KIND_BURST, rollOnly = job == null)
+            val job = if (dcg || focus || dark != null) null else BurstJob(frames, rawSize.width, rawSize.height, System.nanoTime())
+            rj = RollJob(frames, fileBase(if (focus) "FOCUS" else if (dark != null) "HDR" else "BURST"), dcg, System.nanoTime(),
+                kind = if (focus) BurstRoll.KIND_FOCUS else if (dark != null) BurstRoll.KIND_HDR else BurstRoll.KIND_BURST, rollOnly = job == null,
+                baseExposure = dark?.base ?: 0.0)
             roll = rj
             burst = job
             // Exposure is locked for the burst so every frame matches (DCG way 0 is the only auto path here).
@@ -692,7 +704,17 @@ class CameraController(
                     set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_OFF)
                     set(CaptureRequest.LENS_FOCUS_DISTANCE, focusAt[i])
                 }
+                if (dark != null) {
+                    // our own exposure for every frame, and the colour held, so all sixteen match
+                    set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_OFF)
+                    set(CaptureRequest.SENSOR_EXPOSURE_TIME, dark.shutterNs)
+                    set(CaptureRequest.SENSOR_SENSITIVITY, dark.iso)
+                    set(CaptureRequest.SENSOR_FRAME_DURATION, if (dcg) dcgFrameNs else maxOf(33_333_333L, dark.shutterNs))
+                    set(CaptureRequest.CONTROL_AWB_LOCK, true)
+                }
             }.build() }
+            if (dark != null) log("hdr stack: preview ${seenShutterNs / 1000} µs ISO $seenIso -> frames ${dark.shutterNs / 1000} µs ISO ${dark.iso} " +
+                "(${"%.2f".format(Math.log(dark.base / (dark.shutterNs.toDouble() * dark.iso)) / Math.log(2.0))} stops darker)")
             s.captureBurst(reqs, object : CameraCaptureSession.CaptureCallback() {
                 override fun onCaptureCompleted(sess: CameraCaptureSession, req: CaptureRequest, result: TotalCaptureResult) { onResult(result, null) }
                 override fun onCaptureFailed(sess: CameraCaptureSession, req: CaptureRequest, failure: android.hardware.camera2.CaptureFailure) {
@@ -701,7 +723,7 @@ class CameraController(
                     if (job != null) { job.failed++; if (job.received + job.failed >= job.frames) finishBurst(job) }
                 }
             }, handler)
-            status(if (focus) "Focus stack of $frames… hold still" else "Burst of $frames… hold still")
+            status(if (focus) "Focus stack of $frames… hold still" else if (dark != null) "HDR stack of $frames… hold still" else "Burst of $frames… hold still")
             // A frame whose result never pairs up would leave the roll open; count the missing ones as failed.
             handler.postDelayed({
                 val missing = frames - rj.received.get() - rj.failed.get()
@@ -718,7 +740,8 @@ class CameraController(
      * order. About 21 MB per DCG frame before packing, about 10 MB after.
      */
     private inner class RollJob(val frames: Int, val base: String, val dcg: Boolean, val startNs: Long,
-                                val kind: Int = BurstRoll.KIND_BURST, val rollOnly: Boolean = dcg) {
+                                val kind: Int = BurstRoll.KIND_BURST, val rollOnly: Boolean = dcg,
+                                val baseExposure: Double = 0.0) {
         val received = java.util.concurrent.atomic.AtomicInteger()
         val failed = java.util.concurrent.atomic.AtomicInteger()
         private val metas = arrayOfNulls<BurstRoll.Frame>(frames)
@@ -753,8 +776,11 @@ class CameraController(
             val m = DngWriter.metaFrom(physChars, r, pw, ph, black = black, white = white, orientation = 6, description = "")
             if (k == 0) {
                 w = pw; h = ph; firstTs = img.timestamp
+                // 86a: how much darker than the preview the frames really came out (shutter x ISO as reported)
+                val got = (m.exposureNs ?: 0L).toDouble() * (m.iso ?: 0)
+                val brighten = if (baseExposure > 0 && got > 0) (Math.log(baseExposure / got) / Math.log(2.0)).toFloat().coerceIn(0f, 4f) else 0f
                 common = BurstRoll.Common(pw, ph, black, white, m.cfaPattern, m.colorMatrix1, m.colorMatrix2, m.forwardMatrix1,
-                    m.cameraCalibration1, m.illuminant1, m.illuminant2, 6, m.uniqueModel, lens.name, dcg, kind)
+                    m.cameraCalibration1, m.illuminant1, m.illuminant2, 6, m.uniqueModel, lens.name, dcg, kind, brighten)
                 gain = BurstRoll.previewGain(px, black, white)
                 val values = android.content.ContentValues().apply {
                     put(MediaStore.MediaColumns.DISPLAY_NAME, "$base.${BurstRoll.EXT}")
@@ -843,6 +869,23 @@ class CameraController(
             runCatching { spool.close() }; spoolFile.delete()
             uri?.let { u -> runCatching { context.contentResolver.delete(u, null, null) } }
         }
+    }
+
+    /** 86a: the dark exposure of an HDR stack, and the preview's exposure (shutter ns x ISO) it is measured from. */
+    private class DarkExposure(val shutterNs: Long, val iso: Int, val base: Double)
+
+    /**
+     * [HDR_STOPS] below what the preview is exposing at: a shorter shutter first (also less shake);
+     * when the shutter cannot go shorter, a lower ISO makes up what it can.
+     */
+    private fun hdrExposure(dcg: Boolean): DarkExposure {
+        val shutter0 = (if (seenShutterNs > 0) seenShutterNs else lastAutoShutterNs).let { if (dcg) minOf(it, dcgFrameNs) else it }
+        val iso0 = if (seenIso > 0) seenIso else lastAutoIso
+        val base = shutter0.toDouble() * iso0
+        val want = base / Math.pow(2.0, HDR_STOPS.toDouble())
+        val shutter = (want / iso0).toLong().coerceIn(shutterRange.lower, shutterRange.upper)
+        val iso = Math.round(want / shutter).toInt().coerceIn(isoRange.lower, minOf(iso0, isoRange.upper))
+        return DarkExposure(shutter, iso, base)
     }
 
     /**

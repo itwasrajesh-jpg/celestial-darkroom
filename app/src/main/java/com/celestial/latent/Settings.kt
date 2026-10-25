@@ -37,6 +37,7 @@ data class AppSettings(
     val timerSeconds: Int = 0,              // 0 / 3 / 10
     val burstMode: Boolean = false,         // tap = 16-frame burst (hold = single)
     val focusStack: Boolean = false,        // 69a: tap = 12-frame focus bracket (hold = single); never on with burstMode
+    val hdrStack: Boolean = false,          // 86a: tap = 16 frames two stops dark, merged later for skies (hold = single); never with the other two
     val haptics: Boolean = true,
     val film: String = "kodak_portra_400",   // film used for the live preview and auto-develop
     val preset: String = "portra400_endura_wedding",  // the authored look; carries per-stock grain etc.
@@ -106,6 +107,7 @@ data class AppSettings(
                 timerSeconds = p.getInt("timerSeconds", 0),
                 burstMode = p.getBoolean("burstMode", false),
                 focusStack = p.getBoolean("focusStack", false),
+                hdrStack = p.getBoolean("hdrStack", false),
                 haptics = p.getBoolean("haptics", true),
                 film = p.getString("film", "kodak_portra_400") ?: "kodak_portra_400",
                 preset = p.getString("preset", "portra400_endura_wedding") ?: "portra400_endura_wedding",
@@ -146,6 +148,7 @@ data class AppSettings(
                 .putInt("timerSeconds", s.timerSeconds)
                 .putBoolean("burstMode", s.burstMode)
                 .putBoolean("focusStack", s.focusStack)
+                .putBoolean("hdrStack", s.hdrStack)
                 .putBoolean("haptics", s.haptics)
                 .putString("film", s.film)
                 .putString("preset", s.preset)
