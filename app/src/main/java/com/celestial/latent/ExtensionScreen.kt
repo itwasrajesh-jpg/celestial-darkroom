@@ -341,7 +341,9 @@ fun ExtensionScreen(settings: AppSettings, onSettingsChange: (AppSettings) -> Un
         lifecycleOwner.lifecycle.addObserver(obs)
         onDispose { lifecycleOwner.lifecycle.removeObserver(obs) }
     }
-    androidx.compose.runtime.LaunchedEffect(status) { val l = status.lowercase(); if (l.contains("fail") || l.contains("refused") || l.contains("error") || l.contains("processing")) { toast = status; kotlinx.coroutines.delay(2500); toast = "" } }
+    // 84b: a new status cancels the old one's timer, so "Processing…" followed within 2.5 s by
+    // "Saved …" (not a toast) used to stay up for good. Any other status now clears it.
+    androidx.compose.runtime.LaunchedEffect(status) { val l = status.lowercase(); if (l.contains("fail") || l.contains("refused") || l.contains("error") || l.contains("processing")) { toast = status; kotlinx.coroutines.delay(2500); toast = "" } else toast = "" }
     fun resetManual() { ev = 0; shutter = null; isoV = null; cam.evIndex = 0; cam.shutterNs = null; cam.iso = null; selected = "" }
 
     Column(Modifier.fillMaxSize().background(LatentColors.Background).statusBarsPadding().navigationBarsPadding()) {
