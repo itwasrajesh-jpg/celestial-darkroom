@@ -299,7 +299,9 @@ class ExtensionCamera(private val context: android.content.Context, private val 
 fun ExtensionScreen(settings: AppSettings, onSettingsChange: (AppSettings) -> Unit, onOpenRoll: () -> Unit = {}, onBack: () -> Unit) {
     val context = LocalContext.current
     var status by remember { mutableStateOf("Starting…") }
-    var mode by remember { mutableStateOf(CameraExtensionCharacteristics.EXTENSION_BOKEH) }
+    // 84a: opens in the Xiaomi mode picked in the mode row (Night unless Auto was picked)
+    val startMode = remember { if (CameraModes.xiaomi(context) == CameraModes.AUTO) CameraExtensionCharacteristics.EXTENSION_AUTOMATIC else CameraExtensionCharacteristics.EXTENSION_NIGHT }
+    var mode by remember { mutableStateOf(startMode) }
     var zoomOk by remember { mutableStateOf(false) }
     var zoom by remember { mutableStateOf(1f) }
     var caps by remember { mutableStateOf<ExtensionCamera.Caps?>(null) }
@@ -317,6 +319,7 @@ fun ExtensionScreen(settings: AppSettings, onSettingsChange: (AppSettings) -> Un
     var filmsFolded by remember { mutableStateOf(runCatching { uiPrefs.getBoolean("films_folded", false) }.getOrDefault(false)) }
     val cam = remember {
         ExtensionCamera(context) { s -> status = s }.also {
+            it.extension = startMode
             it.onZoomSupport = { ok -> zoomOk = ok }; it.onCaps = { c -> caps = c }
             it.onSaved = { uri ->
                 Thread { val b = runCatching { context.contentResolver.loadThumbnail(uri, android.util.Size(192, 192), null) }.getOrNull(); if (b != null) { thumb = b; lastUri = uri } }.start()
@@ -342,16 +345,9 @@ fun ExtensionScreen(settings: AppSettings, onSettingsChange: (AppSettings) -> Un
     fun resetManual() { ev = 0; shutter = null; isoV = null; cam.evIndex = 0; cam.shutterNs = null; cam.iso = null; selected = "" }
 
     Column(Modifier.fillMaxSize().background(LatentColors.Background).statusBarsPadding().navigationBarsPadding()) {
-        // Top bar: back · mode chips · (spacer)
+        // Top bar: back (84a: the modes moved to the row above the shutter)
         Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 10.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             Text("‹", color = LatentColors.Text, fontSize = 22.sp, modifier = Modifier.combinedClickable(onClick = onBack).padding(horizontal = 6.dp))
-            Row {
-                listOf("Portrait" to CameraExtensionCharacteristics.EXTENSION_BOKEH, "Night" to CameraExtensionCharacteristics.EXTENSION_NIGHT, "Auto" to CameraExtensionCharacteristics.EXTENSION_AUTOMATIC).forEach { (label, ext) ->
-                    val on = mode == ext
-                    Text(label.uppercase(), color = if (on) LatentColors.TextBright else LatentColors.TextDim, fontSize = 11.sp, letterSpacing = 2.sp,
-                        modifier = Modifier.combinedClickable(onClick = { if (!on) { Haptics.tick(context); mode = ext; resetManual(); cam.switchTo(ext) } }).padding(horizontal = 10.dp, vertical = 4.dp))
-                }
-            }
             Spacer(Modifier.size(22.dp))
         }
         // Viewfinder with overlays
@@ -446,7 +442,12 @@ fun ExtensionScreen(settings: AppSettings, onSettingsChange: (AppSettings) -> Un
                     StripSlider(idx.toFloat(), 0f, (p.size - 1).toFloat(), (p.size - 2).coerceAtLeast(0), { v -> shutter = p[Math.round(v).coerceIn(0, p.size - 1)]; cam.shutterNs = shutter; cam.refresh() }, { shutter = null; cam.shutterNs = null; cam.refresh() }, "A") }
                 "ISO" -> c?.isoRange?.let { r -> val p = com.celestial.latent.camera.ControlMath.isoPresets(r.lower, r.upper); val idx = isoV?.let { i -> p.indexOfFirst { it >= i }.coerceAtLeast(0) } ?: 0
                     StripSlider(idx.toFloat(), 0f, (p.size - 1).toFloat(), (p.size - 2).coerceAtLeast(0), { v -> isoV = p[Math.round(v).coerceIn(0, p.size - 1)]; cam.iso = isoV; cam.refresh() }, { isoV = null; cam.iso = null; cam.refresh() }, "A") }
-                else -> Box(Modifier.fillMaxWidth().padding(horizontal = 4.dp).height(0.5.dp).background(LatentColors.Surface))
+                // 84a: the same mode row as the camera screen; PRO, FAST and CINEMA go back to it
+                else -> ModeRow(if (mode == CameraExtensionCharacteristics.EXTENSION_AUTOMATIC) CameraModes.AUTO else CameraModes.NIGHT, { m ->
+                    val ext = when (m) { CameraModes.NIGHT -> CameraExtensionCharacteristics.EXTENSION_NIGHT; CameraModes.AUTO -> CameraExtensionCharacteristics.EXTENSION_AUTOMATIC; else -> null }
+                    if (ext != null) { CameraModes.setXiaomi(context, m); mode = ext; resetManual(); cam.switchTo(ext) }
+                    else { onSettingsChange(CameraModes.apply(settings, m)); onBack() }
+                })
             }
         }
         // Shutter row: thumbnail · shutter · spacer
