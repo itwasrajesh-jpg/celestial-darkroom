@@ -520,14 +520,15 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                 status = "full size: $m"
                 if (m.startsWith("failed")) fullError =
                     if (m.contains("OutOfMemory", ignoreCase = true) || m.contains("allocate", ignoreCase = true))
-                        "Not developed: the phone ran out of memory. Try a smaller print size."
+                        // 81a: 1× is the smallest size, so only a bigger print can be made smaller
+                        "Not developed: the phone ran out of memory." + if (printSize > 1f) " Try a smaller print size." else ""
                     else "Not developed: " + m.removePrefix("failed: ").take(120)
             },
             onDone = { out ->
                 fullRunning = false; fullJob = null
                 if (out != null) {
                     fullError = null
-                    status = "saved to DCIM/Latent"
+                    status = "saved to DCIM/Latent" + com.celestial.latent.develop.Develop.lastFullNote.let { if (it.isEmpty()) "" else " · $it" }
                     // 78a: in HDR view, the saved file itself (a thumbnail would drop its glow)
                     val b = (if (hdrView) com.celestial.latent.develop.HdrGlow.decodeSmall(context, out, 1600) else null)
                         ?: runCatching { context.contentResolver.loadThumbnail(out, android.util.Size(1600, 1600), null) }.getOrNull()

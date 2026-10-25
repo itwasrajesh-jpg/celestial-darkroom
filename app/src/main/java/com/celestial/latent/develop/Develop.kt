@@ -988,6 +988,31 @@ object Develop {
             arrayOf("DCIM/Latent%", name), null,
         )?.use { it.count > 0 } ?: false
 
+    /**
+     * 81a: the longest edge a full develop decodes at. The darkroom's steps before the film (colour
+     * cleaning, the diffusion filters) keep several full-size copies in the app's 512 MB of Java memory,
+     * and the film engine needs about 100 bytes a pixel, so a 50 MP photo ran out at the colour cleaning.
+     * 4096 is the camera's own RAW (12.5 MP), which develops with room to spare. To be raised once those
+     * steps work in strips (81b) and the phone shows what fits (81c).
+     */
+    const val FULL_EDGE_CAP = 4096
+
+    /** What the last full develop had to give up, for the message after it is saved ("" = nothing). */
+    @Volatile var lastFullNote = ""
+
+    /** A photo's own size without decoding it, or null when the file does not say. */
+    private fun storedSize(context: Context, uri: Uri, isRaw: Boolean): Pair<Int, Int>? = runCatching {
+        if (isRaw) context.contentResolver.openInputStream(uri)?.use { android.media.ExifInterface(it) }?.let { e ->
+            val w = e.getAttributeInt(android.media.ExifInterface.TAG_IMAGE_WIDTH, 0)
+            val h = e.getAttributeInt(android.media.ExifInterface.TAG_IMAGE_LENGTH, 0)
+            if (w > 0 && h > 0) w to h else null
+        } else {
+            val o = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            context.contentResolver.openInputStream(uri)?.use { android.graphics.BitmapFactory.decodeStream(it, null, o) }
+            if (o.outWidth > 0 && o.outHeight > 0) o.outWidth to o.outHeight else null
+        }
+    }.getOrNull()
+
     /** Full-resolution develop with progress, logging and a new file each time. */
     fun developFull(context: Context, source: Uri, isRaw: Boolean, recipe: Recipe, maxEdge: Int = 0, upscale: Float = 1f,
                     exposureMap: ExposureMap? = null, softenMask: ExposureMap? = null, pairFirst: Uri? = null,
@@ -998,9 +1023,18 @@ object Develop {
                     wetMask: ExposureMap? = null, wetLook: WetLook = WetLook(), rainMask: ExposureMap? = null,
                     hdrGlow: Float = 0f, format: String = DarkroomPrefs.FILE_JPEG, log: (String) -> Unit = {}): Uri {
         log(if (maxEdge > 0) "decoding…" else "decoding at full size…")
+        lastFullNote = ""
+        val cap = if (maxEdge > 0) minOf(maxEdge, FULL_EDGE_CAP) else FULL_EDGE_CAP
         val pair = pairFirst != null && isRaw
-        val opened = if (pair) openPair(context, pairFirst!!, source, maxEdge, log)
-            else if (isRaw) openRaw(context, source, maxEdge, log) else openImage(context, source, maxEdge)
+        val opened = if (pair) openPair(context, pairFirst!!, source, cap, log)
+            else if (isRaw) openRaw(context, source, cap, log) else openImage(context, source, cap)
+        storedSize(context, source, isRaw)?.let { (sw, sh) ->
+            if (maxOf(sw, sh) > cap && maxEdge <= 0) {
+                lastFullNote = "developed at ${opened.width}×${opened.height} of ${sw}×$sh: big photos are kept to $FULL_EDGE_CAP for now"
+                Log.i("Latent", "full develop: ${sw}x$sh is over the ${FULL_EDGE_CAP}px cap, decoded at ${opened.width}x${opened.height}")
+                log("big photo: developing at ${opened.width}×${opened.height}")
+            }
+        }
         // Framed before anything else touches the light, so the film forms on the framed picture.
         val src = if (framing.isIdentity) opened else {
             log("framing…")
