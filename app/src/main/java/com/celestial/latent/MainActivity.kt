@@ -74,7 +74,10 @@ private fun Root() {
     var burstRoll by remember { mutableStateOf<android.net.Uri?>(null) }
     var darkroomBack by remember { mutableStateOf("roll") }   // where Back leaves the darkroom to
     var crash by remember { mutableStateOf(CrashLog.read(context)) }
-    var screen by remember { mutableStateOf("camera") }
+    // 84a: the camera screen in use is the mode row's: Xiaomi's for Night/Auto, ours otherwise
+    fun cameraHome() = if (android.os.Build.VERSION.SDK_INT >= 31 && CameraModes.xiaomi(context).isNotEmpty()) "extension" else "camera"
+    // back in Night or Auto if that is the mode the app was left in
+    var screen by remember { mutableStateOf(cameraHome()) }
     crash?.let { text ->
         Column(Modifier.fillMaxSize().background(LatentColors.Background).statusBarsPadding().navigationBarsPadding().padding(16.dp)) {
             Text("Celestial Darkroom crashed last time", color = LatentColors.TextBright, fontSize = 18.sp)
@@ -117,7 +120,8 @@ private fun Root() {
     }
     // System back gesture: always one step up, never out of the app while inside a sub-screen.
     BackHandler(enabled = screen != "camera") {
-        screen = when (screen) { "settings", "extension", "roll" -> "camera"; "darkroom" -> darkroomBack; "burst" -> "roll"; else -> "settings" }
+        if (screen == "extension") CameraModes.setXiaomi(context, "")
+        screen = when (screen) { "settings", "extension" -> "camera"; "roll" -> cameraHome(); "darkroom" -> darkroomBack; "burst" -> "roll"; else -> "settings" }
     }
 
     // The overlay is drawn after the screens, so it covers them while the camera starts behind.
@@ -143,7 +147,7 @@ private fun Root() {
             onOpenDarkroom = { uri, isRaw -> darkroomSource = uri; darkroomIsRaw = isRaw; darkroomBack = "roll"; screen = "darkroom" },
             onOpenLookBuilder = { screen = "look" },
             onOpenBurst = { uri -> burstRoll = uri; screen = "burst" },
-            onBack = { screen = "camera" },
+            onBack = { screen = cameraHome() },
         )
         "darkroom" -> darkroomSource?.let { src ->
             DarkroomScreen(
@@ -164,7 +168,8 @@ private fun Root() {
             settings = settings,
             onSettingsChange = { s -> settings = s; AppSettings.save(context, s) },
             onOpenRoll = { screen = "roll" },
-            onBack = { screen = "camera" },
+            // leaving Xiaomi's screen goes back to the camera's own modes, and the app reopens there
+            onBack = { CameraModes.setXiaomi(context, ""); screen = "camera" },
         ) else { screen = "camera" }
         "logs" -> LogScreen(onBack = { screen = "settings" })
         "about" -> AboutScreen(onBack = { screen = "settings" })

@@ -680,28 +680,27 @@ fun CameraScreen(
                         Tile(if (settings.timerSeconds == 0) "Timer off" else "Timer ${settings.timerSeconds}s", settings.timerSeconds > 0, Modifier.weight(1f)) {
                             onSettingsChange(settings.copy(timerSeconds = when (settings.timerSeconds) { 0 -> 3; 3 -> 10; else -> 0 }))
                         }
-                        Tile("Portrait / Night", false, Modifier.weight(1f)) { drawerOpen = false; onOpenExtension() }
                         Tile("All settings", false, Modifier.weight(1f)) { drawerOpen = false; onOpenSettings() }
                     }
-                    // DCG: the main lens's cleaner-shadow sensor mode (Xiaomi 15 Ultra only). 79a: Fast shot beside it.
-                    Spacer(Modifier.height(6.dp))
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Tile("Fast shot\n28–135 mm", settings.fastShot, Modifier.weight(1f)) { onSettingsChange(settings.copy(fastShot = it)) }
-                        if (Lenses.isXiaomi15Ultra) Tile("DCG · main lens" + if (settings.fastShot) "\n(off in fast shot)" else "", settings.dcgTest, Modifier.weight(1f)) { onSettingsChange(settings.copy(dcgTest = it)) }
-                        else Spacer(Modifier.weight(1f))
+                    // DCG: the main lens's cleaner-shadow sensor mode (Xiaomi 15 Ultra only).
+                    // 84a: Fast shot and Cinema are modes in the row under the picture now, not tiles here.
+                    if (Lenses.isXiaomi15Ultra) {
+                        Spacer(Modifier.height(6.dp))
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Tile("DCG · main lens" + if (settings.fastShot) "\n(off in fast shot)" else "", settings.dcgTest, Modifier.weight(1f)) { onSettingsChange(settings.copy(dcgTest = it)) }
+                            Spacer(Modifier.weight(1f))
+                        }
                     }
                     // Cinema: a motion-picture film and print, a Super 35 frame, a widescreen crop.
-                    Spacer(Modifier.height(6.dp))
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Tile("Cinema", settings.cinema, Modifier.weight(1f)) { onSettingsChange(settings.copy(cinema = it)) }
-                        if (settings.cinema) {
+                    if (settings.cinema) {
+                        Spacer(Modifier.height(6.dp))
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                             Tile("Film-still bars", settings.cinemaBars, Modifier.weight(1f)) { onSettingsChange(settings.copy(cinemaBars = it)) }
                             // the 85B is only for tungsten film, so it is only offered with one
                             if (Cinema.tungsten(settings.cinemaFilm))
                                 Tile("85B filter\n(daylight)", settings.cinema85b, Modifier.weight(1f)) { onSettingsChange(settings.copy(cinema85b = it)) }
+                            else Spacer(Modifier.weight(1f))
                         }
-                    }
-                    if (settings.cinema) {
                         Spacer(Modifier.height(6.dp))
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                             Cinema.FILMS.forEach { (id, label) ->
@@ -751,7 +750,11 @@ fun CameraScreen(
                     StripSlider(cur.toFloat(), 2000f, 10000f, 79, { push(controls.copy(kelvin = Math.round(it / 100f) * 100)) }, { push(controls.copy(kelvin = null)) }, "A") }
                 Cell.F -> { val maxD = if (controller.hasCharacteristics) controller.minFocusDiopters else 10f
                     StripSlider((controls.focusDiopters ?: readout.focusDiopters).coerceIn(0f, maxD), 0f, maxD, 0, { push(controls.copy(focusDiopters = it)) }, { push(controls.copy(focusDiopters = null)) }, "AF") }
-                null -> Box(Modifier.fillMaxWidth().padding(horizontal = 4.dp).height(0.5.dp).background(LatentColors.Surface))
+                // 84a: with no slider open, the modes sit here (a slider takes the spot while it is open)
+                null -> ModeRow(CameraModes.of(settings), { m ->
+                    if (m == CameraModes.NIGHT || m == CameraModes.AUTO) { CameraModes.setXiaomi(context, m); onOpenExtension() }
+                    else onSettingsChange(CameraModes.apply(settings, m))
+                })
             }
         }
 
