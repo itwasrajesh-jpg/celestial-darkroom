@@ -29,6 +29,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -50,7 +51,27 @@ class MainActivity : ComponentActivity() {
         // Before anything reads the lens list or the saved default lens.
         com.celestial.latent.camera.Lenses.discover(this)
         enableEdgeToEdge()
-        setContent { LatentTheme { Root() } }
+        // 87a: the chosen theme, read before the first frame
+        LatentColors.load(this)
+        setContent {
+            // Clay is light: dark status and navigation icons, set again whenever the theme changes
+            val light = LatentColors.Light
+            SideEffect { systemBars(light) }
+            LatentTheme { Root() }
+        }
+    }
+
+    private fun systemBars(light: Boolean) {
+        if (android.os.Build.VERSION.SDK_INT >= 30) {
+            val c = window.insetsController ?: return
+            val m = android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or android.view.WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
+            c.setSystemBarsAppearance(if (light) m else 0, m)
+        } else {
+            @Suppress("DEPRECATION")
+            val f = android.view.View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or android.view.View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
+            @Suppress("DEPRECATION")
+            window.decorView.systemUiVisibility = if (light) window.decorView.systemUiVisibility or f else window.decorView.systemUiVisibility and f.inv()
+        }
     }
 
     override fun onKeyDown(keyCode: Int, event: android.view.KeyEvent?): Boolean {

@@ -66,6 +66,12 @@ import com.celestial.latent.develop.ExposureMaps
 import com.celestial.latent.develop.Recipe
 import com.celestial.latent.develop.Recipes
 import com.celestial.latent.ui.LatentColors
+import com.celestial.latent.ui.OnPhoto
+import com.celestial.latent.ui.glow
+import com.celestial.latent.ui.liftedTop
+import com.celestial.latent.ui.litEdge
+import com.celestial.latent.ui.floating
+import com.celestial.latent.ui.raised
 import kotlinx.coroutines.delay
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.tween
@@ -724,7 +730,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
 
     // a Box only so the living photo panel (66a) can lie over the darkroom, in the app's own window
     Box(Modifier.fillMaxSize()) {
-    Column(Modifier.fillMaxSize().background(LatentColors.Background).statusBarsPadding().navigationBarsPadding()) {
+    Column(Modifier.fillMaxSize().background(LatentColors.Background).glow().statusBarsPadding().navigationBarsPadding()) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 10.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             Text("‹", color = LatentColors.Text, fontSize = 22.sp, modifier = Modifier.combinedClickable(onClick = onBack).padding(horizontal = 6.dp))
             Text("DARKROOM", color = LatentColors.Text, fontSize = 12.sp, letterSpacing = 4.sp)
@@ -807,7 +813,8 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                 // Photo shrinks as the sheet is dragged up; it never disappears entirely.
                 // While framing, the photo gets at least its usual share, so the crop is easy to see.
                 val photoWeight = if (frameOpen) maxOf(photoShare, com.celestial.latent.develop.DarkroomPrefs.PHOTO_SHARE_DEFAULT) else photoShare
-                Box(Modifier.fillMaxWidth().weight(photoWeight).background(LatentColors.Surface)
+                // 87a: the photo always sits on a dark mat (in Darkroom, the grey it always had)
+                Box(Modifier.fillMaxWidth().weight(photoWeight).background(LatentColors.Mat)
                     .onSizeChanged { viewSize = it }
                     // Two fingers zoom and move; one finger slides the picture when zoomed in.
                     .pointerInput(frameOpen, preview != null) {
@@ -966,7 +973,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                                 .background(Color(0x66000000)).padding(horizontal = 10.dp, vertical = 3.dp))
                     }
 
-                    if (!rendering && !fullRunning && preview == null) Text(if (status.isEmpty()) "no preview yet" else status, color = LatentColors.Text, fontSize = 11.sp, modifier = Modifier.align(Alignment.Center).padding(24.dp))
+                    if (!rendering && !fullRunning && preview == null) Text(if (status.isEmpty()) "no preview yet" else status, color = OnPhoto.Text, fontSize = 11.sp, modifier = Modifier.align(Alignment.Center).padding(24.dp))
                     Text(if (comparing) "ORIGINAL" else (Develop.FILMS.firstOrNull { it.first == recipe.film }?.second?.uppercase() ?: recipe.film),
                         color = Color(0xE6FFFFFF), fontSize = 10.sp, letterSpacing = 1.5.sp,
                         modifier = Modifier.align(Alignment.TopStart).padding(12.dp))
@@ -982,7 +989,8 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                     modifier = Modifier.fillMaxWidth().weight(1f - photoWeight),
                     shotCrop = remember(source) { com.celestial.latent.develop.Framings.shotCrop(context, source) },
                 ) else Column(
-                    Modifier.fillMaxWidth().weight(1f - photoWeight).clip(RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)).background(Color(0xFF1D1D1B))
+                    Modifier.fillMaxWidth().weight(1f - photoWeight).liftedTop(rim = false).clip(RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)).background(LatentColors.Panel)
+                        .litEdge(RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp))
                 ) {
                     // the handle (75b): the panel follows the finger; a double tap puts the usual height back
                     PanelHandle(panelSplit, roomHeight)
@@ -1029,7 +1037,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                         savedRecipes.forEach { (name, saved) ->
                             val on = lookId == "stock:" + name
                             Column(
-                                Modifier.clip(RoundedCornerShape(6.dp)).background(if (on) LatentColors.Amber else LatentColors.Surface)
+                                Modifier.floating(RoundedCornerShape(6.dp), 3.dp).clip(RoundedCornerShape(6.dp)).background(if (on) LatentColors.Amber else LatentColors.Surface)
                                     .combinedClickable(
                                         onClick = { Haptics.tick(context); lookId = "stock:" + name; recipe = saved },
                                         onLongClick = { Haptics.click(context); managing = name; manageName = name; deleteAsk = false },
@@ -1043,7 +1051,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                         ourStocks.forEach { (name, saved) ->
                             val on = lookId == "stock:" + name
                             Column(
-                                Modifier.clip(RoundedCornerShape(6.dp)).background(if (on) LatentColors.Amber else LatentColors.Surface)
+                                Modifier.floating(RoundedCornerShape(6.dp), 3.dp).clip(RoundedCornerShape(6.dp)).background(if (on) LatentColors.Amber else LatentColors.Surface)
                                     .combinedClickable(onClick = { Haptics.tick(context); lookId = "stock:" + name; recipe = saved })
                                     .padding(horizontal = 11.dp, vertical = 6.dp),
                             ) {
@@ -1054,7 +1062,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                         looks.forEach { preset ->
                             val on = preset.id == lookId
                             Column(
-                                Modifier.clip(RoundedCornerShape(6.dp)).background(if (on) LatentColors.Amber else LatentColors.Surface)
+                                Modifier.floating(RoundedCornerShape(6.dp), 3.dp).clip(RoundedCornerShape(6.dp)).background(if (on) LatentColors.Amber else LatentColors.Surface)
                                     .combinedClickable(onClick = { Haptics.tick(context); lookId = preset.id; recipe = preset.recipe })
                                     .padding(horizontal = 11.dp, vertical = 6.dp),
                             ) {
@@ -1461,7 +1469,7 @@ private fun Chips(options: List<String>, selected: String, onSelect: (String) ->
         options.forEach { o ->
             val on = o == selected
             Text(o.replace('_', ' '), color = if (on) LatentColors.AmberInk else LatentColors.Text, fontSize = 10.sp,
-                modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(if (on) LatentColors.Amber else LatentColors.Surface)
+                modifier = Modifier.raised(RoundedCornerShape(999.dp), 2.dp).clip(RoundedCornerShape(999.dp)).background(if (on) LatentColors.Amber else LatentColors.Surface)
                     .combinedClickable(onClick = { Haptics.tick(context); onSelect(o) }).padding(horizontal = 10.dp, vertical = 5.dp))
         }
     }
