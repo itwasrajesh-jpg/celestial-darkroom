@@ -44,6 +44,7 @@ import androidx.compose.ui.unit.sp
 import com.celestial.latent.develop.Develop
 import com.celestial.latent.develop.Fingerprint
 import com.celestial.latent.ui.LatentColors
+import com.celestial.latent.ui.OnPhoto
 import kotlin.math.abs
 
 /**
@@ -324,7 +325,7 @@ fun LookScreen(settings: AppSettings, onBack: () -> Unit) {
             Image(bmp.asImageBitmap(), null, contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize().padding(12.dp))
             Text(
                 "tap to close",
-                color = LatentColors.TextDim, fontSize = 11.sp,
+                color = OnPhoto.TextDim, fontSize = 11.sp,
                 modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 28.dp),
             )
         }

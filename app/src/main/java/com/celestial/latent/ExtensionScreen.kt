@@ -61,6 +61,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.celestial.latent.ui.LatentColors
+import com.celestial.latent.ui.OnPhoto
+import com.celestial.latent.ui.floating
+import com.celestial.latent.ui.glow
+import com.celestial.latent.ui.raised
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -374,14 +378,14 @@ fun ExtensionScreen(settings: AppSettings, onSettingsChange: (AppSettings) -> Un
     androidx.compose.runtime.LaunchedEffect(status) { val l = status.lowercase(); if (l.contains("fail") || l.contains("refused") || l.contains("error") || l.contains("processing")) { toast = status; kotlinx.coroutines.delay(2500); toast = "" } else toast = "" }
     fun resetManual() { ev = 0; shutter = null; isoV = null; cam.evIndex = 0; cam.shutterNs = null; cam.iso = null; selected = "" }
 
-    Column(Modifier.fillMaxSize().background(LatentColors.Background).statusBarsPadding().navigationBarsPadding()) {
+    Column(Modifier.fillMaxSize().background(LatentColors.Background).glow().statusBarsPadding()) {
         // Top bar: back (84a: the modes moved to the row above the shutter)
         Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 10.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             Text("‹", color = LatentColors.Text, fontSize = 22.sp, modifier = Modifier.combinedClickable(onClick = onBack).padding(horizontal = 6.dp))
             Spacer(Modifier.size(22.dp))
         }
         // Viewfinder with overlays
-        Box(Modifier.fillMaxWidth().aspectRatio(3f / 4f).background(LatentColors.Surface).pointerInput(Unit) {
+        Box(Modifier.fillMaxWidth().aspectRatio(3f / 4f).background(OnPhoto.Surface).pointerInput(Unit) {
             detectTapGestures { pos ->
                 val c = caps ?: return@detectTapGestures
                 if (c.afRegions) cam.tapFocus(pos.x / size.width, pos.y / size.height)
@@ -411,9 +415,9 @@ fun ExtensionScreen(settings: AppSettings, onSettingsChange: (AppSettings) -> Un
                     onDismiss = { focusTap = null },
                 )
             }
-            Text("XIAOMI " + extName(mode) + " · JPG", color = LatentColors.TextBright, fontSize = 10.sp, letterSpacing = 1.sp, modifier = Modifier.align(Alignment.TopStart).padding(12.dp))
+            Text("XIAOMI " + extName(mode) + " · JPG", color = OnPhoto.TextBright, fontSize = 10.sp, letterSpacing = 1.sp, modifier = Modifier.align(Alignment.TopStart).padding(12.dp))
             caps?.let { c -> Text(listOfNotNull(if (c.zoom) "ZOOM" else null, if (c.ev) "EV" else null, if (c.manual) "MANUAL" else null, if (c.afRegions) "TAP-AF" else null, if (c.isz) "ISZ" else null).ifEmpty { listOf("AUTO ONLY") }.joinToString(" · "),
-                color = LatentColors.Amber, fontSize = 10.sp, letterSpacing = 1.sp, modifier = Modifier.align(Alignment.TopEnd).padding(12.dp)) }
+                color = OnPhoto.Amber, fontSize = 10.sp, letterSpacing = 1.sp, modifier = Modifier.align(Alignment.TopEnd).padding(12.dp)) }
             // 83a: the main screen's lens row (76a): one see-through dark pill, the chosen lens in a light
             // circle, the phone's own lens list. Here a lens is a zoom ratio on Xiaomi's camera, and ×2
             // doubles it (no in-sensor ×4: these modes don't take that key). It follows the film cards down.
@@ -430,23 +434,23 @@ fun ExtensionScreen(settings: AppSettings, onSettingsChange: (AppSettings) -> Un
                 .padding(horizontal = 4.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                 com.celestial.latent.camera.Lenses.ALL.forEach { l ->
                     val on = l == lensSel
-                    Text(if (on) l.label + "×" else l.label, color = if (on) LatentColors.Background else LatentColors.TextBright, fontSize = if (on) 14.sp else 12.sp,
+                    Text(if (on) l.label + "×" else l.label, color = if (on) OnPhoto.Background else OnPhoto.TextBright, fontSize = if (on) 14.sp else 12.sp,
                         textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                        modifier = Modifier.then(if (on) Modifier.clip(CircleShape).background(LatentColors.TextBright).size(38.dp).wrapContentHeight(Alignment.CenterVertically) else Modifier)
+                        modifier = Modifier.then(if (on) Modifier.clip(CircleShape).background(OnPhoto.TextBright).size(38.dp).wrapContentHeight(Alignment.CenterVertically) else Modifier)
                             .combinedClickable(onClick = { if (!on) { Haptics.tick(context); lensSel = l; send() } })
                             .then(if (on) Modifier else Modifier.padding(horizontal = 11.dp, vertical = 6.dp)))
                 }
                 Spacer(Modifier.width(6.dp))
                 val z2 = lensSel.label.toFloat() * 2f
                 val effective = if (z2 >= 10f) String.format(Locale.US, "%.0f", z2) else String.format(Locale.US, "%.1f", z2).removeSuffix(".0")
-                Text(if (x2) "$effective×" else "×2", color = if (x2) LatentColors.AmberInk else LatentColors.Amber, fontSize = 11.sp,
-                    modifier = Modifier.padding(end = 4.dp).clip(RoundedCornerShape(999.dp)).background(if (x2) LatentColors.Amber else androidx.compose.ui.graphics.Color.Transparent).border(0.5.dp, LatentColors.Amber, RoundedCornerShape(999.dp))
+                Text(if (x2) "$effective×" else "×2", color = if (x2) OnPhoto.AmberInk else OnPhoto.Amber, fontSize = 11.sp,
+                    modifier = Modifier.padding(end = 4.dp).clip(RoundedCornerShape(999.dp)).background(if (x2) OnPhoto.Amber else androidx.compose.ui.graphics.Color.Transparent).border(0.5.dp, OnPhoto.Amber, RoundedCornerShape(999.dp))
                         .combinedClickable(onClick = { Haptics.tick(context); x2 = !x2; send() }).padding(horizontal = 9.dp, vertical = 3.dp))
-                if (caps?.isz == true) Text(if (iszOn) "ISZ" else "isz", color = if (iszOn) LatentColors.AmberInk else LatentColors.Amber, fontSize = 11.sp,
-                    modifier = Modifier.padding(end = 4.dp).clip(RoundedCornerShape(999.dp)).background(if (iszOn) LatentColors.Amber else androidx.compose.ui.graphics.Color.Transparent).border(0.5.dp, LatentColors.Amber, RoundedCornerShape(999.dp))
+                if (caps?.isz == true) Text(if (iszOn) "ISZ" else "isz", color = if (iszOn) OnPhoto.AmberInk else OnPhoto.Amber, fontSize = 11.sp,
+                    modifier = Modifier.padding(end = 4.dp).clip(RoundedCornerShape(999.dp)).background(if (iszOn) OnPhoto.Amber else androidx.compose.ui.graphics.Color.Transparent).border(0.5.dp, OnPhoto.Amber, RoundedCornerShape(999.dp))
                         .combinedClickable(onClick = { Haptics.tick(context); iszOn = !iszOn; cam.isz = iszOn; cam.refresh() }).padding(horizontal = 8.dp, vertical = 3.dp))
             }
-            Text((if (zoomOk) "LENS VIA ZOOM" else "LENS BY XIAOMI") + " · FILM OVER JPEG", color = LatentColors.TextDim, fontSize = 10.sp, letterSpacing = 1.sp, modifier = Modifier.align(Alignment.BottomStart).padding(start = 12.dp, bottom = 90.dp + filmsLift))
+            Text((if (zoomOk) "LENS VIA ZOOM" else "LENS BY XIAOMI") + " · FILM OVER JPEG", color = OnPhoto.TextDim, fontSize = 10.sp, letterSpacing = 1.sp, modifier = Modifier.align(Alignment.BottomStart).padding(start = 12.dp, bottom = 90.dp + filmsLift))
             FilmStrip(settings.preset, Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp),
                 folded = filmsFolded,
                 onFold = { filmsFolded = it; runCatching { uiPrefs.edit().putBoolean("films_folded", it).apply() } }) { id ->
@@ -462,10 +466,11 @@ fun ExtensionScreen(settings: AppSettings, onSettingsChange: (AppSettings) -> Un
                     com.celestial.latent.develop.Recipes.setCurrent(context, preset.recipe)
                 }
             }
-            if (toast.isNotEmpty()) Text(toast, color = LatentColors.TextBright, fontSize = 11.sp, modifier = Modifier.align(Alignment.Center).padding(24.dp).clip(RoundedCornerShape(8.dp)).background(androidx.compose.ui.graphics.Color(0xCC161615)).padding(12.dp))
+            if (toast.isNotEmpty()) Text(toast, color = OnPhoto.TextBright, fontSize = 11.sp, modifier = Modifier.align(Alignment.Center).padding(24.dp).clip(RoundedCornerShape(8.dp)).background(OnPhoto.Background.copy(alpha = 0.8f)).padding(12.dp))
         }
         // Control strip: only what this extension accepts
         val c = caps
+        Column(Modifier.fillMaxWidth().controlBar()) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp)) {
             StripCell("EV", if (c?.ev == true) String.format("%+.1f", ev / 6.0).replace("+0.0", "0.0") else "—", false, selected == "EV", c?.ev != true || shutter != null, Modifier.weight(1f)) { if (c?.ev == true) selected = if (selected == "EV") "" else "EV" }
             StripCell("S", if (c?.manual == true) (shutter?.let { com.celestial.latent.camera.ControlMath.shutterLabel(it) } ?: "auto") else "—", c?.manual == true && shutter == null, selected == "S", c?.manual != true, Modifier.weight(1f)) { if (c?.manual == true) selected = if (selected == "S") "" else "S" }
@@ -492,16 +497,19 @@ fun ExtensionScreen(settings: AppSettings, onSettingsChange: (AppSettings) -> Un
                 })
             }
         }
+        }
         // Shutter row: thumbnail · shutter · spacer
+        Column(Modifier.fillMaxWidth().weight(1f).shutterDock()) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 30.dp, vertical = 6.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-            Box(Modifier.size(46.dp).clip(RoundedCornerShape(10.dp)).background(LatentColors.Surface).combinedClickable(onClick = {
+            Box(Modifier.size(46.dp).floating(RoundedCornerShape(10.dp)).clip(RoundedCornerShape(10.dp)).background(LatentColors.Surface).combinedClickable(onClick = {
                 Haptics.tick(context); onOpenRoll()
             })) { thumb?.let { androidx.compose.foundation.Image(it.asImageBitmap(), contentDescription = "Last photo", contentScale = androidx.compose.ui.layout.ContentScale.Crop, modifier = Modifier.fillMaxSize()) } }
-            Box(Modifier.size(78.dp).clip(CircleShape).border(2.dp, LatentColors.TextBright, CircleShape).combinedClickable(onClick = { Haptics.heavy(context); cam.capture() }), contentAlignment = Alignment.Center) {
-                Box(Modifier.size(62.dp).clip(CircleShape).background(LatentColors.TextBright))
+            Box(Modifier.size(78.dp).raised(CircleShape, 10.dp).clip(CircleShape).background(LatentColors.Dock).border(2.dp, shutterRing(), CircleShape).combinedClickable(onClick = { Haptics.heavy(context); cam.capture() }), contentAlignment = Alignment.Center) {
+                Box(Modifier.size(62.dp).clip(CircleShape).background(shutterFace()))
             }
             Spacer(Modifier.size(46.dp))
         }
-        Text(extName(mode) + " · XIAOMI PROCESSING", color = LatentColors.Line, fontSize = 9.sp, letterSpacing = 1.5.sp, modifier = Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 12.dp), textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+        Text(extName(mode) + " · XIAOMI PROCESSING", color = dockLabel(), fontSize = 9.sp, letterSpacing = 1.5.sp, modifier = Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 12.dp), textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+        }
     }
 }

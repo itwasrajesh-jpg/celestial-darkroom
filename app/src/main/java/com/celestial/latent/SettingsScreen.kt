@@ -35,12 +35,15 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.celestial.latent.camera.Lenses
+import com.celestial.latent.ui.AppTheme
 import com.celestial.latent.ui.LatentColors
+import com.celestial.latent.ui.glow
+import com.celestial.latent.ui.raised
 
 @Composable
 fun SettingsScreen(settings: AppSettings, onChange: (AppSettings) -> Unit, onOpenReport: () -> Unit, onOpenVendor: () -> Unit, onOpenProbe: () -> Unit, onOpenDepth: () -> Unit, onOpenLogs: () -> Unit, onOpenExtension: () -> Unit, onOpenAbout: () -> Unit, onBack: () -> Unit, onOpenHelp: () -> Unit = {}) {
     Column(
-        Modifier.fillMaxSize().background(LatentColors.Background).statusBarsPadding().navigationBarsPadding()
+        Modifier.fillMaxSize().background(LatentColors.Background).glow().statusBarsPadding().navigationBarsPadding()
             .verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 12.dp),
     ) {
         Text("‹ back", color = LatentColors.Text, fontSize = 14.sp, modifier = Modifier.combinedClickable(onClick = onBack).padding(vertical = 6.dp))
@@ -52,6 +55,16 @@ fun SettingsScreen(settings: AppSettings, onChange: (AppSettings) -> Unit, onOpe
         Section("App help")
         Text("Every control explained, tab by tab ›", color = LatentColors.Amber, fontSize = 14.sp, modifier = Modifier.combinedClickable(onClick = onOpenHelp).padding(vertical = 10.dp))
         Spacer(Modifier.height(12.dp))
+
+        // 87a: the app's colours. Changes at once; photos and the darkroom's photo mat are never tinted.
+        val uiContext = LocalContext.current
+        Section("Look")
+        OptionRow(
+            title = "Theme",
+            subtitle = "Darkroom: warm black with amber, as always. Midnight: layered navy with soft shadows and lit edges. Clay: pale blue and white, soft and raised. Photos always sit on a dark mat.",
+            options = AppTheme.entries.map { it.label to it },
+            selected = LatentColors.theme,
+        ) { LatentColors.set(uiContext, it) }
 
         Section("Exposure")
         OptionRow(
@@ -265,6 +278,7 @@ private fun <T> OptionRow(title: String, subtitle: String, options: List<Pair<St
                     color = if (on) LatentColors.AmberInk else LatentColors.Text,
                     fontSize = 13.sp,
                     modifier = Modifier
+                        .raised(RoundedCornerShape(999.dp), 3.dp)
                         .clip(RoundedCornerShape(999.dp))
                         .background(if (on) LatentColors.Amber else LatentColors.Surface)
                         .combinedClickable(onClick = { onSelect(v) })

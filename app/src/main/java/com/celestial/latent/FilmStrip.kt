@@ -34,6 +34,8 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.platform.LocalContext
 import com.celestial.latent.develop.Presets
 import com.celestial.latent.ui.LatentColors
+import com.celestial.latent.ui.OnPhoto
+import com.celestial.latent.ui.floating
 
 /**
  * The look selector along the bottom of the viewfinder.
@@ -86,11 +88,11 @@ fun FilmStrip(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                Text(current.uppercase(), color = LatentColors.TextBright, fontSize = 11.sp, letterSpacing = 1.sp)
+                Text(current.uppercase(), color = OnPhoto.TextBright, fontSize = 11.sp, letterSpacing = 1.sp)
                 // a small up-chevron: there is more above
                 Canvas(Modifier.size(10.dp, 6.dp)) {
                     val w = size.width; val h = size.height
-                    drawPath(Path().apply { moveTo(0f, h); lineTo(w / 2f, 0f); lineTo(w, h) }, LatentColors.TextBright,
+                    drawPath(Path().apply { moveTo(0f, h); lineTo(w / 2f, 0f); lineTo(w, h) }, OnPhoto.TextBright,
                         style = Stroke(width = 1.6.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round))
                 }
             }
@@ -102,15 +104,16 @@ fun FilmStrip(
             .then(swipe)
             // A soft fade behind the strip so the names stay readable over a bright scene
             // without putting a hard bar across the photograph.
-            .background(
+            // 87a: not under Clay's pale cards, which carry their own dark words
+            .then(if (LatentColors.Light) Modifier else Modifier.background(
                 androidx.compose.ui.graphics.Brush.verticalGradient(
                     listOf(Color.Transparent, Color(0x66000000), Color(0x99000000)),
                 ),
-            ),
+            )),
     ) {
     // the grabber: these cards can be swiped down out of the way (77a)
     Box(Modifier.align(Alignment.CenterHorizontally).padding(top = 4.dp).size(30.dp, 3.dp).clip(RoundedCornerShape(2.dp))
-        .background(LatentColors.TextBright.copy(alpha = 0.8f)))
+        .background(OnPhoto.TextBright.copy(alpha = 0.8f)))
     Row(
         Modifier
             .horizontalScroll(rememberScrollState())
@@ -121,8 +124,9 @@ fun FilmStrip(
             val id = "stock:" + name
             val on = id == selected
             androidx.compose.foundation.layout.Column(
-                modifier = Modifier.clip(RoundedCornerShape(6.dp))
-                    .background(if (on) LatentColors.Amber else Color(0x73000000))
+                // 87a: frosted cards in Midnight and Clay (the theme's tint, a lit edge, a soft shadow)
+                modifier = Modifier.floating(RoundedCornerShape(6.dp), 4.dp).clip(RoundedCornerShape(6.dp))
+                    .background(if (on) LatentColors.Amber else LatentColors.Frost)
                     .combinedClickable(
                         onClick = { if (!on) { Haptics.tick(context); onSelect(id) } },
                         onLongClick = { Haptics.click(context); onLongPress() },
@@ -139,8 +143,9 @@ fun FilmStrip(
             val label = preset.name.substringBefore(" — ")
             val on = id == selected
             androidx.compose.foundation.layout.Column(
-                modifier = Modifier.clip(RoundedCornerShape(6.dp))
-                    .background(if (on) LatentColors.Amber else Color(0x73000000))
+                // 87a: frosted cards in Midnight and Clay (the theme's tint, a lit edge, a soft shadow)
+                modifier = Modifier.floating(RoundedCornerShape(6.dp), 4.dp).clip(RoundedCornerShape(6.dp))
+                    .background(if (on) LatentColors.Amber else LatentColors.Frost)
                     .combinedClickable(
                         onClick = { if (!on) { Haptics.tick(context); onSelect(id) } },
                         onLongClick = { Haptics.click(context); onLongPress() },

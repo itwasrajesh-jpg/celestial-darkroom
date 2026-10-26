@@ -56,6 +56,7 @@ import androidx.compose.ui.unit.sp
 import com.celestial.latent.develop.Develop
 import com.celestial.latent.develop.DevelopQueue
 import com.celestial.latent.ui.LatentColors
+import com.celestial.latent.ui.OnPhoto
 import kotlinx.coroutines.launch
 
 private data class Frame(
@@ -310,12 +311,12 @@ fun RollScreen(
                             modifier = Modifier.align(Alignment.TopEnd).padding(4.dp).clip(RoundedCornerShape(999.dp)).background(LatentColors.Amber).padding(horizontal = 6.dp, vertical = 2.dp))
                     } else if (frame.isRaw && !frame.developed) {
                         Box(Modifier.fillMaxSize().background(androidx.compose.ui.graphics.Color(0xAA161615)), contentAlignment = Alignment.Center) {
-                            Text("RAW", color = LatentColors.Text, fontSize = 10.sp, letterSpacing = 1.sp)
+                            Text("RAW", color = OnPhoto.Text, fontSize = 10.sp, letterSpacing = 1.sp)
                         }
                     }
                     if (selecting) Box(Modifier.align(Alignment.TopStart).padding(5.dp).clip(CircleShape)
                         .background(if (picked) LatentColors.Amber else androidx.compose.ui.graphics.Color(0x88000000))
-                        .border(1.dp, LatentColors.TextBright, CircleShape).padding(horizontal = 5.dp, vertical = 1.dp)) {
+                        .border(1.dp, OnPhoto.TextBright, CircleShape).padding(horizontal = 5.dp, vertical = 1.dp)) {
                         Text(if (picked) "✓" else " ", color = LatentColors.AmberInk, fontSize = 10.sp)
                     }
                 }

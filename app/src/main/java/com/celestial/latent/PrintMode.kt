@@ -83,6 +83,8 @@ import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateCentroid
 import com.celestial.latent.develop.Region
 import com.celestial.latent.ui.LatentColors
+import com.celestial.latent.ui.OnPhoto
+import com.celestial.latent.ui.raised
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -106,6 +108,9 @@ private const val STRIPS = 5
 private const val BASE_SECONDS = 8f
 /** Photographic paper, slightly warm — what an undeveloped strip looks like. */
 private val PAPER = Color(0xFFECE7DD)
+
+/** 87a: the bench the prints lie on. The dark themes' own background already is one; Clay's pale blue gets the dark mat, so a print is judged against dark. */
+private fun Modifier.bench(): Modifier = if (LatentColors.Light) background(LatentColors.Mat) else this
 
 /**
  * The five exposures for a test strip around [centre]. The window slides to stay inside the
@@ -185,7 +190,7 @@ private fun TestStripStep(
             val first = images.firstOrNull { it != null }
             val aspect = first?.let { it.width.toFloat() / it.height } ?: (3f / 4f)
             Canvas(
-                Modifier.fillMaxSize().pointerInput(exposures, aspect) {
+                Modifier.fillMaxSize().bench().pointerInput(exposures, aspect) {
                     val labelPx = LABEL_SPACE.toPx()
                     detectTapGestures(
                         onPress = { pos ->
@@ -230,7 +235,7 @@ private fun TestStripStep(
                     if (i > 0) drawLine(Color.Black.copy(alpha = 0.35f), Offset(x, r.top), Offset(x, r.top + r.height), 1.dp.toPx())
                     // the time, under each strip, as a printer would mark it
                     val label = measurer.measure(printSeconds(exposures[i]), TextStyle(
-                        color = if (i == selected && img != null) LatentColors.Amber else LatentColors.TextDim, fontSize = 11.sp))
+                        color = if (i == selected && img != null) OnPhoto.Amber else OnPhoto.TextDim, fontSize = 11.sp))
                     drawText(label, topLeft = Offset(x + (w - label.size.width) / 2f, r.top + r.height + border + 8.dp.toPx()))
                 }
                 // the chosen strip
@@ -575,7 +580,7 @@ fun PrintPanel(
                     val split = LocalPanelSplit.current
                     val room = constraints.maxHeight
                     Column(Modifier.fillMaxSize()) {
-                        Box(Modifier.fillMaxWidth().weight(1f).padding(horizontal = 18.dp, vertical = 8.dp), contentAlignment = Alignment.Center) {
+                        Box(Modifier.fillMaxWidth().weight(1f).bench().padding(horizontal = 18.dp, vertical = 8.dp), contentAlignment = Alignment.Center) {
                             developPreview?.let { androidx.compose.foundation.Image(it.asImageBitmap(), contentDescription = "The print", modifier = Modifier.fillMaxSize()) }
                         }
                         // 75c: the same handle and split as simple mode
@@ -866,7 +871,7 @@ private fun RingAroundStep(
             val first = tiles.firstOrNull { it != null }
             val aspect = first?.let { it.width.toFloat() / it.height } ?: (3f / 4f)
             Canvas(
-                Modifier.fillMaxSize().pointerInput(aspect, centreY, centreM, stepSize, ySign, mSign) {
+                Modifier.fillMaxSize().bench().pointerInput(aspect, centreY, centreM, stepSize, ySign, mSign) {
                     detectTapGestures(onTap = { pos ->
                         if (gliding) return@detectTapGestures
                         val g = ringGeometry(size.width.toFloat(), size.height.toFloat(), aspect, density)
@@ -909,7 +914,7 @@ private fun RingAroundStep(
                             Size(g.tileW + 2 * border, g.tileH + 2 * border), style = Stroke(2.dp.toPx()))
                         val text = labels[i]
                         if (text.isNotEmpty() && !gliding) {
-                            val t = measurer.measure(text, TextStyle(color = if (i == 4) LatentColors.Amber else LatentColors.TextDim, fontSize = 10.sp))
+                            val t = measurer.measure(text, TextStyle(color = if (i == 4) OnPhoto.Amber else OnPhoto.TextDim, fontSize = 10.sp))
                             drawText(t, topLeft = Offset(x + (g.tileW - t.size.width) / 2f, y + g.tileH + border + 3.dp.toPx()))
                         }
                     }
@@ -2390,7 +2395,7 @@ private fun PaintStep(
         }
         Box(Modifier.fillMaxWidth().weight(1f).padding(horizontal = 18.dp, vertical = 10.dp)) {
             Canvas(
-                Modifier.fillMaxSize().onSizeChanged { canvasSize = it }.pointerInput(aspect, print != null) {
+                Modifier.fillMaxSize().bench().onSizeChanged { canvasSize = it }.pointerInput(aspect, print != null) {
                     if (print == null) return@pointerInput
                     awaitEachGesture {
                         val down = awaitFirstDown()
@@ -2558,9 +2563,9 @@ private fun PaintStep(
             // on the photo itself a touch already places, drags or paints.
             Text(
                 when { comparing && before == null -> "developing…"; comparing -> "BEFORE"; else -> "hold: before" },
-                color = if (comparing) LatentColors.AmberInk else LatentColors.Text, fontSize = 10.sp, letterSpacing = 1.sp,
+                color = if (comparing) OnPhoto.AmberInk else OnPhoto.Text, fontSize = 10.sp, letterSpacing = 1.sp,
                 modifier = Modifier.align(Alignment.TopEnd).padding(8.dp).clip(RoundedCornerShape(999.dp))
-                    .background(if (comparing) LatentColors.Amber else Color(0xCC161615))
+                    .background(if (comparing) OnPhoto.Amber else Color(0xCC161615))
                     .pointerInput(Unit) { detectTapGestures(onPress = { comparing = true; tryAwaitRelease(); comparing = false }) }
                     .padding(horizontal = 10.dp, vertical = 5.dp),
             )
@@ -2844,7 +2849,7 @@ private fun Chip(label: String, on: Boolean, enabled: Boolean = true, onTap: () 
     Text(
         label, fontSize = 11.sp,
         color = when { on -> LatentColors.AmberInk; enabled -> LatentColors.Text; else -> LatentColors.Line },
-        modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(if (on) LatentColors.Amber else LatentColors.Surface)
+        modifier = Modifier.raised(RoundedCornerShape(999.dp), 2.dp).clip(RoundedCornerShape(999.dp)).background(if (on) LatentColors.Amber else LatentColors.Surface)
             .pointerInput(label, on, enabled) { detectTapGestures(onTap = { if (enabled) { Haptics.tick(context); onTap() } }) }
             .padding(horizontal = 10.dp, vertical = 5.dp),
     )
@@ -2915,7 +2920,7 @@ private fun LithStep(
             val first = images.firstOrNull { it != null }
             val aspect = first?.let { it.width.toFloat() / it.height } ?: (3f / 4f)
             Canvas(
-                Modifier.fillMaxSize().pointerInput(aspect, look) {
+                Modifier.fillMaxSize().bench().pointerInput(aspect, look) {
                     val labelPx = LABEL_SPACE.toPx()
                     detectTapGestures(
                         onPress = { pos ->
@@ -2958,7 +2963,7 @@ private fun LithStep(
                     if (i > 0) drawLine(Color.Black.copy(alpha = 0.35f), Offset(x, r.top), Offset(x, r.top + r.height), 1.dp.toPx())
                     if (PULL_NAMES[i].isNotEmpty()) {
                         val label = measurer.measure(PULL_NAMES[i], TextStyle(
-                            color = if (look.on && i == selected && img != null) LatentColors.Amber else LatentColors.TextDim, fontSize = 11.sp))
+                            color = if (look.on && i == selected && img != null) OnPhoto.Amber else OnPhoto.TextDim, fontSize = 11.sp))
                         drawText(label, topLeft = Offset(x + (w - label.size.width) / 2f, r.top + r.height + border + 8.dp.toPx()))
                     }
                 }

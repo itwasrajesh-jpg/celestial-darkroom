@@ -29,6 +29,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.celestial.latent.camera.Bracket
 import com.celestial.latent.ui.LatentColors
+import com.celestial.latent.ui.floating
 
 /**
  * 86b: the HDR BRACKET card over the viewfinder (hold the HDR button). The user dials shutter and ISO
@@ -48,7 +49,7 @@ fun BracketCard(
     val context = LocalContext.current
     val darkSet = settings.bracketDarkNs > 0 && settings.bracketDarkIso > 0
     val brightSet = settings.bracketBrightNs > 0 && settings.bracketBrightIso > 0
-    Column(modifier.fillMaxWidth().padding(horizontal = 12.dp).clip(RoundedCornerShape(12.dp)).background(Color(0xEE2C2C2A))
+    Column(modifier.fillMaxWidth().padding(horizontal = 12.dp).floating(RoundedCornerShape(12.dp)).clip(RoundedCornerShape(12.dp)).background(LatentColors.Surface.copy(alpha = 0.93f))
         // taps on the card stay on the card (they would otherwise focus the viewfinder underneath)
         .pointerInput(Unit) { detectTapGestures { } }
         .padding(horizontal = 14.dp, vertical = 12.dp)) {
@@ -114,7 +115,7 @@ fun BracketCard(
 private fun EndBox(title: String, hint: String, ns: Long, iso: Int, stops: Double?, armed: Boolean, setLabel: String,
                    modifier: Modifier = Modifier, onSet: () -> Unit) {
     val set = ns > 0 && iso > 0
-    Column(modifier.clip(RoundedCornerShape(10.dp)).background(Color(0xFF1E1E1C))
+    Column(modifier.clip(RoundedCornerShape(10.dp)).background(LatentColors.Panel)
         .border(if (armed) 1.dp else 0.5.dp, if (armed) LatentColors.Amber else LatentColors.Line, RoundedCornerShape(10.dp))
         .padding(horizontal = 10.dp, vertical = 8.dp)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {

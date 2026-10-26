@@ -80,6 +80,11 @@ import com.celestial.latent.develop.DevelopQueue
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import com.celestial.latent.ui.LatentColors
+import com.celestial.latent.ui.OnPhoto
+import com.celestial.latent.ui.floating
+import com.celestial.latent.ui.glow
+import com.celestial.latent.ui.liftedTop
+import com.celestial.latent.ui.raised
 import kotlinx.coroutines.delay
 
 private enum class Cell { EV, S, ISO, WB, F }
@@ -394,7 +399,8 @@ fun CameraScreen(
         wasFast = settings.fastShot
     }
 
-    Column(Modifier.fillMaxSize().background(LatentColors.Background).statusBarsPadding().navigationBarsPadding()) {
+    // 87a: the dock at the bottom keeps clear of the navigation bar itself, so its colour runs to the screen's edge
+    Column(Modifier.fillMaxSize().background(LatentColors.Background).glow().statusBarsPadding()) {
 
         // ---- Top bar: wordmark · chevron · gear ----
         Row(
@@ -412,7 +418,7 @@ fun CameraScreen(
 
         // ---- Viewfinder ----
         Box(
-            modifier = Modifier.fillMaxWidth().aspectRatio(3f / 4f).background(LatentColors.Surface)
+            modifier = Modifier.fillMaxWidth().aspectRatio(3f / 4f).background(OnPhoto.Surface)
                 .pointerInput(drawerOpen) {
                     detectTapGestures(
                         onTap = { pos ->
@@ -533,10 +539,10 @@ fun CameraScreen(
                 Column(Modifier.align(Alignment.TopEnd).padding(12.dp), horizontalAlignment = Alignment.End) {
                     Text(
                         if (heldFrame != null) "2ND EXPOSURE  ×" else "DON'T ADVANCE",
-                        color = if (heldFrame != null) LatentColors.AmberInk else LatentColors.TextBright,
+                        color = if (heldFrame != null) OnPhoto.AmberInk else OnPhoto.TextBright,
                         fontSize = 10.sp, letterSpacing = 1.sp,
                         modifier = Modifier.clip(RoundedCornerShape(999.dp))
-                            .background(if (heldFrame != null) LatentColors.Amber else Color(0x99000000))
+                            .background(if (heldFrame != null) OnPhoto.Amber else Color(0x99000000))
                             .combinedClickable(onClick = {
                                 Haptics.tick(context)
                                 if (heldFrame != null) {
@@ -548,7 +554,7 @@ fun CameraScreen(
                             })
                             .padding(horizontal = 10.dp, vertical = 5.dp),
                     )
-                    if (heldFrame != null) Text("frame the second over the first", color = LatentColors.TextBright, fontSize = 9.sp,
+                    if (heldFrame != null) Text("frame the second over the first", color = OnPhoto.TextBright, fontSize = 9.sp,
                         modifier = Modifier.padding(top = 4.dp))
                 }
             }
@@ -559,8 +565,8 @@ fun CameraScreen(
             Column(Modifier.align(Alignment.TopStart).padding(12.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                 val fastPlan = if (settings.fastShot) FastShot.plan(settings.fastFocal) else null
                 Text(if (fastPlan != null) "RAW · ${fastPlan.focal} MM · ${String.format(java.util.Locale.US, "%.1f", fastPlan.megapixels())}M"
-                    else if (settings.saveJpeg) "RAW + JPG · 12.5M" else "RAW · 12.5M", color = LatentColors.TextBright, fontSize = 10.sp, letterSpacing = 1.sp, modifier = Modifier.onPicture())
-                if (settings.cinema) Text(Cinema.label(settings), color = LatentColors.Amber, fontSize = 10.sp, letterSpacing = 1.sp, modifier = Modifier.onPicture())
+                    else if (settings.saveJpeg) "RAW + JPG · 12.5M" else "RAW · 12.5M", color = OnPhoto.TextBright, fontSize = 10.sp, letterSpacing = 1.sp, modifier = Modifier.onPicture())
+                if (settings.cinema) Text(Cinema.label(settings), color = OnPhoto.Amber, fontSize = 10.sp, letterSpacing = 1.sp, modifier = Modifier.onPicture())
                 // Says plainly what the live image is and is not, without crowding the frame.
                 if (settings.filmPreview) Text(
                     (com.celestial.latent.develop.Presets.byId(context, settings.preset)?.name?.substringBefore(" — ")
@@ -570,7 +576,7 @@ fun CameraScreen(
                             lookReady -> " · COLOUR ONLY"
                             else -> " · PLAIN IMAGE"
                         },
-                    color = if (lookReady) LatentColors.Text else LatentColors.TextDim,
+                    color = if (lookReady) OnPhoto.Text else OnPhoto.TextDim,
                     fontSize = 9.sp, letterSpacing = 1.5.sp, modifier = Modifier.onPicture(),
                 )
             }
@@ -582,24 +588,24 @@ fun CameraScreen(
             )
             val tagLabels = remember(settings.vendorTags, lens) { if (controller.hasCharacteristics) controller.activeTagLabels() else emptyList() }
             val allLabels = modes + tagLabels
-            if (allLabels.isNotEmpty()) Text(allLabels.joinToString(" · "), color = LatentColors.Amber, fontSize = 10.sp, letterSpacing = 1.sp, modifier = Modifier.align(Alignment.TopEnd).padding(12.dp).onPicture())
-            if (controls.locked) Text("AE/AF LOCK", color = LatentColors.AmberInk, fontSize = 11.sp, letterSpacing = 1.sp,
-                modifier = Modifier.align(Alignment.TopCenter).padding(8.dp).clip(RoundedCornerShape(999.dp)).background(LatentColors.Amber).padding(horizontal = 10.dp, vertical = 4.dp))
-            if (countdown > 0) Text("$countdown", color = LatentColors.TextBright, fontSize = 64.sp, modifier = Modifier.align(Alignment.Center))
+            if (allLabels.isNotEmpty()) Text(allLabels.joinToString(" · "), color = OnPhoto.Amber, fontSize = 10.sp, letterSpacing = 1.sp, modifier = Modifier.align(Alignment.TopEnd).padding(12.dp).onPicture())
+            if (controls.locked) Text("AE/AF LOCK", color = OnPhoto.AmberInk, fontSize = 11.sp, letterSpacing = 1.sp,
+                modifier = Modifier.align(Alignment.TopCenter).padding(8.dp).clip(RoundedCornerShape(999.dp)).background(OnPhoto.Amber).padding(horizontal = 10.dp, vertical = 4.dp))
+            if (countdown > 0) Text("$countdown", color = OnPhoto.TextBright, fontSize = 64.sp, modifier = Modifier.align(Alignment.Center))
             Text(if (settings.fastShot) "${settings.fastFocal} MM FROM ${lens.name.uppercase()}" + (if (readout.fast.isNotEmpty()) " · ${readout.fast}" else "")
                 else (if (lens.mm >= 70) "TELE" else lens.name.uppercase()) + " · ${lens.mm} MM" + (if (readout.afState.isNotEmpty()) " · AF ${readout.afState.uppercase()}" else ""),
-                color = LatentColors.TextBright, fontSize = 10.sp, letterSpacing = 1.sp, modifier = Modifier.align(Alignment.BottomStart).padding(start = 12.dp, bottom = 100.dp + filmsLift).onPicture())
+                color = OnPhoto.TextBright, fontSize = 10.sp, letterSpacing = 1.sp, modifier = Modifier.align(Alignment.BottomStart).padding(start = 12.dp, bottom = 100.dp + filmsLift).onPicture())
             val zoomNote = when {
                 settings.fastShot -> ""
                 controls.zoom == 4f -> "×4 ON"
                 controls.zoom == 2f -> "×2 ON"
                 else -> ""
             }
-            if (zoomNote.isNotEmpty()) Text(zoomNote, color = LatentColors.TextBright, fontSize = 10.sp, letterSpacing = 1.sp,
+            if (zoomNote.isNotEmpty()) Text(zoomNote, color = OnPhoto.TextBright, fontSize = 10.sp, letterSpacing = 1.sp,
                 modifier = Modifier.align(Alignment.BottomEnd).padding(end = 12.dp, bottom = 100.dp + filmsLift).onPicture())
             // ×4 reads the sensor's tiny pixels one by one: noisy in dim light, and a burst cleans it up.
             // Its own line, centred above the labels — beside them it would run into the lens label.
-            if (controls.zoom == 4f && !settings.fastShot) Text("best in bright light · hold the shutter for a burst", color = LatentColors.Amber, fontSize = 10.sp,
+            if (controls.zoom == 4f && !settings.fastShot) Text("best in bright light · hold the shutter for a burst", color = OnPhoto.Amber, fontSize = 10.sp,
                 modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 128.dp + filmsLift).onPicture())
             // Lens row floating on the image: plain numbers, active one larger; ×2 multiplies the current lens.
             // 76a: on one see-through dark pill, the chosen lens in a light circle, so it reads over any scene
@@ -608,9 +614,9 @@ fun CameraScreen(
                 // 79a: the focal lengths instead of the lenses, the chosen one in a light circle, then snap focus
                 FastShot.available().forEach { f ->
                     val on = f == settings.fastFocal
-                    Text("$f", color = if (on) LatentColors.Background else LatentColors.TextBright, fontSize = if (on) 13.sp else 12.sp,
+                    Text("$f", color = if (on) OnPhoto.Background else OnPhoto.TextBright, fontSize = if (on) 13.sp else 12.sp,
                         textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                        modifier = Modifier.then(if (on) Modifier.clip(CircleShape).background(LatentColors.TextBright).size(36.dp).wrapContentHeight(Alignment.CenterVertically) else Modifier)
+                        modifier = Modifier.then(if (on) Modifier.clip(CircleShape).background(OnPhoto.TextBright).size(36.dp).wrapContentHeight(Alignment.CenterVertically) else Modifier)
                             .combinedClickable(onClick = {
                                 if (!on) { Haptics.tick(context); onSettingsChange(settings.copy(fastFocal = f)); goFocal(f) }
                             }).then(if (on) Modifier else Modifier.padding(horizontal = 8.dp, vertical = 6.dp)))
@@ -619,8 +625,8 @@ fun CameraScreen(
                 val snapOn = controls.focusDiopters != null
                 val snapD = FastShot.snapDiopters(settings.fastSnap)
                 // the snap distance, or, after the focus slider moved it, where it really is
-                Text(if (!snapOn) "AF" else if (snapD != null && kotlin.math.abs(controls.focusDiopters!! - snapD) < 0.001f) FastShot.snapLabel(settings.fastSnap) else focusLabel(controls.focusDiopters!!), color = if (snapOn) LatentColors.AmberInk else LatentColors.Amber, fontSize = 11.sp,
-                    modifier = Modifier.padding(end = 4.dp).clip(RoundedCornerShape(999.dp)).background(if (snapOn) LatentColors.Amber else Color.Transparent).border(0.5.dp, LatentColors.Amber, RoundedCornerShape(999.dp))
+                Text(if (!snapOn) "AF" else if (snapD != null && kotlin.math.abs(controls.focusDiopters!! - snapD) < 0.001f) FastShot.snapLabel(settings.fastSnap) else focusLabel(controls.focusDiopters!!), color = if (snapOn) OnPhoto.AmberInk else OnPhoto.Amber, fontSize = 11.sp,
+                    modifier = Modifier.padding(end = 4.dp).clip(RoundedCornerShape(999.dp)).background(if (snapOn) OnPhoto.Amber else Color.Transparent).border(0.5.dp, OnPhoto.Amber, RoundedCornerShape(999.dp))
                         .combinedClickable(onClick = {
                             Haptics.tick(context)
                             // from autofocus (or a tap that went back to it) the cycle starts at 1 m
@@ -632,9 +638,9 @@ fun CameraScreen(
                 .padding(horizontal = 4.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                 Lenses.ALL.forEach { l ->
                     val on = l == lens
-                    Text(if (on) l.label + "×" else l.label, color = if (on) LatentColors.Background else LatentColors.TextBright, fontSize = if (on) 14.sp else 12.sp,
+                    Text(if (on) l.label + "×" else l.label, color = if (on) OnPhoto.Background else OnPhoto.TextBright, fontSize = if (on) 14.sp else 12.sp,
                         textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                        modifier = Modifier.then(if (on) Modifier.clip(CircleShape).background(LatentColors.TextBright).size(38.dp).wrapContentHeight(Alignment.CenterVertically) else Modifier)
+                        modifier = Modifier.then(if (on) Modifier.clip(CircleShape).background(OnPhoto.TextBright).size(38.dp).wrapContentHeight(Alignment.CenterVertically) else Modifier)
                             .combinedClickable(onClick = {
                             // ×4 exists only on the periscope: leaving it turns ×4 off rather than becoming a digital ×4
                             if (l != lens) { Haptics.tick(context); lens = l; push(controls.copy(shutterNs = null, iso = null, focusDiopters = null, zoom = if (controls.zoom > 2.5f) 1f else controls.zoom)); onLensChanged(l); reopen() }
@@ -649,8 +655,8 @@ fun CameraScreen(
                     val zoomOn = controls.zoom == factor
                     val effective = if (steps.isNotEmpty()) com.celestial.latent.camera.Lenses.effectiveLabel(lens, factor)
                         else String.format("%.1f", lens.label.toFloat() * factor).removeSuffix(".0")
-                    Text(if (zoomOn) "$effective×" else "×${factor.toInt()}", color = if (zoomOn) LatentColors.AmberInk else LatentColors.Amber, fontSize = 11.sp,
-                        modifier = Modifier.padding(end = 4.dp).clip(RoundedCornerShape(999.dp)).background(if (zoomOn) LatentColors.Amber else Color.Transparent).border(0.5.dp, LatentColors.Amber, RoundedCornerShape(999.dp))
+                    Text(if (zoomOn) "$effective×" else "×${factor.toInt()}", color = if (zoomOn) OnPhoto.AmberInk else OnPhoto.Amber, fontSize = 11.sp,
+                        modifier = Modifier.padding(end = 4.dp).clip(RoundedCornerShape(999.dp)).background(if (zoomOn) OnPhoto.Amber else Color.Transparent).border(0.5.dp, OnPhoto.Amber, RoundedCornerShape(999.dp))
                             .combinedClickable(onClick = { Haptics.tick(context); push(controls.copy(zoom = if (zoomOn) 1f else factor)) }).padding(horizontal = 9.dp, vertical = 3.dp))
                 }
             }
@@ -684,10 +690,10 @@ fun CameraScreen(
                 },
                 onClose = { bracketOpen = false },
                 modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 128.dp + filmsLift))
-            if (toast.isNotEmpty()) Text(toast, color = LatentColors.TextBright, fontSize = 11.sp, modifier = Modifier.align(Alignment.Center).padding(24.dp).clip(RoundedCornerShape(8.dp)).background(Color(0xCC161615)).padding(12.dp))
+            if (toast.isNotEmpty()) Text(toast, color = OnPhoto.TextBright, fontSize = 11.sp, modifier = Modifier.align(Alignment.Center).padding(24.dp).clip(RoundedCornerShape(8.dp)).background(OnPhoto.Background.copy(alpha = 0.8f)).padding(12.dp))
             // Quick-settings drawer over the lower part of the viewfinder.
             if (drawerOpen) {
-                Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(8.dp).clip(RoundedCornerShape(12.dp)).background(Color(0xEE2C2C2A)).padding(8.dp)) {
+                Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(8.dp).floating(RoundedCornerShape(12.dp)).clip(RoundedCornerShape(12.dp)).background(LatentColors.Surface.copy(alpha = 0.93f)).padding(8.dp)) {
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         if (Lenses.isXiaomi15Ultra) Tile("In-sensor ×2", settings.inSensorZoomJpeg, Modifier.weight(1f)) { onSettingsChange(settings.copy(inSensorZoomJpeg = it)) }
                         Tile("RAW + JPEG", settings.saveJpeg, Modifier.weight(1f)) { onSettingsChange(settings.copy(saveJpeg = it)) }
@@ -747,6 +753,8 @@ fun CameraScreen(
         val isoStr = (controls.iso ?: readout.iso).takeIf { it > 0 }?.toString() ?: "—"
         val wbStr = controls.kelvin?.toString() ?: if (kelvinShown > 0) "$kelvinShown" else "—"
         val fStr = if (controls.focusDiopters == null) "AF" else focusLabel(controls.focusDiopters!!)
+        // 87a: the settings row and its slider on their own layer (a raised white tile in Clay)
+        Column(Modifier.fillMaxWidth().controlBar()) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp)) {
             StripCell("EV", evStr, false, selected == Cell.EV, controls.manualExposure, Modifier.weight(1f)) { selected = if (selected == Cell.EV) null else Cell.EV }
             // 79a: in fast shot an untouched shutter is the motion's choice, not the phone's
@@ -778,24 +786,28 @@ fun CameraScreen(
                 })
             }
         }
+        }
 
         // ---- Shutter row: thumbnail · shutter · burst toggle ----
         val multi = settings.burstMode || settings.focusStack || settings.hdrStack
+        // 87a: the dock, lifted above the settings row in Midnight and Clay
+        Column(Modifier.fillMaxWidth().weight(1f).shutterDock()) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 30.dp, vertical = 6.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-            Box(Modifier.size(46.dp).clip(RoundedCornerShape(10.dp)).background(LatentColors.Surface)
+            Box(Modifier.size(46.dp).floating(RoundedCornerShape(10.dp)).clip(RoundedCornerShape(10.dp)).background(LatentColors.Surface)
                 .combinedClickable(onClick = { Haptics.tick(context); onOpenRoll() })) {
                 thumb?.let { Image(it.asImageBitmap(), contentDescription = "Last photo", contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize()) }
                 if (developing > 0) Text("$developing", color = LatentColors.AmberInk, fontSize = 9.sp,
                     modifier = Modifier.align(Alignment.TopEnd).clip(CircleShape).background(LatentColors.Amber).padding(horizontal = 5.dp, vertical = 1.dp))
             }
             Box(
-                Modifier.size(78.dp).clip(CircleShape).border(2.dp, LatentColors.TextBright, CircleShape)
+                Modifier.size(78.dp).raised(CircleShape, 10.dp).clip(CircleShape).background(LatentColors.Dock).border(2.dp, shutterRing(), CircleShape)
                     .combinedClickable(onClick = { shoot(single = !multi) }, onLongClick = { shoot(single = multi) }),
                 contentAlignment = Alignment.Center,
-            ) { Box(Modifier.size(62.dp).clip(CircleShape).background(if (multi) LatentColors.Amber else LatentColors.TextBright)) }
+            ) { Box(Modifier.size(62.dp).clip(CircleShape).background(if (multi) LatentColors.Amber else shutterFace())) }
             // Tap cycles: off → 16 (burst) → FS (focus stack, 69a) → HDR (bracket, 86b) → off.
             // Hold: HDR with its bracket card open (86b).
-            Box(Modifier.size(46.dp).clip(CircleShape).border(if (settings.hdrStack) 1.dp else 0.5.dp, if (multi) LatentColors.Amber else LatentColors.Line, CircleShape)
+            Box(Modifier.size(46.dp).then(if (LatentColors.palette.depth) Modifier.floating(CircleShape, 5.dp).background(LatentColors.Surface, CircleShape) else Modifier)
+                .clip(CircleShape).border(if (settings.hdrStack) 1.dp else 0.5.dp, if (multi) LatentColors.Amber else LatentColors.Line, CircleShape)
                 .combinedClickable(onClick = {
                     Haptics.tick(context)
                     val next = when {
@@ -815,10 +827,25 @@ fun CameraScreen(
             }
         }
         val filmLabel = Develop.FILMS.firstOrNull { it.first == settings.film }?.second?.uppercase() ?: "FILM"
-        Text(filmLabel + (if (developing > 0) " · DEVELOPING $developing" else if (settings.focusStack) " · FOCUS STACK" else if (settings.hdrStack) " · HDR BRACKET" else if (settings.burstMode) " · BURST" else ""), color = LatentColors.Line, fontSize = 9.sp, letterSpacing = 1.5.sp,
+        Text(filmLabel + (if (developing > 0) " · DEVELOPING $developing" else if (settings.focusStack) " · FOCUS STACK" else if (settings.hdrStack) " · HDR BRACKET" else if (settings.burstMode) " · BURST" else ""), color = dockLabel(), fontSize = 9.sp, letterSpacing = 1.5.sp,
             modifier = Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 12.dp), textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+        }
     }
 }
+
+/** 87a: the layer under the settings row: full width in the dark themes, a raised tile in Clay. */
+internal fun Modifier.controlBar(): Modifier =
+    if (LatentColors.Light) padding(horizontal = 10.dp, vertical = 6.dp).floating(RoundedCornerShape(18.dp)).clip(RoundedCornerShape(18.dp)).background(LatentColors.Bar)
+    else background(LatentColors.Bar)
+
+/** 87a: the shutter dock: its own colour down to the screen's edge, lifted (shadow cast up, lit edge). */
+internal fun Modifier.shutterDock(): Modifier = background(LatentColors.Dock).liftedTop().navigationBarsPadding()
+
+/** 87a: Clay's shutter is a white face in a blue ring; the dark themes keep the light face. */
+internal fun shutterRing() = if (LatentColors.Light) LatentColors.Amber else LatentColors.TextBright
+internal fun shutterFace() = if (LatentColors.Light) LatentColors.Surface else LatentColors.TextBright
+/** 87a: the film line under the shutter; on Midnight's lighter dock the outline tone was too faint to read. */
+internal fun dockLabel() = if (LatentColors.palette.depth) LatentColors.TextDim else LatentColors.Line
 
 @Composable
 private fun Tag(t: String) {
@@ -906,15 +933,15 @@ internal fun FocusEvOverlay(
         },
     ) {
         // Box
-        Box(Modifier.offset { IntOffset((p.x - boxPx / 2).toInt(), (p.y - boxPx / 2).toInt()) }.size(72.dp).border(1.dp, LatentColors.Amber, RoundedCornerShape(4.dp)))
+        Box(Modifier.offset { IntOffset((p.x - boxPx / 2).toInt(), (p.y - boxPx / 2).toInt()) }.size(72.dp).border(1.dp, OnPhoto.Amber, RoundedCornerShape(4.dp)))
         // Slider track to the right of the box (or left if near the edge)
         val screenW = with(density) { LocalConfiguration.current.screenWidthDp.dp.toPx() }
         val onRight = p.x + boxPx / 2 + with(density) { 40.dp.toPx() } < screenW
         val tx = if (onRight) p.x + boxPx / 2 + with(density) { 14.dp.toPx() } else p.x - boxPx / 2 - with(density) { 14.dp.toPx() }
         val frac = (evIndex - evRange.first).toFloat() / (evRange.last - evRange.first).coerceAtLeast(1)
-        Box(Modifier.offset { IntOffset(tx.toInt(), (p.y - trackPx / 2).toInt()) }.size(2.dp, 120.dp).background(LatentColors.Line))
-        Box(Modifier.offset { IntOffset((tx - with(density) { 5.dp.toPx() }).toInt(), (p.y + trackPx / 2 - frac * trackPx - with(density) { 6.dp.toPx() }).toInt()) }.size(12.dp).clip(CircleShape).background(LatentColors.Amber))
-        Text(String.format("%+.1f", evIndex / 6.0).replace("+0.0", "0.0"), color = LatentColors.Amber, fontSize = 11.sp,
+        Box(Modifier.offset { IntOffset(tx.toInt(), (p.y - trackPx / 2).toInt()) }.size(2.dp, 120.dp).background(OnPhoto.Line))
+        Box(Modifier.offset { IntOffset((tx - with(density) { 5.dp.toPx() }).toInt(), (p.y + trackPx / 2 - frac * trackPx - with(density) { 6.dp.toPx() }).toInt()) }.size(12.dp).clip(CircleShape).background(OnPhoto.Amber))
+        Text(String.format("%+.1f", evIndex / 6.0).replace("+0.0", "0.0"), color = OnPhoto.Amber, fontSize = 11.sp,
             modifier = Modifier.offset { IntOffset((tx + with(density) { 12.dp.toPx() }).toInt(), (p.y - trackPx / 2 - with(density) { 18.dp.toPx() }).toInt()) })
     }
 }
