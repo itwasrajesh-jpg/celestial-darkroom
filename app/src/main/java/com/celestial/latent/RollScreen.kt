@@ -57,6 +57,7 @@ import com.celestial.latent.develop.Develop
 import com.celestial.latent.develop.DevelopQueue
 import com.celestial.latent.ui.LatentColors
 import com.celestial.latent.ui.accentFill
+import com.celestial.latent.ui.glow
 import com.celestial.latent.ui.OnPhoto
 import kotlinx.coroutines.launch
 
@@ -91,6 +92,9 @@ fun RollScreen(
     var withCopies by remember { mutableStateOf(true) }
     var pendingDelete by remember { mutableStateOf<List<Uri>>(emptyList()) }
     var deleteNote by remember { mutableStateOf("") }
+    // 87b: grid, tilted carousel or prints on a table; the big views use bigger pictures, a few kept at a time
+    var view by remember { mutableStateOf(RollViews.get(context)) }
+    var bigThumbs by remember { mutableStateOf<Map<Uri, Bitmap>>(emptyMap()) }
     val scope = rememberCoroutineScope()
 
     fun scan() {
@@ -221,7 +225,7 @@ fun RollScreen(
     }
     val selecting = selected.isNotEmpty()
 
-    Column(Modifier.fillMaxSize().background(LatentColors.Background).statusBarsPadding().navigationBarsPadding().padding(horizontal = 14.dp)) {
+    Column(Modifier.fillMaxSize().background(LatentColors.Background).glow().statusBarsPadding().navigationBarsPadding().padding(horizontal = 14.dp)) {
         if (selecting) Row(Modifier.fillMaxWidth().padding(vertical = 10.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             Text("✕", color = LatentColors.Text, fontSize = 18.sp, modifier = Modifier.combinedClickable(onClick = { selected = emptySet(); deleteAsk = false }).padding(horizontal = 6.dp))
             Text("${selected.size} SELECTED", color = LatentColors.Text, fontSize = 12.sp, letterSpacing = 3.sp)
@@ -235,6 +239,7 @@ fun RollScreen(
             Text("ROLL", color = LatentColors.Text, fontSize = 12.sp, letterSpacing = 4.sp)
             // Both actions sit together on the right so the title stays centred.
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+            RollViewToggle(view) { view = it; RollViews.set(context, it) }
             Text("look", color = LatentColors.Amber, fontSize = 12.sp,
                 modifier = Modifier.combinedClickable(onClick = { Haptics.tick(context); onOpenLookBuilder() }).padding(6.dp))
             Text("import", color = LatentColors.Amber, fontSize = 12.sp,
@@ -279,46 +284,73 @@ fun RollScreen(
         }
         if (filter.startsWith("folder:") && shown.isEmpty())
             Text("No photos found directly in this folder.", color = LatentColors.TextDim, fontSize = 11.sp, modifier = Modifier.padding(bottom = 10.dp))
-        LazyVerticalGrid(columns = GridCells.Fixed(3), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.weight(1f)) {
-            items(shown, key = { it.uri.toString() }) { frame ->
-                LaunchedEffect(frame.uri) {
-                    if (!thumbs.containsKey(frame.uri)) {
-                        val b = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                            if (frame.isBurst) com.celestial.latent.camera.BurstRollFiles.sharpestPreview(context, frame.uri)
-                                ?.let { j -> android.graphics.BitmapFactory.decodeByteArray(j, 0, j.size, android.graphics.BitmapFactory.Options().apply { inSampleSize = 2 }) }
-                            else runCatching { context.contentResolver.loadThumbnail(frame.uri, Size(300, 300), null) }.getOrNull()
-                                // a folder's provider may give no thumbnail: decode the picture small instead
-                                ?: if (frame.folder != null && !frame.isRaw) runCatching { context.contentResolver.openInputStream(frame.uri)?.use {
-                                    android.graphics.BitmapFactory.decodeStream(it, null, android.graphics.BitmapFactory.Options().apply { inSampleSize = 8 }) } }.getOrNull() else null
-                        }
-                        // keep the newest few hundred: an added folder can hold thousands of photos
-                        if (b != null) thumbs = (thumbs + (frame.uri to b)).let { if (it.size > 240) it.entries.drop(it.size - 240).associate { e -> e.key to e.value } else it }
+        // 73a: long-press starts choosing photos; while choosing, a tap adds or removes one
+        fun toggle(frame: Frame) { selected = if (frame.uri in selected) selected - frame.uri else selected + frame.uri; if (selected.isEmpty()) deleteAsk = false }
+        fun open(frame: Frame) {
+            Haptics.tick(context)
+            if (selecting) toggle(frame) else if (frame.isBurst) onOpenBurst(frame.uri) else onOpenDarkroom(frame.uri, frame.isRaw)
+        }
+        // A frame's picture and badges, the same in every view. [big] asks for a ~720 px picture (carousel, prints).
+        @Composable
+        fun FrameFace(frame: Frame, big: Boolean) {
+            LaunchedEffect(frame.uri, big) {
+                val have = if (big) bigThumbs.containsKey(frame.uri) else thumbs.containsKey(frame.uri)
+                if (!have) {
+                    val px = if (big) 720 else 300
+                    val b = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                        if (frame.isBurst) com.celestial.latent.camera.BurstRollFiles.sharpestPreview(context, frame.uri)
+                            ?.let { j -> android.graphics.BitmapFactory.decodeByteArray(j, 0, j.size, android.graphics.BitmapFactory.Options().apply { inSampleSize = if (big) 1 else 2 }) }
+                        else runCatching { context.contentResolver.loadThumbnail(frame.uri, Size(px, px), null) }.getOrNull()
+                            // a folder's provider may give no thumbnail: decode the picture small instead
+                            ?: if (frame.folder != null && !frame.isRaw) runCatching { context.contentResolver.openInputStream(frame.uri)?.use {
+                                android.graphics.BitmapFactory.decodeStream(it, null, android.graphics.BitmapFactory.Options().apply { inSampleSize = if (big) 4 else 8 }) } }.getOrNull() else null
+                    }
+                    // keep the newest few hundred small ones (an added folder can hold thousands) and the newest 16 big ones
+                    if (b != null) {
+                        if (big) bigThumbs = (bigThumbs + (frame.uri to b)).let { if (it.size > 16) it.entries.drop(it.size - 16).associate { e -> e.key to e.value } else it }
+                        else thumbs = (thumbs + (frame.uri to b)).let { if (it.size > 240) it.entries.drop(it.size - 240).associate { e -> e.key to e.value } else it }
                     }
                 }
-                val picked = frame.uri in selected
-                // 73a: long-press starts choosing photos; while choosing, a tap adds or removes one
-                fun toggle() { selected = if (picked) selected - frame.uri else selected + frame.uri; if (selected.isEmpty()) deleteAsk = false }
-                Box(Modifier.aspectRatio(3f / 4f).clip(RoundedCornerShape(4.dp)).background(LatentColors.Surface)
-                    .then(if (picked) Modifier.border(2.dp, LatentColors.Amber, RoundedCornerShape(4.dp)) else Modifier)
-                    .combinedClickable(onClick = {
-                        Haptics.tick(context)
-                        if (selecting) toggle() else if (frame.isBurst) onOpenBurst(frame.uri) else onOpenDarkroom(frame.uri, frame.isRaw)
-                    }, onLongClick = {
-                        Haptics.click(context); toggle()
-                    })) {
-                    thumbs[frame.uri]?.let { Image(it.asImageBitmap(), contentDescription = frame.name, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize()) }
-                    if (frame.isBurst) {
-                        Text(if (frame.name.contains("_FOCUS")) "FOCUS" else if (frame.name.contains("_HDR") || frame.name.contains("_BRACKET")) "HDR" else "BURST", color = LatentColors.AmberInk, fontSize = 9.sp, letterSpacing = 1.sp,
-                            modifier = Modifier.align(Alignment.TopEnd).padding(4.dp).clip(RoundedCornerShape(999.dp)).accentFill().padding(horizontal = 6.dp, vertical = 2.dp))
-                    } else if (frame.isRaw && !frame.developed) {
-                        Box(Modifier.fillMaxSize().background(androidx.compose.ui.graphics.Color(0xAA161615)), contentAlignment = Alignment.Center) {
-                            Text("RAW", color = OnPhoto.Text, fontSize = 10.sp, letterSpacing = 1.sp)
-                        }
+            }
+            val picked = frame.uri in selected
+            Box(Modifier.fillMaxSize()) {
+                // the small picture stands in until the big one arrives
+                (if (big) bigThumbs[frame.uri] ?: thumbs[frame.uri] else thumbs[frame.uri])?.let {
+                    Image(it.asImageBitmap(), contentDescription = frame.name, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize()) }
+                if (frame.isBurst) {
+                    Text(if (frame.name.contains("_FOCUS")) "FOCUS" else if (frame.name.contains("_HDR") || frame.name.contains("_BRACKET")) "HDR" else "BURST", color = LatentColors.AmberInk, fontSize = 9.sp, letterSpacing = 1.sp,
+                        modifier = Modifier.align(Alignment.TopEnd).padding(if (big) 8.dp else 4.dp).clip(RoundedCornerShape(999.dp)).accentFill().padding(horizontal = 6.dp, vertical = 2.dp))
+                } else if (frame.isRaw && !frame.developed) {
+                    Box(Modifier.fillMaxSize().background(androidx.compose.ui.graphics.Color(if (big) 0x66161615 else 0xAA161615)), contentAlignment = Alignment.Center) {
+                        Text("RAW", color = OnPhoto.Text, fontSize = if (big) 12.sp else 10.sp, letterSpacing = 1.sp)
                     }
-                    if (selecting) Box(Modifier.align(Alignment.TopStart).padding(5.dp).clip(CircleShape)
-                        .accentFill(picked, androidx.compose.ui.graphics.Color(0x88000000))
-                        .border(1.dp, OnPhoto.TextBright, CircleShape).padding(horizontal = 5.dp, vertical = 1.dp)) {
-                        Text(if (picked) "✓" else " ", color = LatentColors.AmberInk, fontSize = 10.sp)
+                }
+                if (selecting) Box(Modifier.align(Alignment.TopStart).padding(if (big) 8.dp else 5.dp).clip(CircleShape)
+                    .accentFill(picked, androidx.compose.ui.graphics.Color(0x88000000))
+                    .border(1.dp, OnPhoto.TextBright, CircleShape).padding(horizontal = 5.dp, vertical = 1.dp)) {
+                    Text(if (picked) "✓" else " ", color = LatentColors.AmberInk, fontSize = 10.sp)
+                }
+                if (big && picked) Box(Modifier.fillMaxSize().border(3.dp, LatentColors.Amber))
+            }
+        }
+        when (view) {
+            RollViews.CAROUSEL -> RollCarousel(shown, key = { it.uri.toString() },
+                caption = { f ->
+                    val d = java.text.SimpleDateFormat("d MMM", java.util.Locale.getDefault()).format(java.util.Date(if (f.date < 100_000_000_000L) f.date * 1000 else f.date)).uppercase()
+                    val kind = when { f.isBurst -> "BURST"; f.developed -> "DEVELOPED"; f.isRaw -> "RAW"; else -> "PHOTO" }
+                    "$d · $kind"
+                },
+                onOpen = { open(it) }, onHold = { toggle(it) }, modifier = Modifier.weight(1f).fillMaxWidth()) { FrameFace(it, big = true) }
+            RollViews.PRINTS -> RollPrints(shown, key = { it.uri.toString() },
+                aspect = { f -> (bigThumbs[f.uri] ?: thumbs[f.uri])?.let { it.width.toFloat() / it.height } },
+                onOpen = { open(it) }, onHold = { toggle(it) }, modifier = Modifier.weight(1f).fillMaxWidth()) { FrameFace(it, big = true) }
+            else -> LazyVerticalGrid(columns = GridCells.Fixed(3), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.weight(1f)) {
+                items(shown, key = { it.uri.toString() }) { frame ->
+                    val picked = frame.uri in selected
+                    Box(Modifier.aspectRatio(3f / 4f).clip(RoundedCornerShape(4.dp)).background(LatentColors.Surface)
+                        .then(if (picked) Modifier.border(2.dp, LatentColors.Amber, RoundedCornerShape(4.dp)) else Modifier)
+                        .combinedClickable(onClick = { open(frame) }, onLongClick = { Haptics.click(context); toggle(frame) })) {
+                        FrameFace(frame, big = false)
                     }
                 }
             }
