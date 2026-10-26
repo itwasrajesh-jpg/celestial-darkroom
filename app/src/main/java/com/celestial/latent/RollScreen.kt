@@ -56,6 +56,7 @@ import androidx.compose.ui.unit.sp
 import com.celestial.latent.develop.Develop
 import com.celestial.latent.develop.DevelopQueue
 import com.celestial.latent.ui.LatentColors
+import com.celestial.latent.ui.accentFill
 import com.celestial.latent.ui.OnPhoto
 import kotlinx.coroutines.launch
 
@@ -246,14 +247,14 @@ fun RollScreen(
                 "bursts" to "BURSTS ${own.count { it.isBurst }}").forEach { (id, label) ->
                 val on = id == filter
                 Text(label, color = if (on) LatentColors.AmberInk else LatentColors.Text, fontSize = 11.sp, letterSpacing = 1.sp,
-                    modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(if (on) LatentColors.Amber else LatentColors.Surface)
+                    modifier = Modifier.clip(RoundedCornerShape(999.dp)).accentFill(on, LatentColors.Surface)
                         .combinedClickable(onClick = { filter = id }).padding(horizontal = 10.dp, vertical = 5.dp))
             }
             // 73a: each added folder has its own chip; long-press to stop showing it
             folders.forEach { tree ->
                 val id = "folder:$tree"; val on = id == filter
                 Text("${RollFolders.label(tree).uppercase()} ${frames.count { it.folder == tree.toString() }}", color = if (on) LatentColors.AmberInk else LatentColors.Text, fontSize = 11.sp, letterSpacing = 1.sp,
-                    modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(if (on) LatentColors.Amber else LatentColors.Surface)
+                    modifier = Modifier.clip(RoundedCornerShape(999.dp)).accentFill(on, LatentColors.Surface)
                         .combinedClickable(onClick = { filter = id }, onLongClick = { Haptics.click(context); removeFolderAsk = tree })
                         .padding(horizontal = 10.dp, vertical = 5.dp))
             }
@@ -266,7 +267,7 @@ fun RollScreen(
             Text("Stop showing ${RollFolders.label(removing)} here? Its photos stay on your phone.", color = LatentColors.Text, fontSize = 11.sp)
             Row(Modifier.padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("Remove", color = LatentColors.AmberInk, fontSize = 11.sp,
-                    modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(LatentColors.Amber)
+                    modifier = Modifier.clip(RoundedCornerShape(999.dp)).accentFill()
                         .combinedClickable(onClick = {
                             RollFolders.remove(context, removing); folders = RollFolders.list(context)
                             frames = frames.filter { it.folder != removing.toString() }; removeFolderAsk = null
@@ -308,14 +309,14 @@ fun RollScreen(
                     thumbs[frame.uri]?.let { Image(it.asImageBitmap(), contentDescription = frame.name, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize()) }
                     if (frame.isBurst) {
                         Text(if (frame.name.contains("_FOCUS")) "FOCUS" else if (frame.name.contains("_HDR") || frame.name.contains("_BRACKET")) "HDR" else "BURST", color = LatentColors.AmberInk, fontSize = 9.sp, letterSpacing = 1.sp,
-                            modifier = Modifier.align(Alignment.TopEnd).padding(4.dp).clip(RoundedCornerShape(999.dp)).background(LatentColors.Amber).padding(horizontal = 6.dp, vertical = 2.dp))
+                            modifier = Modifier.align(Alignment.TopEnd).padding(4.dp).clip(RoundedCornerShape(999.dp)).accentFill().padding(horizontal = 6.dp, vertical = 2.dp))
                     } else if (frame.isRaw && !frame.developed) {
                         Box(Modifier.fillMaxSize().background(androidx.compose.ui.graphics.Color(0xAA161615)), contentAlignment = Alignment.Center) {
                             Text("RAW", color = OnPhoto.Text, fontSize = 10.sp, letterSpacing = 1.sp)
                         }
                     }
                     if (selecting) Box(Modifier.align(Alignment.TopStart).padding(5.dp).clip(CircleShape)
-                        .background(if (picked) LatentColors.Amber else androidx.compose.ui.graphics.Color(0x88000000))
+                        .accentFill(picked, androidx.compose.ui.graphics.Color(0x88000000))
                         .border(1.dp, OnPhoto.TextBright, CircleShape).padding(horizontal = 5.dp, vertical = 1.dp)) {
                         Text(if (picked) "✓" else " ", color = LatentColors.AmberInk, fontSize = 10.sp)
                     }
@@ -337,7 +338,7 @@ fun RollScreen(
                     modifier = Modifier.padding(top = 6.dp).combinedClickable(onClick = { withCopies = !withCopies }).padding(vertical = 4.dp))
                 Row(Modifier.padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("Delete", color = LatentColors.AmberInk, fontSize = 12.sp,
-                        modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(LatentColors.Amber)
+                        modifier = Modifier.clip(RoundedCornerShape(999.dp)).accentFill()
                             .combinedClickable(onClick = { Haptics.click(context); deleteChosen() }).padding(horizontal = 14.dp, vertical = 8.dp))
                     Text("Keep", color = LatentColors.Text, fontSize = 12.sp,
                         modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(LatentColors.Surface)
@@ -349,7 +350,7 @@ fun RollScreen(
                     modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(LatentColors.Surface)
                         .combinedClickable(enabled = one != null, onClick = { one?.let { openInGallery(it) } }).padding(horizontal = 14.dp, vertical = 8.dp))
                 Text("Delete", color = LatentColors.AmberInk, fontSize = 12.sp,
-                    modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(LatentColors.Amber)
+                    modifier = Modifier.clip(RoundedCornerShape(999.dp)).accentFill()
                         .combinedClickable(onClick = { Haptics.tick(context); withCopies = true; deleteAsk = true }).padding(horizontal = 14.dp, vertical = 8.dp))
             }
         } else Row(Modifier.fillMaxWidth().padding(vertical = 12.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {

@@ -35,6 +35,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.celestial.latent.camera.Lenses
 import com.celestial.latent.ui.LatentColors
+import com.celestial.latent.ui.accentFill
 
 /**
  * One page per lens: the tags and the session opmode for that lens only.
@@ -69,7 +70,7 @@ fun VendorScreen(settings: AppSettings, exposedKeys: List<Pair<String, String>>,
                 val on = l.physicalId == lensId
                 val count = settings.vendorTags.count { it.lens == l.physicalId && it.name.isNotBlank() }
                 Text(l.label + (if (count > 0) " ·$count" else ""), color = if (on) LatentColors.AmberInk else LatentColors.Text, fontSize = 13.sp,
-                    modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(if (on) LatentColors.Amber else LatentColors.Surface)
+                    modifier = Modifier.clip(RoundedCornerShape(999.dp)).accentFill(on, LatentColors.Surface)
                         .combinedClickable(onClick = { lensId = l.physicalId }).padding(horizontal = 14.dp, vertical = 7.dp))
             }
         }
@@ -113,7 +114,7 @@ fun VendorScreen(settings: AppSettings, exposedKeys: List<Pair<String, String>>,
             }
         }
         Text("+ add code for ${lens.label}", color = LatentColors.AmberInk, fontSize = 13.sp,
-            modifier = Modifier.padding(vertical = 8.dp).clip(RoundedCornerShape(999.dp)).background(LatentColors.Amber)
+            modifier = Modifier.padding(vertical = 8.dp).clip(RoundedCornerShape(999.dp)).accentFill()
                 .combinedClickable(onClick = { onChange(settings.copy(vendorTags = settings.vendorTags + VendorTag("", "session", "i32", "1", lens.physicalId))) })
                 .padding(horizontal = 14.dp, vertical = 7.dp))
 
@@ -159,7 +160,7 @@ private fun Chips(options: List<String>, selected: String, onSelect: (String) ->
         options.forEach { o ->
             val on = o == selected
             Text(o, color = if (on) LatentColors.AmberInk else LatentColors.Text, fontSize = 12.sp,
-                modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(if (on) LatentColors.Amber else LatentColors.Background)
+                modifier = Modifier.clip(RoundedCornerShape(999.dp)).accentFill(on, LatentColors.Background)
                     .combinedClickable(onClick = { onSelect(o) }).padding(horizontal = 10.dp, vertical = 5.dp))
         }
     }

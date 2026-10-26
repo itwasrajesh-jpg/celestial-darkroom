@@ -51,6 +51,7 @@ import com.celestial.latent.camera.BurstRollFiles
 import com.celestial.latent.camera.MergePicks
 import com.celestial.latent.develop.Select
 import com.celestial.latent.ui.LatentColors
+import com.celestial.latent.ui.accentFill
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.launch
@@ -310,7 +311,7 @@ fun ColumnScope.MergeEditor(
     Row(Modifier.fillMaxWidth().padding(top = 8.dp).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
         for ((ai, ar) in areas.withIndex()) {
             val on = ai == current
-            Row(Modifier.clip(RoundedCornerShape(999.dp)).background(if (on) LatentColors.Amber else LatentColors.Surface), verticalAlignment = Alignment.CenterVertically) {
+            Row(Modifier.clip(RoundedCornerShape(999.dp)).accentFill(on, LatentColors.Surface), verticalAlignment = Alignment.CenterVertically) {
                 Text("AREA ${ai + 1} · ${frameName(ar.frame)}", color = if (on) LatentColors.AmberInk else LatentColors.TextBright, fontSize = 11.sp,
                     modifier = Modifier.pointerInput(ai) { detectTapGestures(onTap = { Haptics.tick(context); current = ai; status = ""; changed() }) }
                         .padding(start = 10.dp, end = 4.dp, top = 5.dp, bottom = 5.dp))
@@ -366,7 +367,7 @@ fun ColumnScope.MergeEditor(
 private fun EditorChip(label: String, on: Boolean, onTap: () -> Unit) {
     val context = LocalContext.current
     Text(label, fontSize = 11.sp, color = if (on) LatentColors.AmberInk else LatentColors.TextBright,
-        modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(if (on) LatentColors.Amber else LatentColors.Surface)
+        modifier = Modifier.clip(RoundedCornerShape(999.dp)).accentFill(on, LatentColors.Surface)
             .pointerInput(label, on) { detectTapGestures(onTap = { Haptics.tick(context); onTap() }) }
             .padding(horizontal = 10.dp, vertical = 5.dp))
 }
@@ -375,7 +376,7 @@ private fun EditorChip(label: String, on: Boolean, onTap: () -> Unit) {
 private fun EditorAction(label: String, primary: Boolean = false, enabled: Boolean = true, onTap: () -> Unit) {
     val context = LocalContext.current
     Text(label, color = if (primary) LatentColors.AmberInk else LatentColors.TextBright, fontSize = 12.sp,
-        modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(if (primary) LatentColors.Amber else LatentColors.Surface)
+        modifier = Modifier.clip(RoundedCornerShape(999.dp)).accentFill(primary, LatentColors.Surface)
             .pointerInput(label, enabled) { detectTapGestures(onTap = { if (enabled) { Haptics.tick(context); onTap() } }) }
             .padding(horizontal = 12.dp, vertical = 8.dp))
 }

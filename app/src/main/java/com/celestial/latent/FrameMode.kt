@@ -23,6 +23,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.celestial.latent.develop.Framing
 import com.celestial.latent.ui.LatentColors
+import com.celestial.latent.ui.accentFill
 import java.util.Locale
 import kotlin.math.roundToInt
 
@@ -90,7 +91,7 @@ fun FramePanel(
                 if (v != framing.straighten) { Haptics.tick(context); onCommit(framing.copy(straighten = v)) }
             },
             valueRange = -STRAIGHTEN_LIMIT..STRAIGHTEN_LIMIT,
-            colors = SliderDefaults.colors(thumbColor = LatentColors.Amber, activeTrackColor = LatentColors.Amber, inactiveTrackColor = LatentColors.Surface),
+            colors = SliderDefaults.colors(thumbColor = LatentColors.Amber, activeTrackColor = LatentColors.SliderFill, inactiveTrackColor = LatentColors.SliderTrackDim),
             modifier = Modifier.fillMaxWidth(),
         )
         // widescreen: kept along the picture's long edge, so a landscape shot gets a wide frame
@@ -123,7 +124,7 @@ private fun FrameChip(label: String, on: Boolean = false, enabled: Boolean = tru
     Text(
         label, fontSize = 11.sp,
         color = when { on -> LatentColors.AmberInk; enabled -> LatentColors.Text; else -> LatentColors.Line },
-        modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(if (on) LatentColors.Amber else LatentColors.Surface)
+        modifier = Modifier.clip(RoundedCornerShape(999.dp)).accentFill(on, LatentColors.Surface)
             .pointerInput(label, on, enabled) { detectTapGestures(onTap = { if (enabled) { Haptics.tick(context); onTap() } }) }
             .padding(horizontal = 10.dp, vertical = 6.dp),
     )

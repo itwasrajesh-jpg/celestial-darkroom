@@ -25,6 +25,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.celestial.latent.ui.LatentColors
+import com.celestial.latent.ui.accentFill
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -77,7 +78,7 @@ fun LaunchOverlay(onDone: () -> Unit) {
         contentAlignment = Alignment.Center,
     ) {
         // The safelight, barely there.
-        Box(Modifier.fillMaxSize().background(LatentColors.Amber).alpha(safelight.value))
+        Box(Modifier.fillMaxSize().accentFill().alpha(safelight.value))
 
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             // Two lines: the full name at the old size would be far wider than a phone.

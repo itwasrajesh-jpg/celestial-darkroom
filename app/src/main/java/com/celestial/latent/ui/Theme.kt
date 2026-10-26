@@ -1,6 +1,7 @@
 package com.celestial.latent.ui
 
 import android.content.Context
+import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
@@ -12,6 +13,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
@@ -47,6 +49,12 @@ class Palette(
     /** the film cards over the viewfinder */
     val frost: Color,
     val shadow: Color, val rim: Color, val glow: Color,
+    /** the slider's filled part and its empty track */
+    val sliderFill: Color, val sliderTrack: Color,
+    /** 87a-2: where the accent fades from at its top (Clay's soft blue), or null for a flat accent */
+    val accentTop: Color? = null,
+    /** 87a-2: the darkroom's film cards each in their own pastel (Clay), or empty for plain cards */
+    val cardTints: List<Color> = emptyList(),
     /** shadows, lit edges and the glow are drawn */
     val depth: Boolean,
     /** a light theme: dark status-bar icons, and words over a photo keep their own dark set ([OnPhoto]) */
@@ -65,6 +73,7 @@ private val DARKROOM = Palette(
     bar = Color(0xFF161615), dock = Color(0xFF161615), panel = Color(0xFF1D1D1B), mat = Color(0xFF2C2C2A),
     frost = Color(0x73000000),
     shadow = Color.Transparent, rim = Color.Transparent, glow = Color.Transparent,
+    sliderFill = Color(0xFFFAC775), sliderTrack = Color(0xFF5F5E5A),
     depth = false, light = false,
 )
 
@@ -76,31 +85,37 @@ private val MIDNIGHT = Palette(
     background = Color(0xFF111522), surface = Color(0xFF303D59), line = Color(0xFF536684),
     textDim = Color(0xFF7B8CAA), text = Color(0xFF98A9C4), textBright = Color(0xFFCFD8E7),
     amber = Color(0xFFEDF1F8), amberInk = Color(0xFF111522),
-    bar = Color(0xFF1E263B), dock = Color(0xFF303D59), panel = Color(0xFF1E263B), mat = Color(0xFF0E1119),
+    bar = Color(0xFF1E263B), dock = Color(0xFF303D59), panel = Color(0xFF273248), mat = Color(0xFF1E243A),
     frost = Color(0xB8303D59),
     shadow = Color(0xFF05070D), rim = Color(0xFF536684), glow = Color(0xFF98A9C4),
+    sliderFill = Color(0xFF98A9C4), sliderTrack = Color(0xFF536684),
     depth = true, light = false,
 )
 
-// "Clay" (26 Oct proof): pale blue, white clay tiles, a blue accent. The darkroom photo stays on a dark mat.
+// "Clay" (26 Oct proof): pale blue, white clay tiles, a soft blue gradient accent, pastel film cards.
+// The darkroom photo sits on the proof's navy mat.
 private val CLAY = Palette(
     background = Color(0xFFD9E3F1), surface = Color(0xFFFBFCFE), line = Color(0xFFB3C1D9),
     textDim = Color(0xFF6A7898), text = Color(0xFF45536F), textBright = Color(0xFF1E263B),
     amber = Color(0xFF5B78E6), amberInk = Color(0xFFFFFFFF),
-    bar = Color(0xFFFBFCFE), dock = Color(0xFFD9E3F1), panel = Color(0xFFE7EDF6), mat = Color(0xFF16181D),
+    bar = Color(0xFFFBFCFE), dock = Color(0xFFD9E3F1), panel = Color(0xFFDDE7F3), mat = Color(0xFF2E3C57),
     frost = Color(0xD9F3F6FB),
     shadow = Color(0xFF7F93BC), rim = Color(0xFFFFFFFF), glow = Color(0xFFFFFFFF),
+    sliderFill = Color(0xFF5B78E6), sliderTrack = Color(0xFFC9D4E8),
+    accentTop = Color(0xFF8EA6F7),
+    cardTints = listOf(Color(0xFFA3C0EC), Color(0xFFEFB09F), Color(0xFF9ED5C2), Color(0xFFD7ABE6), Color(0xFFF1D08D)),
     depth = true, light = true,
 )
 
-// Words over a photo in Clay: Midnight's light words, with Clay's paler blue as the accent.
+// Words over a photo in Clay: Midnight's light words, with the gold accent of the approved proof.
 private val CLAY_ON_PHOTO = Palette(
     background = Color(0xFF111522), surface = Color(0xFF303D59), line = Color(0xFF8A9AB8),
     textDim = Color(0xFFA9B6CC), text = Color(0xFFD3DCEB), textBright = Color(0xFFF4F7FC),
-    amber = Color(0xFF8EA6F7), amberInk = Color(0xFF111522),
-    bar = Color(0xFF1E263B), dock = Color(0xFF303D59), panel = Color(0xFF1E263B), mat = Color(0xFF16181D),
+    amber = Color(0xFFFAC775), amberInk = Color(0xFF412402),
+    bar = Color(0xFF1E263B), dock = Color(0xFF303D59), panel = Color(0xFF1E263B), mat = Color(0xFF2E3C57),
     frost = Color(0x99111522),
     shadow = Color(0xFF05070D), rim = Color(0xFF536684), glow = Color.Transparent,
+    sliderFill = Color(0xFFFAC775), sliderTrack = Color(0xFF8A9AB8),
     depth = false, light = false,
 )
 
@@ -128,6 +143,13 @@ object LatentColors {
     val Mat get() = palette.mat
     val Frost get() = palette.frost
     val Light get() = palette.light
+    val SliderFill get() = palette.sliderFill
+    val SliderTrack get() = palette.sliderTrack
+    /** the track of the sliders that used the darker card tone; Darkroom keeps that tone */
+    val SliderTrackDim get() = if (palette.depth) palette.sliderTrack else palette.surface
+
+    /** 87a-2: the colour of the [i]th darkroom film card: Clay's pastels in turn, as in the proof, else [Surface]. */
+    fun card(i: Int): Color = palette.cardTints.let { if (it.isEmpty()) palette.surface else it[Math.floorMod(i, it.size)] }
 
     private const val PREFS = "latent_ui_theme"
 
@@ -159,6 +181,24 @@ object OnPhoto {
 }
 
 // ---- 87a depth: shadows, lit edges, glow. Each does nothing in Darkroom. ----
+
+/**
+ * 87a-2: the accent as a fill: Clay's soft blue gradient (lighter at the top), the flat accent elsewhere.
+ * [on] false fills with [off] instead, for a chip that is only sometimes chosen.
+ */
+fun Modifier.accentFill(on: Boolean = true, off: Color = Color.Transparent): Modifier {
+    val p = LatentColors.palette
+    val top = p.accentTop
+    return if (!on) background(off) else if (top != null) background(Brush.verticalGradient(listOf(top, p.amber))) else background(p.amber)
+}
+
+/** 87a-2: the shutter's ring: Clay's is thick, in the blue gradient, and glows; the dark themes keep a thin light ring. */
+fun Modifier.shutterRing(shape: Shape): Modifier {
+    val p = LatentColors.palette
+    val top = p.accentTop ?: return raised(shape, 10.dp).clip(shape).background(p.dock).border(2.dp, p.textBright, shape)
+    return shadow(16.dp, shape, clip = false, ambientColor = p.amber, spotColor = p.amber).clip(shape).background(p.dock)
+        .border(6.dp, Brush.verticalGradient(listOf(top, p.amber)), shape)
+}
 
 /** A soft shadow in the theme's shadow colour (blue-black in Midnight, soft blue in Clay): the thing floats. */
 fun Modifier.raised(shape: Shape = RoundedCornerShape(12.dp), lift: Dp = 6.dp): Modifier {

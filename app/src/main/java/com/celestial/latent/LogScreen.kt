@@ -33,6 +33,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.celestial.latent.ui.LatentColors
+import com.celestial.latent.ui.accentFill
 
 /** Reads this app's own logcat (no permission needed) so background camera events can be shared. */
 object AppLog {
@@ -83,5 +84,5 @@ fun LogScreen(onBack: () -> Unit) {
 @Composable
 private fun Btn(label: String, onClick: () -> Unit) {
     Text(label, color = LatentColors.AmberInk, fontSize = 12.sp,
-        modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(LatentColors.Amber).combinedClickable(onClick = onClick).padding(horizontal = 12.dp, vertical = 7.dp))
+        modifier = Modifier.clip(RoundedCornerShape(999.dp)).accentFill().combinedClickable(onClick = onClick).padding(horizontal = 12.dp, vertical = 7.dp))
 }

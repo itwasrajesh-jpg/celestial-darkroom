@@ -65,6 +65,7 @@ import com.celestial.latent.ui.OnPhoto
 import com.celestial.latent.ui.floating
 import com.celestial.latent.ui.glow
 import com.celestial.latent.ui.raised
+import com.celestial.latent.ui.shutterRing
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -504,7 +505,7 @@ fun ExtensionScreen(settings: AppSettings, onSettingsChange: (AppSettings) -> Un
             Box(Modifier.size(46.dp).floating(RoundedCornerShape(10.dp)).clip(RoundedCornerShape(10.dp)).background(LatentColors.Surface).combinedClickable(onClick = {
                 Haptics.tick(context); onOpenRoll()
             })) { thumb?.let { androidx.compose.foundation.Image(it.asImageBitmap(), contentDescription = "Last photo", contentScale = androidx.compose.ui.layout.ContentScale.Crop, modifier = Modifier.fillMaxSize()) } }
-            Box(Modifier.size(78.dp).raised(CircleShape, 10.dp).clip(CircleShape).background(LatentColors.Dock).border(2.dp, shutterRing(), CircleShape).combinedClickable(onClick = { Haptics.heavy(context); cam.capture() }), contentAlignment = Alignment.Center) {
+            Box(Modifier.size(78.dp).shutterRing(CircleShape).combinedClickable(onClick = { Haptics.heavy(context); cam.capture() }), contentAlignment = Alignment.Center) {
                 Box(Modifier.size(62.dp).clip(CircleShape).background(shutterFace()))
             }
             Spacer(Modifier.size(46.dp))

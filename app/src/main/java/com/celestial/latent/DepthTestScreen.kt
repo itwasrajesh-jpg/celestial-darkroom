@@ -40,6 +40,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.celestial.latent.develop.Depth
 import com.celestial.latent.ui.LatentColors
+import com.celestial.latent.ui.accentFill
 
 /**
  * A temporary test of the depth model on this phone (step 50a): download it, run it on a photo,
@@ -133,7 +134,7 @@ fun DepthTestScreen(onBack: () -> Unit) {
 private fun TestBtn(label: String, enabled: Boolean, onClick: () -> Unit) {
     Text(
         label, color = if (enabled) LatentColors.AmberInk else LatentColors.TextDim, fontSize = 12.sp,
-        modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(if (enabled) LatentColors.Amber else LatentColors.Surface)
+        modifier = Modifier.clip(RoundedCornerShape(999.dp)).accentFill(enabled, LatentColors.Surface)
             .combinedClickable(enabled = enabled, onClick = onClick).padding(horizontal = 12.dp, vertical = 8.dp),
     )
 }

@@ -34,6 +34,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.platform.LocalContext
 import com.celestial.latent.develop.Presets
 import com.celestial.latent.ui.LatentColors
+import com.celestial.latent.ui.accentFill
 import com.celestial.latent.ui.OnPhoto
 import com.celestial.latent.ui.floating
 
@@ -126,7 +127,7 @@ fun FilmStrip(
             androidx.compose.foundation.layout.Column(
                 // 87a: frosted cards in Midnight and Clay (the theme's tint, a lit edge, a soft shadow)
                 modifier = Modifier.floating(RoundedCornerShape(6.dp), 4.dp).clip(RoundedCornerShape(6.dp))
-                    .background(if (on) LatentColors.Amber else LatentColors.Frost)
+                    .accentFill(on, LatentColors.Frost)
                     .combinedClickable(
                         onClick = { if (!on) { Haptics.tick(context); onSelect(id) } },
                         onLongClick = { Haptics.click(context); onLongPress() },
@@ -145,7 +146,7 @@ fun FilmStrip(
             androidx.compose.foundation.layout.Column(
                 // 87a: frosted cards in Midnight and Clay (the theme's tint, a lit edge, a soft shadow)
                 modifier = Modifier.floating(RoundedCornerShape(6.dp), 4.dp).clip(RoundedCornerShape(6.dp))
-                    .background(if (on) LatentColors.Amber else LatentColors.Frost)
+                    .accentFill(on, LatentColors.Frost)
                     .combinedClickable(
                         onClick = { if (!on) { Haptics.tick(context); onSelect(id) } },
                         onLongClick = { Haptics.click(context); onLongPress() },

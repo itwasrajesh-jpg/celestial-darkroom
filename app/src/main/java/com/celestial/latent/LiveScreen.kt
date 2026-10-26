@@ -47,6 +47,7 @@ import com.celestial.latent.develop.Live
 import com.celestial.latent.develop.LiveEdit
 import com.celestial.latent.develop.LiveLook
 import com.celestial.latent.ui.LatentColors
+import com.celestial.latent.ui.accentFill
 import java.io.File
 import java.util.Locale
 
@@ -148,7 +149,7 @@ fun LiveScreen(edit: LiveEdit, onClose: () -> Unit) {
                                     Text(kind.replaceFirstChar { it.uppercase() }, fontSize = 11.sp, maxLines = 1,
                                         color = if (on) LatentColors.AmberInk else LatentColors.Text,
                                         modifier = Modifier.clip(RoundedCornerShape(999.dp))
-                                            .background(if (on) LatentColors.Amber else LatentColors.Surface)
+                                            .accentFill(on, LatentColors.Surface)
                                             .combinedClickable(onClick = {
                                                 if (!running) { Haptics.tick(context); look = look.copy(flicker = look.flicker + (j to kind)) }
                                             })
@@ -166,7 +167,7 @@ fun LiveScreen(edit: LiveEdit, onClose: () -> Unit) {
             }
             if (running) {
                 Box(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(top = 8.dp).clip(RoundedCornerShape(999.dp)).background(LatentColors.Surface)) {
-                    Spacer(Modifier.fillMaxWidth(progress.coerceIn(0.02f, 1f)).padding(vertical = 2.dp).background(LatentColors.Amber))
+                    Spacer(Modifier.fillMaxWidth(progress.coerceIn(0.02f, 1f)).padding(vertical = 2.dp).accentFill())
                 }
             } else if (clip != null && status.isNotEmpty()) {
                 Text(status, color = LatentColors.TextDim, fontSize = 10.sp, modifier = Modifier.padding(horizontal = 18.dp).padding(top = 6.dp))
@@ -203,14 +204,14 @@ private fun LiveSlider(label: String, value: Float, min: Float, max: Float, fmt:
             Text(String.format(Locale.US, fmt, value), color = if (enabled) LatentColors.TextBright else LatentColors.Line, fontSize = 11.sp)
         }
         Slider(value = value.coerceIn(min, max), onValueChange = onChange, valueRange = min..max, enabled = enabled,
-            colors = SliderDefaults.colors(thumbColor = LatentColors.Amber, activeTrackColor = LatentColors.Amber, inactiveTrackColor = LatentColors.Line))
+            colors = SliderDefaults.colors(thumbColor = LatentColors.Amber, activeTrackColor = LatentColors.SliderFill, inactiveTrackColor = LatentColors.SliderTrack))
     }
 }
 
 @Composable
 private fun Pill(text: String, strong: Boolean, onClick: () -> Unit) {
     Text(text, color = if (strong) LatentColors.AmberInk else LatentColors.TextBright, fontSize = 12.sp, maxLines = 1, softWrap = false,
-        modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(if (strong) LatentColors.Amber else LatentColors.Surface)
+        modifier = Modifier.clip(RoundedCornerShape(999.dp)).accentFill(strong, LatentColors.Surface)
             .combinedClickable(onClick = onClick).padding(horizontal = 14.dp, vertical = 9.dp))
 }
 

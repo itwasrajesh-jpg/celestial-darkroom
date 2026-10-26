@@ -45,6 +45,7 @@ import com.celestial.latent.camera.BurstRoll
 import com.celestial.latent.camera.BurstRollFiles
 import com.celestial.latent.camera.MergePicks
 import com.celestial.latent.ui.LatentColors
+import com.celestial.latent.ui.accentFill
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -144,7 +145,7 @@ fun BurstScreen(
                 previews[i]?.let { Image(it.asImageBitmap(), contentDescription = "Frame ${i + 1}", contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize()) }
                     ?: CircularProgressIndicator(color = LatentColors.Amber)
                 if (i == sharpest && !focusStack && !hdrBracket) Text("SHARPEST", color = LatentColors.AmberInk, fontSize = 10.sp, letterSpacing = 1.5.sp,
-                    modifier = Modifier.align(Alignment.TopStart).padding(8.dp).clip(RoundedCornerShape(999.dp)).background(LatentColors.Amber).padding(horizontal = 8.dp, vertical = 3.dp))
+                    modifier = Modifier.align(Alignment.TopStart).padding(8.dp).clip(RoundedCornerShape(999.dp)).accentFill().padding(horizontal = 8.dp, vertical = 3.dp))
             }
         }
 
@@ -174,7 +175,7 @@ fun BurstScreen(
         @Composable
         fun Action(label: String, primary: Boolean = false, onClick: () -> Unit) {
             Text(label, color = if (primary) LatentColors.AmberInk else LatentColors.TextBright, fontSize = 12.sp,
-                modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(if (primary) LatentColors.Amber else LatentColors.Surface)
+                modifier = Modifier.clip(RoundedCornerShape(999.dp)).accentFill(primary, LatentColors.Surface)
                     .combinedClickable(enabled = busy == null, onClick = { Haptics.tick(context); onClick() }).padding(horizontal = 12.dp, vertical = 8.dp))
         }
         // 68b: the whole roll in one RAW. A burst is merged for less noise; a focus stack is blended front to back.
