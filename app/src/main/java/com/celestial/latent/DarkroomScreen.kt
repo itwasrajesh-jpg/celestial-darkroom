@@ -165,6 +165,11 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
     var sharpening by remember { mutableStateOf(false) }
     val zoomScope = rememberCoroutineScope()
     var preview by remember { mutableStateOf<Bitmap?>(null) }
+    // 87c: the print develops out of white paper when it first appears, and again when Develop finishes
+    val printDevelop = remember { PrintDevelop() }
+    val developScope = rememberCoroutineScope()
+    val hasPrint = preview != null
+    LaunchedEffect(hasPrint) { if (hasPrint) printDevelop.play(developScope) }
     var original by remember { mutableStateOf<Bitmap?>(null) }
     // 72a: the unframed "before", and which framing [original] was framed for
     var originalPlain by remember { mutableStateOf<Bitmap?>(null) }
@@ -539,7 +544,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                     // 78a: in HDR view, the saved file itself (a thumbnail would drop its glow)
                     val b = (if (hdrView) com.celestial.latent.develop.HdrGlow.decodeSmall(context, out, 1600) else null)
                         ?: runCatching { context.contentResolver.loadThumbnail(out, android.util.Size(1600, 1600), null) }.getOrNull()
-                    if (b != null) { preview = b; previewIsPartial = false; lastFull = b }
+                    if (b != null) { preview = b; previewIsPartial = false; lastFull = b; printDevelop.play(developScope) }
                 }
             },
         )
@@ -878,6 +883,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                     shown?.let { bmp ->
                         Image(bmp.asImageBitmap(), contentDescription = "Developed", contentScale = ContentScale.Fit,
                             modifier = Modifier.fillMaxSize().graphicsLayer {
+                                renderEffect = printDevelop.effect()
                                 if (frameOpen) { rotationZ = delta; scaleX = liveScale; scaleY = liveScale }
                                 else if (zoom.zoomed) {
                                     // the zoom: scaled about the view's middle, then moved so the

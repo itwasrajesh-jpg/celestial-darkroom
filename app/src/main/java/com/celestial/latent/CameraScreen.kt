@@ -66,6 +66,10 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import com.celestial.latent.camera.CameraController
@@ -259,14 +263,17 @@ fun CameraScreen(
         else if (settings.hdrStack) bracketPlan(settings)?.let { controller.captureBurst(bracket = it) } ?: run { bracketOpen = true }
         else controller.captureBurst(16)
     }
+    // 87c: the iris closes over the viewfinder as each shot is taken
+    val iris = remember { IrisState() }
+    val motionScope = rememberCoroutineScope()
     fun shoot(single: Boolean) {
         if (!single && settings.hdrStack && bracketPlan(settings) == null) { Haptics.tick(context); bracketOpen = true; return }
         Haptics.heavy(context)
-        val fire = { if (single) controller.captureSingle() else fireMulti() }
+        val fire = { iris.fire(motionScope); if (single) controller.captureSingle() else fireMulti() }
         if (settings.timerSeconds > 0) countdown = settings.timerSeconds else fire()
     }
     LaunchedEffect(countdown) {
-        if (countdown > 0) { delay(1000); countdown -= 1; if (countdown == 0) { if (settings.focusStack || settings.hdrStack || settings.burstMode) fireMulti() else controller.captureSingle() } }
+        if (countdown > 0) { delay(1000); countdown -= 1; if (countdown == 0) { iris.fire(motionScope); if (settings.focusStack || settings.hdrStack || settings.burstMode) fireMulti() else controller.captureSingle() } }
     }
 
     DisposableEffect(Unit) {
@@ -594,6 +601,7 @@ fun CameraScreen(
             if (controls.locked) Text("AE/AF LOCK", color = OnPhoto.AmberInk, fontSize = 11.sp, letterSpacing = 1.sp,
                 modifier = Modifier.align(Alignment.TopCenter).padding(8.dp).clip(RoundedCornerShape(999.dp)).background(OnPhoto.Amber).padding(horizontal = 10.dp, vertical = 4.dp))
             if (countdown > 0) Text("$countdown", color = OnPhoto.TextBright, fontSize = 64.sp, modifier = Modifier.align(Alignment.Center))
+            Iris(iris)
             Text(if (settings.fastShot) "${settings.fastFocal} MM FROM ${lens.name.uppercase()}" + (if (readout.fast.isNotEmpty()) " · ${readout.fast}" else "")
                 else (if (lens.mm >= 70) "TELE" else lens.name.uppercase()) + " · ${lens.mm} MM" + (if (readout.afState.isNotEmpty()) " · AF ${readout.afState.uppercase()}" else ""),
                 color = OnPhoto.TextBright, fontSize = 10.sp, letterSpacing = 1.sp, modifier = Modifier.align(Alignment.BottomStart).padding(start = 12.dp, bottom = 100.dp + filmsLift).onPicture())
@@ -772,10 +780,11 @@ fun CameraScreen(
                     StripSlider(controls.evIndex.toFloat(), r.lower.toFloat(), r.upper.toFloat(), (r.upper - r.lower - 1).coerceAtLeast(0), { push(controls.copy(evIndex = Math.round(it))) }, { push(controls.copy(evIndex = 0)) }, "0", !controls.manualExposure) }
                 Cell.S -> { val presets = if (controller.hasCharacteristics) ControlMath.shutterPresets(controller.shutterRange.lower, controller.shutterRange.upper) else listOf(10_000_000L)
                     val cur = controls.shutterNs ?: readout.shutterNs; val idx = presets.indices.minByOrNull { Math.abs(presets[it] - cur) } ?: 0
-                    StripSlider(idx.toFloat(), 0f, (presets.size - 1).toFloat(), (presets.size - 2).coerceAtLeast(0), { push(controls.copy(shutterNs = presets[Math.round(it).coerceIn(0, presets.size - 1)])) }, { push(controls.copy(shutterNs = null)) }, "A") }
+                    // 87c: shutter and ISO on the click-stop dial
+                    ClickDial(remember(presets) { presets.map { ControlMath.shutterLabel(it) } }, idx, { push(controls.copy(shutterNs = presets[it])) }, { push(controls.copy(shutterNs = null)) }, "A") }
                 Cell.ISO -> { val presets = if (controller.hasCharacteristics) ControlMath.isoPresets(controller.isoRange.lower, controller.isoRange.upper) else listOf(100)
                     val cur = controls.iso ?: readout.iso; val idx = presets.indices.minByOrNull { Math.abs(presets[it] - cur) } ?: 0
-                    StripSlider(idx.toFloat(), 0f, (presets.size - 1).toFloat(), (presets.size - 2).coerceAtLeast(0), { push(controls.copy(iso = presets[Math.round(it).coerceIn(0, presets.size - 1)])) }, { push(controls.copy(iso = null)) }, "A") }
+                    ClickDial(remember(presets) { presets.map { it.toString() } }, idx, { push(controls.copy(iso = presets[it])) }, { push(controls.copy(iso = null)) }, "A") }
                 Cell.WB -> { val cur = controls.kelvin ?: (if (kelvinShown > 0) kelvinShown else 5200)
                     StripSlider(cur.toFloat(), 2000f, 10000f, 79, { push(controls.copy(kelvin = Math.round(it / 100f) * 100)) }, { push(controls.copy(kelvin = null)) }, "A") }
                 Cell.F -> { val maxD = if (controller.hasCharacteristics) controller.minFocusDiopters else 10f
@@ -798,12 +807,24 @@ fun CameraScreen(
             Box(Modifier.size(46.dp).floating(RoundedCornerShape(10.dp)).clip(RoundedCornerShape(10.dp)).background(LatentColors.Surface)
                 .combinedClickable(onClick = { Haptics.tick(context); onOpenRoll() })) {
                 thumb?.let { Image(it.asImageBitmap(), contentDescription = "Last photo", contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize()) }
-                if (developing > 0) Text("$developing", color = LatentColors.AmberInk, fontSize = 9.sp,
-                    modifier = Modifier.align(Alignment.TopEnd).clip(CircleShape).accentFill().padding(horizontal = 5.dp, vertical = 1.dp))
+                // 87c: the count rolls like a film counter as each shot joins the queue
+                if (developing > 0) Box(Modifier.align(Alignment.TopEnd).clip(CircleShape).accentFill().padding(horizontal = 5.dp, vertical = 1.dp)) {
+                    androidx.compose.animation.AnimatedContent(developing, transitionSpec = {
+                        val up = targetState > initialState
+                        (androidx.compose.animation.slideInVertically { h -> if (up) h else -h } togetherWith androidx.compose.animation.slideOutVertically { h -> if (up) -h else h })
+                            .using(androidx.compose.animation.SizeTransform(clip = true))
+                    }, label = "counter") { n -> Text("$n", color = LatentColors.AmberInk, fontSize = 9.sp) }
+                }
             }
+            // 87c: the button sinks a little under the finger and springs back
+            val press = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+            val pressed by press.collectIsPressedAsState()
+            val sink by androidx.compose.animation.core.animateFloatAsState(if (pressed && motionOn()) 0.92f else 1f,
+                androidx.compose.animation.core.spring(dampingRatio = 0.5f, stiffness = 900f), label = "sink")
             Box(
-                Modifier.size(78.dp).shutterRing(CircleShape)
-                    .combinedClickable(onClick = { shoot(single = !multi) }, onLongClick = { shoot(single = multi) }),
+                Modifier.size(78.dp).graphicsLayer { scaleX = sink; scaleY = sink }.shutterRing(CircleShape)
+                    .combinedClickable(interactionSource = press, indication = androidx.compose.foundation.LocalIndication.current,
+                        onClick = { shoot(single = !multi) }, onLongClick = { shoot(single = multi) }),
                 contentAlignment = Alignment.Center,
             ) { Box(Modifier.size(62.dp).clip(CircleShape).accentFill(multi, shutterFace())) }
             // Tap cycles: off → 16 (burst) → FS (focus stack, 69a) → HDR (bracket, 86b) → off.

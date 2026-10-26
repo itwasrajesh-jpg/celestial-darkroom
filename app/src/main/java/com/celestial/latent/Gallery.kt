@@ -29,7 +29,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -117,7 +119,10 @@ internal fun <T> RollCarousel(
     card: @Composable BoxScope.(T) -> Unit,
 ) {
     val context = LocalContext.current
-    val pager = rememberPagerState(pageCount = { items.size })
+    // The pager reads the list through one state, so its page count and its keys always see the same
+    // list: the roll fills in after it opens, and a stale empty list here crashed the carousel (#242).
+    val list by rememberUpdatedState(items)
+    val pager = rememberPagerState(pageCount = { list.size })
     val scope = rememberCoroutineScope()
     // a tick as each frame settles in the middle, like a click-stop
     LaunchedEffect(pager.settledPage) { if (items.isNotEmpty()) Haptics.tick(context) }
@@ -127,12 +132,12 @@ internal fun <T> RollCarousel(
         val shape = RoundedCornerShape(22.dp)
         Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
             HorizontalPager(
-                state = pager, key = { key(items[it]) },
+                state = pager, key = { i -> list.getOrNull(i)?.let(key) ?: "page$i" },
                 contentPadding = PaddingValues(horizontal = (full - cardW) / 2),
                 beyondViewportPageCount = 2,
                 modifier = Modifier.fillMaxWidth(),
             ) { page ->
-                val item = items[page]
+                val item = list.getOrNull(page) ?: return@HorizontalPager
                 // the middle frame is drawn over its neighbours
                 Box(Modifier.zIndex(-abs(pager.currentPage - page + pager.currentPageOffsetFraction)).fillMaxWidth().padding(vertical = 24.dp), contentAlignment = Alignment.Center) {
                     Box(
