@@ -29,6 +29,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.celestial.latent.camera.Bracket
 import com.celestial.latent.ui.LatentColors
+import com.celestial.latent.ui.accentFill
 import com.celestial.latent.ui.floating
 
 /**
@@ -81,7 +82,7 @@ fun BracketCard(
             Bracket.FRAME_CHOICES.forEach { n ->
                 val on = settings.bracketFrames == n
                 Text("$n", color = if (on) LatentColors.AmberInk else LatentColors.TextBright, fontSize = 14.sp, textAlign = TextAlign.Center,
-                    modifier = Modifier.padding(horizontal = 2.dp).clip(RoundedCornerShape(999.dp)).background(if (on) LatentColors.Amber else Color.Transparent)
+                    modifier = Modifier.padding(horizontal = 2.dp).clip(RoundedCornerShape(999.dp)).accentFill(on, Color.Transparent)
                         .combinedClickable(onClick = { Haptics.tick(context); onSettingsChange(settings.copy(bracketFrames = n)) })
                         .padding(horizontal = 10.dp, vertical = 2.dp))
             }
@@ -126,7 +127,7 @@ private fun EndBox(title: String, hint: String, ns: Long, iso: Int, stops: Doubl
             fontSize = 15.sp, maxLines = 1, modifier = Modifier.padding(top = 4.dp))
         Text(stops?.let { "%+.1f stops".format(java.util.Locale.US, it) } ?: "", color = LatentColors.Text, fontSize = 11.sp)
         Text(setLabel, color = if (armed) LatentColors.AmberInk else LatentColors.TextBright, fontSize = 12.sp,
-            modifier = Modifier.padding(top = 4.dp).clip(RoundedCornerShape(999.dp)).background(if (armed) LatentColors.Amber else LatentColors.Surface)
+            modifier = Modifier.padding(top = 4.dp).clip(RoundedCornerShape(999.dp)).accentFill(armed, LatentColors.Surface)
                 .combinedClickable(onClick = onSet).padding(horizontal = 10.dp, vertical = 5.dp))
     }
 }

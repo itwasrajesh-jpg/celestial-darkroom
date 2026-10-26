@@ -80,11 +80,13 @@ import com.celestial.latent.develop.DevelopQueue
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import com.celestial.latent.ui.LatentColors
+import com.celestial.latent.ui.accentFill
 import com.celestial.latent.ui.OnPhoto
 import com.celestial.latent.ui.floating
 import com.celestial.latent.ui.glow
 import com.celestial.latent.ui.liftedTop
 import com.celestial.latent.ui.raised
+import com.celestial.latent.ui.shutterRing
 import kotlinx.coroutines.delay
 
 private enum class Cell { EV, S, ISO, WB, F }
@@ -797,13 +799,13 @@ fun CameraScreen(
                 .combinedClickable(onClick = { Haptics.tick(context); onOpenRoll() })) {
                 thumb?.let { Image(it.asImageBitmap(), contentDescription = "Last photo", contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize()) }
                 if (developing > 0) Text("$developing", color = LatentColors.AmberInk, fontSize = 9.sp,
-                    modifier = Modifier.align(Alignment.TopEnd).clip(CircleShape).background(LatentColors.Amber).padding(horizontal = 5.dp, vertical = 1.dp))
+                    modifier = Modifier.align(Alignment.TopEnd).clip(CircleShape).accentFill().padding(horizontal = 5.dp, vertical = 1.dp))
             }
             Box(
-                Modifier.size(78.dp).raised(CircleShape, 10.dp).clip(CircleShape).background(LatentColors.Dock).border(2.dp, shutterRing(), CircleShape)
+                Modifier.size(78.dp).shutterRing(CircleShape)
                     .combinedClickable(onClick = { shoot(single = !multi) }, onLongClick = { shoot(single = multi) }),
                 contentAlignment = Alignment.Center,
-            ) { Box(Modifier.size(62.dp).clip(CircleShape).background(if (multi) LatentColors.Amber else shutterFace())) }
+            ) { Box(Modifier.size(62.dp).clip(CircleShape).accentFill(multi, shutterFace())) }
             // Tap cycles: off → 16 (burst) → FS (focus stack, 69a) → HDR (bracket, 86b) → off.
             // Hold: HDR with its bracket card open (86b).
             Box(Modifier.size(46.dp).then(if (LatentColors.palette.depth) Modifier.floating(CircleShape, 5.dp).background(LatentColors.Surface, CircleShape) else Modifier)
@@ -841,16 +843,15 @@ internal fun Modifier.controlBar(): Modifier =
 /** 87a: the shutter dock: its own colour down to the screen's edge, lifted (shadow cast up, lit edge). */
 internal fun Modifier.shutterDock(): Modifier = background(LatentColors.Dock).liftedTop().navigationBarsPadding()
 
-/** 87a: Clay's shutter is a white face in a blue ring; the dark themes keep the light face. */
-internal fun shutterRing() = if (LatentColors.Light) LatentColors.Amber else LatentColors.TextBright
-internal fun shutterFace() = if (LatentColors.Light) LatentColors.Surface else LatentColors.TextBright
+/** 87a: Clay's shutter is a white face in a blue ring (ui/Theme.kt shutterRing); the dark themes keep the light face. */
+internal fun shutterFace() = if (LatentColors.Light) LatentColors.Surface else if (LatentColors.palette.depth) LatentColors.Amber else LatentColors.TextBright
 /** 87a: the film line under the shutter; on Midnight's lighter dock the outline tone was too faint to read. */
 internal fun dockLabel() = if (LatentColors.palette.depth) LatentColors.TextDim else LatentColors.Line
 
 @Composable
 private fun Tag(t: String) {
     Text(t, color = LatentColors.AmberInk, fontSize = 9.sp, letterSpacing = 1.sp,
-        modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(LatentColors.Amber).padding(horizontal = 6.dp, vertical = 2.dp))
+        modifier = Modifier.clip(RoundedCornerShape(999.dp)).accentFill().padding(horizontal = 6.dp, vertical = 2.dp))
 }
 
 @Composable
@@ -863,7 +864,7 @@ private fun Chip(label: String, on: Boolean, onClick: () -> Unit) {
 private fun Tile(label: String, on: Boolean, modifier: Modifier, onToggle: (Boolean) -> Unit) {
     val ctx = LocalContext.current
     Box(
-        modifier.height(52.dp).clip(RoundedCornerShape(8.dp)).background(if (on) LatentColors.Amber else LatentColors.Line).combinedClickable(onClick = { Haptics.tick(ctx); onToggle(!on) }).padding(4.dp),
+        modifier.height(52.dp).clip(RoundedCornerShape(8.dp)).accentFill(on, LatentColors.Line).combinedClickable(onClick = { Haptics.tick(ctx); onToggle(!on) }).padding(4.dp),
         contentAlignment = Alignment.Center,
     ) { Text(label, color = if (on) LatentColors.AmberInk else LatentColors.TextBright, fontSize = 10.sp, lineHeight = 12.sp, textAlign = androidx.compose.ui.text.style.TextAlign.Center) }
 }
@@ -888,10 +889,10 @@ internal fun StripSlider(value: Float, min: Float, max: Float, steps: Int, onCha
         onChange(v)
     }
     Row(verticalAlignment = Alignment.CenterVertically) {
-        Text(autoLabel, color = LatentColors.AmberInk, fontSize = 11.sp, modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(LatentColors.Amber).combinedClickable(onClick = onAuto).padding(horizontal = 10.dp, vertical = 4.dp))
+        Text(autoLabel, color = LatentColors.AmberInk, fontSize = 11.sp, modifier = Modifier.clip(RoundedCornerShape(999.dp)).accentFill().combinedClickable(onClick = onAuto).padding(horizontal = 10.dp, vertical = 4.dp))
         Spacer(Modifier.width(12.dp))
         Slider(value = value.coerceIn(min, max), onValueChange = onChangeHaptic, valueRange = min..max, steps = steps, enabled = enabled,
-            colors = SliderDefaults.colors(thumbColor = LatentColors.Amber, activeTrackColor = LatentColors.Amber, inactiveTrackColor = LatentColors.Line), modifier = Modifier.weight(1f))
+            colors = SliderDefaults.colors(thumbColor = LatentColors.Amber, activeTrackColor = LatentColors.SliderFill, inactiveTrackColor = LatentColors.SliderTrack), modifier = Modifier.weight(1f))
     }
 }
 

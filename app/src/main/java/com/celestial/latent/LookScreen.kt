@@ -44,6 +44,7 @@ import androidx.compose.ui.unit.sp
 import com.celestial.latent.develop.Develop
 import com.celestial.latent.develop.Fingerprint
 import com.celestial.latent.ui.LatentColors
+import com.celestial.latent.ui.accentFill
 import com.celestial.latent.ui.OnPhoto
 import kotlin.math.abs
 
@@ -546,7 +547,7 @@ fun LookScreen(settings: AppSettings, onBack: () -> Unit) {
             Box(Modifier.fillMaxWidth().height(2.dp).background(LatentColors.Surface)) {
                 Box(
                     Modifier.fillMaxWidth(if (p.total == 0) 0f else (p.tried.toFloat() / p.total).coerceIn(0f, 1f))
-                        .height(2.dp).background(LatentColors.Amber),
+                        .height(2.dp).accentFill(),
                 )
             }
             Row(Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 12.dp), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -645,7 +646,7 @@ fun LookScreen(settings: AppSettings, onBack: () -> Unit) {
                         Text(
                             name, color = if (on) LatentColors.AmberInk else LatentColors.Text, fontSize = 10.sp,
                             modifier = Modifier.clip(RoundedCornerShape(999.dp))
-                                .background(if (on) LatentColors.Amber else LatentColors.Surface)
+                                .accentFill(on, LatentColors.Surface)
                                 .combinedClickable(onClick = { tweak = tweak.copy(diffusionFamily = id); rerender() })
                                 .padding(horizontal = 8.dp, vertical = 5.dp),
                         )
@@ -659,7 +660,7 @@ fun LookScreen(settings: AppSettings, onBack: () -> Unit) {
                     Text(
                         label, color = if (on) LatentColors.AmberInk else LatentColors.Text, fontSize = 10.sp,
                         modifier = Modifier.clip(RoundedCornerShape(999.dp))
-                            .background(if (on) LatentColors.Amber else LatentColors.Surface)
+                            .accentFill(on, LatentColors.Surface)
                             .combinedClickable(onClick = { tweak = tweak.copy(outputSpace = id); rerender() })
                             .padding(horizontal = 10.dp, vertical = 5.dp),
                     )
@@ -795,8 +796,8 @@ private fun Tweaker(
             valueRange = from..to,
             colors = androidx.compose.material3.SliderDefaults.colors(
                 thumbColor = LatentColors.Amber,
-                activeTrackColor = LatentColors.Amber,
-                inactiveTrackColor = LatentColors.Surface,
+                activeTrackColor = LatentColors.SliderFill,
+                inactiveTrackColor = LatentColors.SliderTrackDim,
             ),
         )
     }
@@ -823,7 +824,7 @@ private fun Pill(label: String, accent: Boolean = false, onClick: () -> Unit) {
         label,
         color = if (accent) LatentColors.AmberInk else LatentColors.Text, fontSize = 12.sp,
         modifier = Modifier.clip(RoundedCornerShape(999.dp))
-            .background(if (accent) LatentColors.Amber else LatentColors.Surface)
+            .accentFill(accent, LatentColors.Surface)
             .combinedClickable(onClick = { Haptics.tick(context); onClick() })
             .padding(horizontal = 14.dp, vertical = 9.dp),
     )

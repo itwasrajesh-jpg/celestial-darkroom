@@ -40,6 +40,7 @@ import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.celestial.latent.ui.LatentColors
+import com.celestial.latent.ui.accentFill
 
 /**
  * 84a: the camera's modes in one row, Xiaomi style. PRO (RAW, the camera as it always was), FAST and
@@ -86,7 +87,7 @@ fun ModeRow(current: String, onPick: (String) -> Unit, modifier: Modifier = Modi
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
                     Text(label, color = if (on) LatentColors.Amber else LatentColors.Text, fontSize = 12.sp, letterSpacing = 2.sp, fontWeight = FontWeight.Medium)
-                    Box(Modifier.padding(top = 3.dp).size(4.dp).clip(CircleShape).background(if (on) LatentColors.Amber else Color.Transparent))
+                    Box(Modifier.padding(top = 3.dp).size(4.dp).clip(CircleShape).accentFill(on, Color.Transparent))
                 }
             }
         },

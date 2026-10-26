@@ -35,6 +35,7 @@ import androidx.compose.ui.unit.sp
 import com.celestial.latent.camera.Lenses
 import com.celestial.latent.camera.VendorProbe
 import com.celestial.latent.ui.LatentColors
+import com.celestial.latent.ui.accentFill
 
 @Composable
 fun ProbeScreen(settings: AppSettings, onBack: () -> Unit) {
@@ -120,7 +121,7 @@ fun ProbeScreen(settings: AppSettings, onBack: () -> Unit) {
 private fun Btn(label: String, enabled: Boolean, onClick: () -> Unit) {
     Text(
         label, color = if (enabled) LatentColors.AmberInk else LatentColors.TextDim, fontSize = 12.sp,
-        modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(if (enabled) LatentColors.Amber else LatentColors.Surface)
+        modifier = Modifier.clip(RoundedCornerShape(999.dp)).accentFill(enabled, LatentColors.Surface)
             .combinedClickable(enabled = enabled, onClick = onClick).padding(horizontal = 12.dp, vertical = 8.dp),
     )
 }

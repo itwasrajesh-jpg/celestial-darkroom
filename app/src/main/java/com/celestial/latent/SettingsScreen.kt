@@ -37,6 +37,7 @@ import androidx.compose.ui.unit.sp
 import com.celestial.latent.camera.Lenses
 import com.celestial.latent.ui.AppTheme
 import com.celestial.latent.ui.LatentColors
+import com.celestial.latent.ui.accentFill
 import com.celestial.latent.ui.glow
 import com.celestial.latent.ui.raised
 
@@ -222,7 +223,7 @@ private fun UpdateRow() {
             }
             Text(
                 label, color = LatentColors.AmberInk, fontSize = 12.sp,
-                modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(LatentColors.Amber)
+                modifier = Modifier.clip(RoundedCornerShape(999.dp)).accentFill()
                     .combinedClickable(onClick = {
                         Haptics.tick(context)
                         when (val s = state) {
@@ -280,7 +281,7 @@ private fun <T> OptionRow(title: String, subtitle: String, options: List<Pair<St
                     modifier = Modifier
                         .raised(RoundedCornerShape(999.dp), 3.dp)
                         .clip(RoundedCornerShape(999.dp))
-                        .background(if (on) LatentColors.Amber else LatentColors.Surface)
+                        .accentFill(on, LatentColors.Surface)
                         .combinedClickable(onClick = { onSelect(v) })
                         .padding(horizontal = 14.dp, vertical = 7.dp),
                 )

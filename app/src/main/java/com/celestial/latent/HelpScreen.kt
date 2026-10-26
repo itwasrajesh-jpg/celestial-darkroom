@@ -41,6 +41,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.celestial.latent.ui.LatentColors
+import com.celestial.latent.ui.accentFill
 
 /**
  * App help (74a): an index of topics, and one page per darkroom tab, print room and camera. Opened
@@ -126,7 +127,7 @@ private fun HelpCard(i: HelpText.Item) {
         }
         if (i.use.isNotEmpty()) Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Top) {
             Text("USE IT", color = LatentColors.AmberInk, fontSize = 9.sp, letterSpacing = 1.5.sp,
-                modifier = Modifier.padding(top = 1.dp).clip(RoundedCornerShape(999.dp)).background(LatentColors.Amber).padding(horizontal = 7.dp, vertical = 3.dp))
+                modifier = Modifier.padding(top = 1.dp).clip(RoundedCornerShape(999.dp)).accentFill().padding(horizontal = 7.dp, vertical = 3.dp))
             Text(i.use, color = LatentColors.TextBright, fontSize = 12.sp, lineHeight = 17.sp)
         }
     }
@@ -151,7 +152,7 @@ private fun FilterPicker(filters: List<HelpText.Filter>) {
         filters.forEach { x ->
             val on = x.id == picked
             Text(x.label, color = if (on) LatentColors.AmberInk else LatentColors.Text, fontSize = 12.sp,
-                modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(if (on) LatentColors.Amber else Color.Transparent)
+                modifier = Modifier.clip(RoundedCornerShape(999.dp)).accentFill(on, Color.Transparent)
                     .then(if (on) Modifier else Modifier.border(0.5.dp, LatentColors.Line, RoundedCornerShape(999.dp)))
                     .combinedClickable(onClick = { picked = x.id }).padding(horizontal = 14.dp, vertical = 9.dp))
         }
@@ -179,7 +180,7 @@ private fun FilterPicker(filters: List<HelpText.Filter>) {
         Text(f.what, color = LatentColors.Text, fontSize = 12.5.sp, lineHeight = 18.sp)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Top) {
             Text("USE IT", color = LatentColors.AmberInk, fontSize = 9.sp, letterSpacing = 1.5.sp,
-                modifier = Modifier.padding(top = 1.dp).clip(RoundedCornerShape(999.dp)).background(LatentColors.Amber).padding(horizontal = 7.dp, vertical = 3.dp))
+                modifier = Modifier.padding(top = 1.dp).clip(RoundedCornerShape(999.dp)).accentFill().padding(horizontal = 7.dp, vertical = 3.dp))
             Text(f.use, color = LatentColors.TextBright, fontSize = 12.sp, lineHeight = 17.sp)
         }
         Text("The drawing shows the glow's shape, not a render.", color = LatentColors.TextDim, fontSize = 10.sp)
