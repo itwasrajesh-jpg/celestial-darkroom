@@ -42,7 +42,7 @@ import com.celestial.latent.ui.glow
 import com.celestial.latent.ui.raised
 
 @Composable
-fun SettingsScreen(settings: AppSettings, onChange: (AppSettings) -> Unit, onOpenReport: () -> Unit, onOpenVendor: () -> Unit, onOpenProbe: () -> Unit, onOpenDepth: () -> Unit, onOpenLogs: () -> Unit, onOpenExtension: () -> Unit, onOpenAbout: () -> Unit, onBack: () -> Unit, onOpenHelp: () -> Unit = {}) {
+fun SettingsScreen(settings: AppSettings, onChange: (AppSettings) -> Unit, onOpenReport: () -> Unit, onOpenVendor: () -> Unit, onOpenProbe: () -> Unit, onOpenDepth: () -> Unit, onOpenLogs: () -> Unit, onOpenExtension: () -> Unit, onOpenAbout: () -> Unit, onBack: () -> Unit, onOpenHelp: () -> Unit = {}, onOpenRecipeExport: () -> Unit = {}, onOpenRecipeImport: () -> Unit = {}) {
     Column(
         Modifier.fillMaxSize().background(LatentColors.Background).glow().statusBarsPadding().navigationBarsPadding()
             .verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 12.dp),
@@ -129,6 +129,24 @@ fun SettingsScreen(settings: AppSettings, onChange: (AppSettings) -> Unit, onOpe
             ) { hdrStart = it; com.celestial.latent.develop.HdrGlows.setDefault(context, it) }
         }
         Text("Open the roll to reach the darkroom: tap the last-photo thumbnail on the camera screen, or long-press the film strip.", color = LatentColors.TextDim, fontSize = 12.sp)
+
+        // 90a: recipes travel to another phone as one small file
+        Section("Recipes")
+        var counts by remember { mutableStateOf<Pair<Int, Int>?>(null) }
+        LaunchedEffect(Unit) {
+            counts = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                runCatching {
+                    com.celestial.latent.develop.EngineAssets.attach(context)
+                    com.celestial.latent.develop.Recipes.saved(context).size to com.celestial.latent.develop.Recipes.stocks(context).size
+                }.getOrNull()
+            }
+        }
+        counts?.let { (own, built) ->
+            Text("$own of your ${if (own == 1) "recipe" else "recipes"} · $built ${if (built == 1) "film" else "films"} built here", color = LatentColors.Text, fontSize = 13.sp)
+        }
+        Text("Export recipes ›", color = LatentColors.Amber, fontSize = 14.sp, modifier = Modifier.combinedClickable(onClick = onOpenRecipeExport).padding(vertical = 10.dp))
+        Text("Import recipes ›", color = LatentColors.Amber, fontSize = 14.sp, modifier = Modifier.combinedClickable(onClick = onOpenRecipeImport).padding(vertical = 10.dp))
+        Text("Sends your darkroom recipes and the films you built, with their air and light, as one small file. Open it on the other phone with Import. Photos and per-photo edits stay here.", color = LatentColors.TextDim, fontSize = 12.sp)
 
         Section("Xiaomi processing (official extensions)")
         Text("Portrait / Night test ›", color = LatentColors.Amber, fontSize = 14.sp, modifier = Modifier.combinedClickable(onClick = onOpenExtension).padding(vertical = 10.dp))
