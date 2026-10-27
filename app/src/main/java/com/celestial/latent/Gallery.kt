@@ -29,6 +29,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.withFrameNanos
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
@@ -116,6 +118,8 @@ internal fun <T> RollCarousel(
     items: List<T>, key: (T) -> String, caption: (T) -> String,
     onOpen: (T) -> Unit, onHold: (T) -> Unit,
     modifier: Modifier = Modifier,
+    /** 88d: the key of a frame flying back from the darkroom; the carousel jumps to it so it has a place to land. */
+    home: String? = null,
     card: @Composable BoxScope.(T) -> Unit,
 ) {
     val context = LocalContext.current
@@ -124,6 +128,11 @@ internal fun <T> RollCarousel(
     val list by rememberUpdatedState(items)
     val pager = rememberPagerState(pageCount = { list.size })
     val scope = rememberCoroutineScope()
+    // the screen is rebuilt on the way back and would open at the first frame; the roll may still be filling in
+    LaunchedEffect(home, items.size) {
+        val i = if (home == null) -1 else items.indexOfFirst { key(it) == home }
+        if (i >= 0 && pager.currentPage != i) pager.scrollToPage(i)
+    }
     // a tick as each frame settles in the middle, like a click-stop
     LaunchedEffect(pager.settledPage) { if (items.isNotEmpty()) Haptics.tick(context) }
     BoxWithConstraints(modifier) {
@@ -198,10 +207,23 @@ internal fun <T> RollPrints(
     items: List<T>, key: (T) -> String, aspect: (T) -> Float?,
     onOpen: (T) -> Unit, onHold: (T) -> Unit,
     modifier: Modifier = Modifier,
+    /** 88d: the key of a frame flying back from the darkroom; the table scrolls it to the middle so it has a place to land. */
+    home: String? = null,
     card: @Composable BoxScope.(T) -> Unit,
 ) {
     val context = LocalContext.current
     val list = rememberLazyListState()
+    LaunchedEffect(home, items.size) {
+        val i = if (home == null) -1 else items.indexOfFirst { key(it) == home }
+        if (i < 0) return@LaunchedEffect
+        if (list.layoutInfo.visibleItemsInfo.none { it.index == i }) list.scrollToItem(i)
+        // then into the middle, where it straightens
+        withFrameNanos { }
+        val info = list.layoutInfo
+        val me = info.visibleItemsInfo.firstOrNull { it.index == i } ?: return@LaunchedEffect
+        val mid = (info.viewportStartOffset + info.viewportEndOffset) / 2f
+        list.scrollBy(me.offset + me.size / 2f - mid)
+    }
     val shape = RoundedCornerShape(3.dp)
     LazyColumn(modifier, state = list, contentPadding = PaddingValues(vertical = 28.dp), verticalArrangement = Arrangement.spacedBy(30.dp),
         horizontalAlignment = Alignment.CenterHorizontally) {

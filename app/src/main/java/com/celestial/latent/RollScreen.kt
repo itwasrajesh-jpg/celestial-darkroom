@@ -32,6 +32,7 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
@@ -339,6 +340,14 @@ fun RollScreen(
                 if (big && picked) Box(Modifier.fillMaxSize().border(3.dp, LatentColors.Amber))
             }
         }
+        // 88d: a frame flying back from the darkroom must be on screen to land in its place, but this screen
+        // is rebuilt on the way back and every view would open at the top; each view goes to it instead
+        val home = PhotoFlight.trip?.takeIf { it.back }?.uri
+        val grid = rememberLazyGridState()
+        LaunchedEffect(home, shown.size) {
+            val i = if (home == null || view == RollViews.CAROUSEL || view == RollViews.PRINTS) -1 else shown.indexOfFirst { it.uri == home }
+            if (i >= 0 && grid.layoutInfo.visibleItemsInfo.none { it.index == i }) grid.scrollToItem(i)
+        }
         when (view) {
             RollViews.CAROUSEL -> RollCarousel(shown, key = { it.uri.toString() },
                 caption = { f ->
@@ -346,11 +355,11 @@ fun RollScreen(
                     val kind = when { f.isBurst -> "BURST"; f.developed -> "DEVELOPED"; f.isRaw -> "RAW"; else -> "PHOTO" }
                     "$d · $kind"
                 },
-                onOpen = { open(it) }, onHold = { toggle(it) }, modifier = Modifier.weight(1f).fillMaxWidth()) { FrameFace(it, big = true) }
+                onOpen = { open(it) }, onHold = { toggle(it) }, modifier = Modifier.weight(1f).fillMaxWidth(), home = home?.toString()) { FrameFace(it, big = true) }
             RollViews.PRINTS -> RollPrints(shown, key = { it.uri.toString() },
                 aspect = { f -> (bigThumbs[f.uri] ?: thumbs[f.uri])?.let { it.width.toFloat() / it.height } },
-                onOpen = { open(it) }, onHold = { toggle(it) }, modifier = Modifier.weight(1f).fillMaxWidth()) { FrameFace(it, big = true) }
-            else -> LazyVerticalGrid(columns = GridCells.Fixed(3), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.weight(1f)) {
+                onOpen = { open(it) }, onHold = { toggle(it) }, modifier = Modifier.weight(1f).fillMaxWidth(), home = home?.toString()) { FrameFace(it, big = true) }
+            else -> LazyVerticalGrid(columns = GridCells.Fixed(3), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.weight(1f), state = grid) {
                 items(shown, key = { it.uri.toString() }) { frame ->
                     val picked = frame.uri in selected
                     Box(Modifier.aspectRatio(3f / 4f).clip(RoundedCornerShape(4.dp)).background(LatentColors.Surface)

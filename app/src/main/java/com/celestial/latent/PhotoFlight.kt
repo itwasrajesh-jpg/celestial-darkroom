@@ -95,9 +95,10 @@ internal fun PhotoFlightLayer() {
     val fade = remember(t) { Animatable(1f) }
     var to by remember(t) { mutableStateOf<Rect?>(null) }
     LaunchedEffect(t) {
-        // the screen it flies to lays out within a few frames; if it never shows the picture, let go
+        // the screen it flies to lays out within a few frames (the roll may first fill in and scroll to the
+        // frame, 88d); if it never shows the picture, let go
         var frames = 0
-        while (to == null && frames < 20) { withFrameNanos { }; to = PhotoFlight.landing(t); frames++ }
+        while (to == null && frames < 45) { withFrameNanos { }; to = PhotoFlight.landing(t); frames++ }
         if (to == null) { PhotoFlight.done(); return@LaunchedEffect }
         p.animateTo(1f, tween(if (t.back) 400 else 450, easing = Land))
         if (!t.back) {
@@ -109,7 +110,8 @@ internal fun PhotoFlightLayer() {
         }
         PhotoFlight.done()
     }
-    val end = to ?: return
+    // flying back, follow the tile as the roll settles under it (it may still be scrolling into place)
+    val end = (if (t.back) PhotoFlight.landing(t) else null) ?: to ?: return
     Canvas(Modifier.fillMaxSize()) {
         val k = p.value
         val r = Rect(lerp(t.from.left, end.left, k), lerp(t.from.top, end.top, k), lerp(t.from.right, end.right, k), lerp(t.from.bottom, end.bottom, k))
