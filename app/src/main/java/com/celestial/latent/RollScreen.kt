@@ -59,6 +59,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.celestial.latent.develop.Develop
 import com.celestial.latent.develop.DevelopQueue
+import com.celestial.latent.ui.Glyph
+import com.celestial.latent.ui.GlyphIcon
 import com.celestial.latent.ui.LatentColors
 import com.celestial.latent.ui.accentFill
 import com.celestial.latent.ui.glow
@@ -99,6 +101,10 @@ fun RollScreen(
     // 87b: grid, tilted carousel or prints on a table; the big views use bigger pictures, a few kept at a time
     var view by remember { mutableStateOf(RollViews.get(context)) }
     var bigThumbs by remember { mutableStateOf<Map<Uri, Bitmap>>(emptyMap()) }
+    // 89b: the empty states wait for the first scan, so an opening roll doesn't flash "nothing here"
+    var scanned by remember { mutableStateOf(false) }
+    // 89a: the frame under the contact sheet's loupe
+    var loupeFrame by remember { mutableStateOf<Frame?>(null) }
     val scope = rememberCoroutineScope()
 
     fun scan() {
@@ -141,7 +147,7 @@ fun RollScreen(
         frames = raws
     }
 
-    LaunchedEffect(Unit) { kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { scan() } }
+    LaunchedEffect(Unit) { kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { scan() }; scanned = true }
     fun rescan() { scope.launch(kotlinx.coroutines.Dispatchers.IO) { scan() } }
 
     // 73a: an added folder, picked through Android's own folder picker; the access is kept across restarts
@@ -231,7 +237,7 @@ fun RollScreen(
 
     Column(Modifier.fillMaxSize().background(LatentColors.Background).glow().statusBarsPadding().navigationBarsPadding().padding(horizontal = 14.dp)) {
         if (selecting) Row(Modifier.fillMaxWidth().padding(vertical = 10.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-            Text("✕", color = LatentColors.Text, fontSize = 18.sp, modifier = Modifier.combinedClickable(onClick = { selected = emptySet(); deleteAsk = false }).padding(horizontal = 6.dp))
+            GlyphIcon(Glyph.CLOSE, LatentColors.Text, Modifier.combinedClickable(onClick = { selected = emptySet(); deleteAsk = false }).padding(horizontal = 6.dp), 20.dp)
             Text("${selected.size} SELECTED", color = LatentColors.Text, fontSize = 12.sp, letterSpacing = 3.sp)
             Text(if (shown.all { it.uri in selected }) "none" else "all", color = LatentColors.Amber, fontSize = 12.sp,
                 modifier = Modifier.combinedClickable(onClick = {
@@ -239,16 +245,17 @@ fun RollScreen(
                     if (selected.isEmpty()) deleteAsk = false
                 }).padding(6.dp))
         } else Row(Modifier.fillMaxWidth().padding(vertical = 10.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-            Text("‹", color = LatentColors.Text, fontSize = 22.sp, modifier = Modifier.combinedClickable(onClick = onBack).padding(horizontal = 6.dp))
+            GlyphIcon(Glyph.BACK, LatentColors.Text, Modifier.combinedClickable(onClick = onBack).padding(horizontal = 6.dp), 22.dp)
             Text("ROLL", color = LatentColors.Text, fontSize = 12.sp, letterSpacing = 4.sp)
             // Both actions sit together on the right so the title stays centred.
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
             RollViewToggle(view) { view = it; RollViews.set(context, it) }
-            Text("look", color = LatentColors.Amber, fontSize = 12.sp,
-                modifier = Modifier.combinedClickable(onClick = { Haptics.tick(context); onOpenLookBuilder() }).padding(6.dp))
-            Text("import", color = LatentColors.Amber, fontSize = 12.sp,
-                modifier = Modifier.combinedClickable(onClick = { Haptics.tick(context); // Some file providers report a DNG as a generic binary, which "image/*" would hide.
-                    importer.launch(arrayOf("image/*", "image/x-adobe-dng", "application/octet-stream")) }).padding(6.dp))
+            // 89c: look and import as the app's glyphs
+            GlyphIcon(Glyph.LOOK, LatentColors.Amber,
+                Modifier.combinedClickable(onClick = { Haptics.tick(context); onOpenLookBuilder() }).padding(5.dp), 20.dp)
+            GlyphIcon(Glyph.IMPORT, LatentColors.Amber,
+                Modifier.combinedClickable(onClick = { Haptics.tick(context); // Some file providers report a DNG as a generic binary, which "image/*" would hide.
+                    importer.launch(arrayOf("image/*", "image/x-adobe-dng", "application/octet-stream")) }).padding(5.dp), 20.dp)
             }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(bottom = 10.dp)) {
@@ -286,8 +293,6 @@ fun RollScreen(
                         .combinedClickable(onClick = { removeFolderAsk = null }).padding(horizontal = 12.dp, vertical = 7.dp))
             }
         }
-        if (filter.startsWith("folder:") && shown.isEmpty())
-            Text("No photos found directly in this folder.", color = LatentColors.TextDim, fontSize = 11.sp, modifier = Modifier.padding(bottom = 10.dp))
         // 73a: long-press starts choosing photos; while choosing, a tap adds or removes one
         fun toggle(frame: Frame) { selected = if (frame.uri in selected) selected - frame.uri else selected + frame.uri; if (selected.isEmpty()) deleteAsk = false }
         fun open(frame: Frame) {
@@ -296,31 +301,46 @@ fun RollScreen(
             else { PhotoFlight.open(frame.uri, bigThumbs[frame.uri] ?: thumbs[frame.uri]); onOpenDarkroom(frame.uri, frame.isRaw) }
         }
         // A frame's picture and badges, the same in every view. [big] asks for a ~720 px picture (carousel, prints).
-        @Composable
-        fun FrameFace(frame: Frame, big: Boolean) {
-            LaunchedEffect(frame.uri, big) {
-                val have = if (big) bigThumbs.containsKey(frame.uri) else thumbs.containsKey(frame.uri)
-                if (!have) {
-                    val px = if (big) 720 else 300
-                    val b = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                        if (frame.isBurst) com.celestial.latent.camera.BurstRollFiles.sharpestPreview(context, frame.uri)
-                            ?.let { j -> android.graphics.BitmapFactory.decodeByteArray(j, 0, j.size, android.graphics.BitmapFactory.Options().apply { inSampleSize = if (big) 1 else 2 }) }
-                        else runCatching { context.contentResolver.loadThumbnail(frame.uri, Size(px, px), null) }.getOrNull()
-                            // a folder's provider may give no thumbnail: decode the picture small instead
-                            ?: if (frame.folder != null && !frame.isRaw) runCatching { context.contentResolver.openInputStream(frame.uri)?.use {
-                                android.graphics.BitmapFactory.decodeStream(it, null, android.graphics.BitmapFactory.Options().apply { inSampleSize = if (big) 4 else 8 }) } }.getOrNull() else null
-                    }
-                    // keep the newest few hundred small ones (an added folder can hold thousands) and the newest 16 big ones
-                    if (b != null) {
-                        if (big) bigThumbs = (bigThumbs + (frame.uri to b)).let { if (it.size > 16) it.entries.drop(it.size - 16).associate { e -> e.key to e.value } else it }
-                        else thumbs = (thumbs + (frame.uri to b)).let { if (it.size > 240) it.entries.drop(it.size - 240).associate { e -> e.key to e.value } else it }
-                    }
+        // [sheet] (89a): the picture fitted upright in a contact sheet's frame, its kind printed on the film's edge instead.
+        // Loads a frame's small (~300 px) or big (~720 px) picture into the caches, unless it is there already.
+        suspend fun loadFace(frame: Frame, big: Boolean) {
+            val have = if (big) bigThumbs.containsKey(frame.uri) else thumbs.containsKey(frame.uri)
+            if (!have) {
+                val px = if (big) 720 else 300
+                val b = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    if (frame.isBurst) com.celestial.latent.camera.BurstRollFiles.sharpestPreview(context, frame.uri)
+                        ?.let { j -> android.graphics.BitmapFactory.decodeByteArray(j, 0, j.size, android.graphics.BitmapFactory.Options().apply { inSampleSize = if (big) 1 else 2 }) }
+                    else runCatching { context.contentResolver.loadThumbnail(frame.uri, Size(px, px), null) }.getOrNull()
+                        // a folder's provider may give no thumbnail: decode the picture small instead
+                        ?: if (frame.folder != null && !frame.isRaw) runCatching { context.contentResolver.openInputStream(frame.uri)?.use {
+                            android.graphics.BitmapFactory.decodeStream(it, null, android.graphics.BitmapFactory.Options().apply { inSampleSize = if (big) 4 else 8 }) } }.getOrNull() else null
+                }
+                // keep the newest few hundred small ones (an added folder can hold thousands) and the newest 16 big ones
+                if (b != null) {
+                    if (big) bigThumbs = (bigThumbs + (frame.uri to b)).let { if (it.size > 16) it.entries.drop(it.size - 16).associate { e -> e.key to e.value } else it }
+                    else thumbs = (thumbs + (frame.uri to b)).let { if (it.size > 240) it.entries.drop(it.size - 240).associate { e -> e.key to e.value } else it }
                 }
             }
+        }
+        @Composable
+        fun FrameFace(frame: Frame, big: Boolean, sheet: Boolean = false) {
+            LaunchedEffect(frame.uri, big) { loadFace(frame, big) }
             val picked = frame.uri in selected
             // 88a: each picture says where it is, so the darkroom's print can fly back into it
-            Box(Modifier.fillMaxSize().onGloballyPositioned { PhotoFlight.tile(frame.uri, it.boundsInRoot()) }
-                .graphicsLayer { alpha = if (PhotoFlight.covering == frame.uri) 0f else 1f }) {
+            val tile = Modifier.onGloballyPositioned { PhotoFlight.tile(frame.uri, it.boundsInRoot()) }
+                .graphicsLayer { alpha = if (PhotoFlight.covering == frame.uri) 0f else 1f }
+            if (sheet) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    thumbs[frame.uri]?.let { b ->
+                        val a = b.width.toFloat() / b.height
+                        Box(Modifier.aspectRatio(a, matchHeightConstraintsFirst = a < 1.5f).then(tile)) {
+                            Image(b.asImageBitmap(), contentDescription = frame.name, contentScale = ContentScale.FillBounds, modifier = Modifier.fillMaxSize())
+                        }
+                    }
+                }
+                return
+            }
+            Box(Modifier.fillMaxSize().then(tile)) {
                 // the small picture stands in until the big one arrives
                 (if (big) bigThumbs[frame.uri] ?: thumbs[frame.uri] else thumbs[frame.uri])?.let {
                     Image(it.asImageBitmap(), contentDescription = frame.name, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize()) }
@@ -345,10 +365,44 @@ fun RollScreen(
         val home = PhotoFlight.trip?.takeIf { it.back }?.uri
         val grid = rememberLazyGridState()
         LaunchedEffect(home, shown.size) {
-            val i = if (home == null || view == RollViews.CAROUSEL || view == RollViews.PRINTS) -1 else shown.indexOfFirst { it.uri == home }
+            val i = if (home == null || view != RollViews.GRID) -1 else shown.indexOfFirst { it.uri == home }
             if (i >= 0 && grid.layoutInfo.visibleItemsInfo.none { it.index == i }) grid.scrollToItem(i)
         }
-        when (view) {
+        val empty = when {
+            !scanned || shown.isNotEmpty() -> null
+            filter.startsWith("folder:") -> EmptyKind.FOLDER
+            own.isEmpty() -> EmptyKind.ROLL
+            filter == "developed" -> EmptyKind.DEVELOPED
+            filter == "latent" -> EmptyKind.LATENT
+            filter == "bursts" -> EmptyKind.BURSTS
+            else -> EmptyKind.ROLL
+        }
+        val waiting = own.filter { it.isRaw && !it.developed && !it.isBurst }
+        // 89b: a view with nothing in it says how to fill it, and offers the next step
+        if (empty != null) Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+            when (empty) {
+                EmptyKind.ROLL, EmptyKind.BURSTS -> EmptyState(empty, Modifier.padding(bottom = 60.dp), "Open camera", onBack)
+                EmptyKind.DEVELOPED -> if (waiting.isNotEmpty()) EmptyState(empty, Modifier.padding(bottom = 60.dp), "Develop all  ·  ${waiting.size}") {
+                    val r = com.celestial.latent.develop.Recipes.current(context).copy(film = settings.film)
+                    waiting.forEach { DevelopQueue.submit(context, DevelopQueue.Job(it.uri, r, isRaw = true)) }
+                } else EmptyState(empty, Modifier.padding(bottom = 60.dp))
+                EmptyKind.FOLDER -> EmptyState(empty, Modifier.padding(bottom = 60.dp), "Pick another folder") { folderPicker.launch(null) }
+                else -> EmptyState(empty, Modifier.padding(bottom = 60.dp))
+            }
+        } else when (view) {
+            RollViews.SHEET -> {
+                val day = shown.firstOrNull()?.let { f -> java.text.SimpleDateFormat("d MMM", java.util.Locale.getDefault()).format(java.util.Date(if (f.date < 100_000_000_000L) f.date * 1000 else f.date)).uppercase() } ?: ""
+                val filmName = Develop.FILMS.firstOrNull { it.first == settings.film }?.second?.uppercase() ?: "FILM"
+                RollSheet(shown, key = { it.uri.toString() }, film = filmName,
+                    title = listOf("ROLL", day, filmName).filter { it.isNotEmpty() }.joinToString("  ·  "),
+                    note = { f -> when { f.isBurst -> if (f.name.contains("_FOCUS")) "FOCUS" else if (f.name.contains("_HDR") || f.name.contains("_BRACKET")) "HDR" else "BURST"; f.isRaw && !f.developed -> "RAW"; else -> "" } },
+                    picked = { it.uri in selected },
+                    picture = { f -> (bigThumbs[f.uri] ?: thumbs[f.uri])?.asImageBitmap() },
+                    onOpen = { open(it) }, onPick = { Haptics.click(context); toggle(it) }, onLoupe = { loupeFrame = it },
+                    modifier = Modifier.weight(1f).fillMaxWidth(), home = home?.toString()) { FrameFace(it, big = false, sheet = true) }
+                // the loupe magnifies; a sharper picture is loaded for the frame under it
+                LaunchedEffect(loupeFrame) { loupeFrame?.let { loadFace(it, big = true) } }
+            }
             RollViews.CAROUSEL -> RollCarousel(shown, key = { it.uri.toString() },
                 caption = { f ->
                     val d = java.text.SimpleDateFormat("d MMM", java.util.Locale.getDefault()).format(java.util.Date(if (f.date < 100_000_000_000L) f.date * 1000 else f.date)).uppercase()

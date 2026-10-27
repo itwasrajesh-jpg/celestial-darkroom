@@ -34,6 +34,8 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.celestial.latent.camera.Lenses
+import com.celestial.latent.ui.Glyph
+import com.celestial.latent.ui.GlyphIcon
 import com.celestial.latent.ui.LatentColors
 import com.celestial.latent.ui.accentFill
 
@@ -99,8 +101,8 @@ fun VendorScreen(settings: AppSettings, exposedKeys: List<Pair<String, String>>,
                 Row {
                     Column(Modifier.weight(1f)) { Field(tag.value, { edit(i, tag.copy(value = it)) }, "value, or 4/12/24 for arrays", KeyboardType.Text) }
                     Spacer(Modifier.width(8.dp))
-                    Text("✕", color = LatentColors.Text, fontSize = 18.sp,
-                        modifier = Modifier.combinedClickable(onClick = { onChange(settings.copy(vendorTags = settings.vendorTags.filterIndexed { j, _ -> j != i })) }).padding(12.dp))
+                    GlyphIcon(Glyph.CLOSE, LatentColors.Text,
+                        Modifier.combinedClickable(onClick = { onChange(settings.copy(vendorTags = settings.vendorTags.filterIndexed { j, _ -> j != i })) }).padding(12.dp), 18.dp)
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text("copy to:", color = LatentColors.TextDim, fontSize = 11.sp, modifier = Modifier.padding(top = 5.dp))
