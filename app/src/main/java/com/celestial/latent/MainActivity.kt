@@ -37,6 +37,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
@@ -44,7 +45,7 @@ import com.celestial.latent.camera.CameraReport
 import com.celestial.latent.ui.LatentColors
 import com.celestial.latent.ui.LatentTheme
 
-class MainActivity : ComponentActivity() {
+open class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         CrashLog.install(this)
@@ -53,12 +54,20 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         // 87a: the chosen theme, read before the first frame
         LatentColors.load(this)
+        // 88b: the window behind the first frame in the theme's own colour
+        window.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(LatentColors.Background.toArgb()))
         setContent {
             // Clay is light: dark status and navigation icons, set again whenever the theme changes
             val light = LatentColors.Light
             SideEffect { systemBars(light) }
             LatentTheme { Root() }
         }
+    }
+
+    // 88b: the launcher icon follows the theme, changed as the app leaves the screen
+    override fun onStop() {
+        super.onStop()
+        AppIcon.sync(this, LatentColors.theme)
     }
 
     private fun systemBars(light: Boolean) {
@@ -142,6 +151,7 @@ private fun Root() {
     // System back gesture: always one step up, never out of the app while inside a sub-screen.
     BackHandler(enabled = screen != "camera") {
         if (screen == "extension") CameraModes.setXiaomi(context, "")
+        if (screen == "darkroom" && darkroomBack == "roll") darkroomSource?.let { PhotoFlight.back(it) }
         screen = when (screen) { "settings", "extension" -> "camera"; "roll" -> cameraHome(); "darkroom" -> darkroomBack; "burst" -> "roll"; else -> "settings" }
     }
 
@@ -175,7 +185,7 @@ private fun Root() {
                 source = src, isRaw = darkroomIsRaw,
                 initial = com.celestial.latent.develop.Recipes.current(context).copy(film = settings.film),
                 onRecipeChanged = { r -> if (r.film != settings.film) { settings = settings.copy(film = r.film); AppSettings.save(context, settings) } },
-                onBack = { screen = darkroomBack },
+                onBack = { if (darkroomBack == "roll") PhotoFlight.back(src); screen = darkroomBack },
             )
         } ?: run { screen = "roll" }
         "burst" -> burstRoll?.let { b ->
@@ -217,6 +227,8 @@ private fun Root() {
         )
     }
 
+        // 88a: a photo flying between the roll and the darkroom, over both
+        PhotoFlightLayer()
         if (opening) BlackHoleIntro(onDone = { opening = false })
     }
 }

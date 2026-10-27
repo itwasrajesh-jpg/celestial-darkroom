@@ -16,16 +16,47 @@
         android:label="@string/app_name"
         android:supportsRtl="true"
         android:theme="@style/Theme.Latent">
+        <!-- 88b: the app's one screen. The launcher reaches it through one of the icons below. -->
         <activity
-            android:name=".MainActivity"
-            android:exported="true"
+            android:name=".CameraActivity"
+            android:exported="false"
             android:screenOrientation="portrait"
-            android:theme="@style/Theme.Latent">
+            android:theme="@style/Theme.Latent" />
+        <!-- 88b: one launcher icon per theme (AppIcon.kt enables the chosen one). The Darkroom one keeps the
+             old ".MainActivity" name, so home-screen icons made before this update keep working. -->
+        <activity-alias
+            android:name=".MainActivity"
+            android:targetActivity=".CameraActivity"
+            android:icon="@mipmap/ic_launcher"
+            android:enabled="true"
+            android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-        </activity>
+        </activity-alias>
+        <activity-alias
+            android:name=".IconMidnight"
+            android:targetActivity=".CameraActivity"
+            android:icon="@mipmap/ic_launcher_midnight"
+            android:enabled="false"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+        <activity-alias
+            android:name=".IconClay"
+            android:targetActivity=".CameraActivity"
+            android:icon="@mipmap/ic_launcher_clay"
+            android:enabled="false"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
 
         <!-- Android's installer reports here on an update; only Latent itself can reach it. -->
         <receiver

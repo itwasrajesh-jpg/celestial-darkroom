@@ -1,0 +1,16 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android" xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+    <!-- 88b: the icon in Clay: a navy frame raised on a pale tile, the latent ring in Clay's blue gradient. -->
+    <group android:translateY="1.5"><path android:fillColor="#597F93BC" android:pathData="M30,30h48v48h-48z M34,34v40h40v-40z"/><path android:fillColor="#597F93BC" android:pathData="M30,22h6v4h-6z M42,22h6v4h-6z M54,22h6v4h-6z M66,22h6v4h-6z M30,82h6v4h-6z M42,82h6v4h-6z M54,82h6v4h-6z M66,82h6v4h-6z"/></group>
+    <path android:fillColor="#45536F" android:pathData="M30,30h48v48h-48z M34,34v40h40v-40z"/>
+    <path android:fillColor="#45536F" android:pathData="M30,22h6v4h-6z M42,22h6v4h-6z M54,22h6v4h-6z M66,22h6v4h-6z M30,82h6v4h-6z M42,82h6v4h-6z M54,82h6v4h-6z M66,82h6v4h-6z"/>
+    <!-- the glow: a soft halo fading out on both sides of the ring -->
+    <path android:pathData="M54,36a18,18 0 1,0 0.01,0z">
+        <aapt:attr name="android:fillColor"><gradient android:type="radial" android:centerX="54" android:centerY="54" android:gradientRadius="18">
+            <item android:offset="0.45" android:color="#008EA6F7"/>
+            <item android:offset="0.66" android:color="#808EA6F7"/>
+            <item android:offset="1.0" android:color="#008EA6F7"/>
+        </gradient></aapt:attr>
+    </path>
+    <path android:pathData="M54,42a12,12 0 1,0 0.01,0z M54,46a8,8 0 1,1 -0.01,0z"><aapt:attr name="android:fillColor"><gradient android:type="linear" android:startX="42" android:startY="42" android:endX="66" android:endY="66" android:startColor="#8EA6F7" android:endColor="#5B78E6"/></aapt:attr></path>
+</vector>
