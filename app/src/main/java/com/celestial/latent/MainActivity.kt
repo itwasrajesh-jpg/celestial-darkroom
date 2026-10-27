@@ -170,8 +170,12 @@ private fun Root() {
             onOpenExtension = { screen = "extension" },
             onOpenAbout = { screen = "about" },
             onOpenHelp = { screen = "help" },
+            onOpenRecipeExport = { screen = "recipes-export" },
+            onOpenRecipeImport = { screen = "recipes-import" },
             onBack = { screen = "camera" },
         )
+        "recipes-export" -> RecipesScreen(importing = false, onBack = { screen = "settings" }, onOpenCamera = { screen = "camera" })
+        "recipes-import" -> RecipesScreen(importing = true, onBack = { screen = "settings" }, onOpenCamera = { screen = "camera" })
         "look" -> LookScreen(settings = settings, onBack = { screen = "roll" })
         "roll" -> RollScreen(
             settings = settings, onSettingsChange = { s -> settings = s; AppSettings.save(context, s) },
