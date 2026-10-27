@@ -670,6 +670,8 @@ fun CameraScreen(
                             .combinedClickable(onClick = { Haptics.tick(context); push(controls.copy(zoom = if (zoomOn) 1f else factor)) }).padding(horizontal = 9.dp, vertical = 3.dp))
                 }
             }
+            // 88c: the film cards' frosted glass sees the camera picture behind them
+            FrostCapture(if (settings.filmPreview) glPreview else plainPreview, LatentColors.palette.depth && !filmsFolded)
             FilmStrip(settings.preset, Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp),
                 onLongPress = { lastRawUri?.let { u -> onOpenDarkroom(u, true) } },
                 folded = filmsFolded,

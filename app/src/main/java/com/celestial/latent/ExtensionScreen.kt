@@ -452,6 +452,7 @@ fun ExtensionScreen(settings: AppSettings, onSettingsChange: (AppSettings) -> Un
                         .combinedClickable(onClick = { Haptics.tick(context); iszOn = !iszOn; cam.isz = iszOn; cam.refresh() }).padding(horizontal = 8.dp, vertical = 3.dp))
             }
             Text((if (zoomOk) "LENS VIA ZOOM" else "LENS BY XIAOMI") + " · FILM OVER JPEG", color = OnPhoto.TextDim, fontSize = 10.sp, letterSpacing = 1.sp, modifier = Modifier.align(Alignment.BottomStart).padding(start = 12.dp, bottom = 90.dp + filmsLift))
+            FrostCapture(previewView, LatentColors.palette.depth && !filmsFolded)
             FilmStrip(settings.preset, Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp),
                 folded = filmsFolded,
                 onFold = { filmsFolded = it; runCatching { uiPrefs.edit().putBoolean("films_folded", it).apply() } }) { id ->

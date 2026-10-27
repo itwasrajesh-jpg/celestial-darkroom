@@ -125,9 +125,9 @@ fun FilmStrip(
             val id = "stock:" + name
             val on = id == selected
             androidx.compose.foundation.layout.Column(
-                // 87a: frosted cards in Midnight and Clay (the theme's tint, a lit edge, a soft shadow)
+                // 87a/88c: frosted glass in Midnight and Clay (the blurred picture behind, a lit edge, a soft shadow)
                 modifier = Modifier.floating(RoundedCornerShape(6.dp), 4.dp).clip(RoundedCornerShape(6.dp))
-                    .accentFill(on, LatentColors.Frost)
+                    .frost(on)
                     .combinedClickable(
                         onClick = { if (!on) { Haptics.tick(context); onSelect(id) } },
                         onLongClick = { Haptics.click(context); onLongPress() },
@@ -144,9 +144,9 @@ fun FilmStrip(
             val label = preset.name.substringBefore(" — ")
             val on = id == selected
             androidx.compose.foundation.layout.Column(
-                // 87a: frosted cards in Midnight and Clay (the theme's tint, a lit edge, a soft shadow)
+                // 87a/88c: frosted glass in Midnight and Clay (the blurred picture behind, a lit edge, a soft shadow)
                 modifier = Modifier.floating(RoundedCornerShape(6.dp), 4.dp).clip(RoundedCornerShape(6.dp))
-                    .accentFill(on, LatentColors.Frost)
+                    .frost(on)
                     .combinedClickable(
                         onClick = { if (!on) { Haptics.tick(context); onSelect(id) } },
                         onLongClick = { Haptics.click(context); onLongPress() },

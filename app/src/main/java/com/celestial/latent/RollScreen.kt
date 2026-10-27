@@ -49,6 +49,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -288,7 +291,8 @@ fun RollScreen(
         fun toggle(frame: Frame) { selected = if (frame.uri in selected) selected - frame.uri else selected + frame.uri; if (selected.isEmpty()) deleteAsk = false }
         fun open(frame: Frame) {
             Haptics.tick(context)
-            if (selecting) toggle(frame) else if (frame.isBurst) onOpenBurst(frame.uri) else onOpenDarkroom(frame.uri, frame.isRaw)
+            if (selecting) toggle(frame) else if (frame.isBurst) onOpenBurst(frame.uri)
+            else { PhotoFlight.open(frame.uri, bigThumbs[frame.uri] ?: thumbs[frame.uri]); onOpenDarkroom(frame.uri, frame.isRaw) }
         }
         // A frame's picture and badges, the same in every view. [big] asks for a ~720 px picture (carousel, prints).
         @Composable
@@ -313,7 +317,9 @@ fun RollScreen(
                 }
             }
             val picked = frame.uri in selected
-            Box(Modifier.fillMaxSize()) {
+            // 88a: each picture says where it is, so the darkroom's print can fly back into it
+            Box(Modifier.fillMaxSize().onGloballyPositioned { PhotoFlight.tile(frame.uri, it.boundsInRoot()) }
+                .graphicsLayer { alpha = if (PhotoFlight.covering == frame.uri) 0f else 1f }) {
                 // the small picture stands in until the big one arrives
                 (if (big) bigThumbs[frame.uri] ?: thumbs[frame.uri] else thumbs[frame.uri])?.let {
                     Image(it.asImageBitmap(), contentDescription = frame.name, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize()) }

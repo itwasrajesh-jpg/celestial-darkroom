@@ -1,0 +1,15 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android" xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+    <!-- 88b: the icon in Midnight: the same film frame, pale blue-grey, the latent ring pale with a soft glow. -->
+    <path android:fillColor="#98A9C4" android:pathData="M30,30h48v48h-48z M34,34v40h40v-40z"/>
+    <path android:fillColor="#98A9C4" android:pathData="M30,22h6v4h-6z M42,22h6v4h-6z M54,22h6v4h-6z M66,22h6v4h-6z M30,82h6v4h-6z M42,82h6v4h-6z M54,82h6v4h-6z M66,82h6v4h-6z"/>
+    <!-- the glow: a soft halo fading out on both sides of the ring -->
+    <path android:pathData="M54,36a18,18 0 1,0 0.01,0z">
+        <aapt:attr name="android:fillColor"><gradient android:type="radial" android:centerX="54" android:centerY="54" android:gradientRadius="18">
+            <item android:offset="0.45" android:color="#0098A9C4"/>
+            <item android:offset="0.66" android:color="#8098A9C4"/>
+            <item android:offset="1.0" android:color="#0098A9C4"/>
+        </gradient></aapt:attr>
+    </path>
+    <path android:pathData="M54,42a12,12 0 1,0 0.01,0z M54,46a8,8 0 1,1 -0.01,0z"><aapt:attr name="android:fillColor"><gradient android:type="linear" android:startX="42" android:startY="42" android:endX="66" android:endY="66" android:startColor="#EDF1F8" android:endColor="#DCE3EF"/></aapt:attr></path>
+</vector>

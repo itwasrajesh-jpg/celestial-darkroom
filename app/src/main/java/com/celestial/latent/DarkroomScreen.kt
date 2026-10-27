@@ -54,6 +54,8 @@ import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -169,7 +171,11 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
     val printDevelop = remember { PrintDevelop() }
     val developScope = rememberCoroutineScope()
     val hasPrint = preview != null
-    LaunchedEffect(hasPrint) { if (hasPrint) printDevelop.play(developScope) }
+    // 88a: a frame flown in from the roll covers the mat until the print is ready; it develops as that fades
+    val flownIn = PhotoFlight.covering == source
+    LaunchedEffect(hasPrint) { PhotoFlight.printReady = hasPrint }
+    androidx.compose.runtime.SideEffect { PhotoFlight.print(preview) }
+    LaunchedEffect(hasPrint && !flownIn) { if (hasPrint && !flownIn) printDevelop.play(developScope) }
     var original by remember { mutableStateOf<Bitmap?>(null) }
     // 72a: the unframed "before", and which framing [original] was framed for
     var originalPlain by remember { mutableStateOf<Bitmap?>(null) }
@@ -822,6 +828,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                 // 87a: the photo always sits on a dark mat (in Darkroom, the grey it always had)
                 Box(Modifier.fillMaxWidth().weight(photoWeight).background(LatentColors.Mat)
                     .onSizeChanged { viewSize = it }
+                    .onGloballyPositioned { PhotoFlight.room(source, it.boundsInRoot()) }
                     // Two fingers zoom and move; one finger slides the picture when zoomed in.
                     .pointerInput(frameOpen, preview != null) {
                         if (frameOpen) return@pointerInput
@@ -884,6 +891,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                         Image(bmp.asImageBitmap(), contentDescription = "Developed", contentScale = ContentScale.Fit,
                             modifier = Modifier.fillMaxSize().graphicsLayer {
                                 renderEffect = printDevelop.effect()
+                                alpha = if (PhotoFlight.covering == source) 0f else 1f
                                 if (frameOpen) { rotationZ = delta; scaleX = liveScale; scaleY = liveScale }
                                 else if (zoom.zoomed) {
                                     // the zoom: scaled about the view's middle, then moved so the
