@@ -52,6 +52,8 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
+import com.celestial.latent.ui.Glyph
+import com.celestial.latent.ui.GlyphIcon
 import com.celestial.latent.ui.LatentColors
 import kotlinx.coroutines.launch
 import kotlin.math.abs
@@ -64,7 +66,9 @@ import kotlin.math.exp
  */
 object RollViews {
     const val GRID = "grid"; const val CAROUSEL = "carousel"; const val PRINTS = "prints"
-    val ALL = listOf(GRID, CAROUSEL, PRINTS)
+    /** 89a: the roll as a contact sheet. */
+    const val SHEET = "sheet"
+    val ALL = listOf(GRID, CAROUSEL, PRINTS, SHEET)
     private fun prefs(context: android.content.Context) = context.getSharedPreferences("latent_camera_ui", android.content.Context.MODE_PRIVATE)
     fun get(context: android.content.Context): String = runCatching { prefs(context).getString("roll_view", GRID) ?: GRID }.getOrDefault(GRID).takeIf { it in ALL } ?: GRID
     fun set(context: android.content.Context, view: String) { runCatching { prefs(context).edit().putString("roll_view", view).apply() } }
@@ -77,33 +81,16 @@ private fun Modifier.lifted(shape: Shape, lift: Dp): Modifier {
     return shadow(lift, shape, clip = false, ambientColor = c, spotColor = c)
 }
 
-/** The three view buttons for the roll's header: small drawn icons, the chosen one in the accent. */
+/** The view buttons for the roll's header (89c: the app's glyphs), the chosen one in the accent. */
 @Composable
 internal fun RollViewToggle(view: String, onView: (String) -> Unit) {
     val context = LocalContext.current
     Row(verticalAlignment = Alignment.CenterVertically) {
         RollViews.ALL.forEach { v ->
             val on = v == view
-            val ink = if (on) LatentColors.Amber else LatentColors.TextDim
-            Canvas(Modifier.clip(RoundedCornerShape(6.dp)).combinedClickable(onClick = { if (!on) { Haptics.tick(context); onView(v) } })
-                .padding(horizontal = 6.dp, vertical = 6.dp).size(18.dp, 16.dp)) {
-                val w = size.width; val h = size.height; val sw = 1.4.dp.toPx()
-                when (v) {
-                    // four squares
-                    RollViews.GRID -> { val g = 2.dp.toPx(); val s = (minOf(w, h) - g) / 2f; val x0 = (w - 2 * s - g) / 2f
-                        for (r in 0..1) for (c in 0..1) drawRect(ink, Offset(x0 + c * (s + g), r * (s + g)), Size(s, s)) }
-                    // a tall card with a turned card either side
-                    RollViews.CAROUSEL -> { val cw = w * 0.5f
-                        drawRect(ink, Offset((w - cw) / 2f, 0f), Size(cw, h))
-                        drawRect(ink, Offset(0f, h * 0.18f), Size(w * 0.16f, h * 0.64f))
-                        drawRect(ink, Offset(w * 0.84f, h * 0.18f), Size(w * 0.16f, h * 0.64f)) }
-                    // a print with a white border, a little crooked
-                    else -> { val pw = w * 0.7f; val ph = h * 0.86f
-                        rotate(-8f, Offset(w / 2f, h / 2f)) {
-                            drawRect(ink, Offset((w - pw) / 2f, (h - ph) / 2f), Size(pw, ph), style = Stroke(sw))
-                            drawRect(ink, Offset((w - pw) / 2f + sw * 1.8f, (h - ph) / 2f + sw * 1.8f), Size(pw - sw * 3.6f, ph * 0.66f)) } }
-                }
-            }
+            val g = when (v) { RollViews.CAROUSEL -> Glyph.CAROUSEL; RollViews.PRINTS -> Glyph.PRINTS; RollViews.SHEET -> Glyph.SHEET; else -> Glyph.GRID }
+            GlyphIcon(g, if (on) LatentColors.Amber else LatentColors.TextDim,
+                Modifier.clip(RoundedCornerShape(6.dp)).combinedClickable(onClick = { if (!on) { Haptics.tick(context); onView(v) } }).padding(5.dp), 18.dp)
         }
     }
 }

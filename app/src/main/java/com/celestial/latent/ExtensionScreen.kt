@@ -60,6 +60,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import com.celestial.latent.ui.Glyph
+import com.celestial.latent.ui.GlyphIcon
 import com.celestial.latent.ui.LatentColors
 import com.celestial.latent.ui.OnPhoto
 import com.celestial.latent.ui.floating
@@ -382,7 +384,7 @@ fun ExtensionScreen(settings: AppSettings, onSettingsChange: (AppSettings) -> Un
     Column(Modifier.fillMaxSize().background(LatentColors.Background).glow().statusBarsPadding()) {
         // Top bar: back (84a: the modes moved to the row above the shutter)
         Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 10.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-            Text("‹", color = LatentColors.Text, fontSize = 22.sp, modifier = Modifier.combinedClickable(onClick = onBack).padding(horizontal = 6.dp))
+            GlyphIcon(Glyph.BACK, LatentColors.Text, Modifier.combinedClickable(onClick = onBack).padding(horizontal = 6.dp), 22.dp)
             Spacer(Modifier.size(22.dp))
         }
         // Viewfinder with overlays

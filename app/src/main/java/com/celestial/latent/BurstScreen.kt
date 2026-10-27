@@ -44,6 +44,8 @@ import androidx.compose.ui.unit.sp
 import com.celestial.latent.camera.BurstRoll
 import com.celestial.latent.camera.BurstRollFiles
 import com.celestial.latent.camera.MergePicks
+import com.celestial.latent.ui.Glyph
+import com.celestial.latent.ui.GlyphIcon
 import com.celestial.latent.ui.LatentColors
 import com.celestial.latent.ui.accentFill
 import kotlinx.coroutines.Dispatchers
@@ -104,7 +106,7 @@ fun BurstScreen(
 
     Column(Modifier.fillMaxSize().background(LatentColors.Background).statusBarsPadding().navigationBarsPadding().padding(horizontal = 14.dp)) {
         Row(Modifier.fillMaxWidth().padding(vertical = 10.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-            Text("‹", color = LatentColors.Text, fontSize = 22.sp, modifier = Modifier.combinedClickable(onClick = onBack).padding(horizontal = 6.dp))
+            GlyphIcon(Glyph.BACK, LatentColors.Text, Modifier.combinedClickable(onClick = onBack).padding(horizontal = 6.dp), 22.dp)
             Text((if (focusStack) "FOCUS STACK" else if (hdrStack) "HDR STACK" else if (hdrBracket) "HDR BRACKET" else "BURST") + (if (frames.isNotEmpty()) " · ${frames.size} FRAMES" else "") + (r?.index?.common?.let { if (it.dcg) " · DCG" else "" } ?: ""),
                 color = LatentColors.Text, fontSize = 12.sp, letterSpacing = 3.sp)
             Text(item?.let { "%.0f MB".format(it.sizeBytes / 1e6) } ?: "", color = LatentColors.TextDim, fontSize = 11.sp, modifier = Modifier.padding(6.dp))

@@ -40,6 +40,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.celestial.latent.ui.Glyph
+import com.celestial.latent.ui.GlyphIcon
 import com.celestial.latent.ui.LatentColors
 import com.celestial.latent.ui.accentFill
 
@@ -64,7 +66,7 @@ fun HelpScreen(start: String? = null, onBack: () -> Unit) {
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Row(Modifier.fillMaxWidth().heightIn(min = 44.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-            Text("‹", color = LatentColors.Text, fontSize = 24.sp, modifier = Modifier.combinedClickable(onClick = { back() }).padding(horizontal = 8.dp))
+            GlyphIcon(Glyph.BACK, LatentColors.Text, Modifier.combinedClickable(onClick = { back() }).padding(horizontal = 8.dp), 22.dp)
             Text(shown?.title ?: "APP HELP", color = LatentColors.Text, fontSize = 12.sp, letterSpacing = 4.sp)
             // a page opened from the darkroom can still reach every other topic
             if (shown != null && topic == start) Text("all", color = LatentColors.Amber, fontSize = 12.sp,
@@ -93,7 +95,7 @@ private fun HelpIndex(onOpen: (String) -> Unit) {
                     Text(t.title, color = LatentColors.TextBright, fontSize = 13.sp, letterSpacing = 1.5.sp)
                     Text(t.sub, color = LatentColors.Text, fontSize = 11.sp)
                 }
-                Text("›", color = LatentColors.Amber, fontSize = 20.sp)
+                GlyphIcon(Glyph.NEXT, LatentColors.Amber, size = 18.dp)
             }
         }
     }

@@ -17,6 +17,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -67,6 +68,8 @@ import com.celestial.latent.develop.ExposureMap
 import com.celestial.latent.develop.ExposureMaps
 import com.celestial.latent.develop.Recipe
 import com.celestial.latent.develop.Recipes
+import com.celestial.latent.ui.Glyph
+import com.celestial.latent.ui.GlyphIcon
 import com.celestial.latent.ui.LatentColors
 import com.celestial.latent.ui.accentFill
 import com.celestial.latent.ui.OnPhoto
@@ -94,6 +97,12 @@ private val TABS = listOf(
     "colour" to "COLOUR", "engine" to "ENGINE",
     // 75a: print size, Live, the develop's summary, and reset / clear / save, out of the bottom bar
     "develop" to "DEVELOP",
+)
+
+private val TAB_GLYPHS = mapOf(
+    "film" to Glyph.FILM, "halation" to Glyph.HALATION, "grain" to Glyph.GRAIN, "diffusion" to Glyph.DIFFUSION,
+    "camera" to Glyph.CAMERA, "enlarger" to Glyph.ENLARGER, "scanner" to Glyph.SCANNER, "glare" to Glyph.GLARE,
+    "colour" to Glyph.COLOUR, "engine" to Glyph.ENGINE, "develop" to Glyph.DEVELOP,
 )
 
 /** The four optical diffusion filters the engine models. */
@@ -744,7 +753,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
     Box(Modifier.fillMaxSize()) {
     Column(Modifier.fillMaxSize().background(LatentColors.Background).glow().statusBarsPadding().navigationBarsPadding()) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 10.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-            Text("‹", color = LatentColors.Text, fontSize = 22.sp, modifier = Modifier.combinedClickable(onClick = onBack).padding(horizontal = 6.dp))
+            GlyphIcon(Glyph.BACK, LatentColors.Text, Modifier.combinedClickable(onClick = onBack).padding(horizontal = 6.dp), 22.dp)
             Text("DARKROOM", color = LatentColors.Text, fontSize = 12.sp, letterSpacing = 4.sp)
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 listOf("SIMPLE", "FULL", "PRINT").forEach { label ->
@@ -757,9 +766,9 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                             }).padding(horizontal = 9.dp, vertical = 3.dp))
                 }
                 // 74a: what the controls on screen do
-                Text("?", color = LatentColors.Amber, fontSize = 12.sp,
-                    modifier = Modifier.clip(RoundedCornerShape(999.dp)).border(0.5.dp, LatentColors.Line, RoundedCornerShape(999.dp))
-                        .combinedClickable(onClick = { Haptics.tick(context); helpTopic = if (printing) "print" else tab }).padding(horizontal = 8.dp, vertical = 2.dp))
+                GlyphIcon(Glyph.HELP, LatentColors.Amber,
+                    Modifier.clip(RoundedCornerShape(999.dp))
+                        .combinedClickable(onClick = { Haptics.tick(context); helpTopic = if (printing) "print" else tab }).padding(horizontal = 4.dp, vertical = 2.dp), 20.dp)
             }
         }
 
@@ -1029,10 +1038,10 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     if (fullRunning) Text("${elapsed}s", color = LatentColors.Text, fontSize = 10.sp)
                                     else if (lastRenderMs > 0) Text("${lastRenderMs} ms", color = LatentColors.TextDim, fontSize = 10.sp)
-                                    if (fullRunning) Text("✕", color = LatentColors.Text, fontSize = 14.sp,
-                                        modifier = Modifier.combinedClickable(onClick = {
+                                    if (fullRunning) GlyphIcon(Glyph.CLOSE, LatentColors.Text,
+                                        Modifier.combinedClickable(onClick = {
                                             Haptics.tick(context); fullJob?.cancel(); fullJob = null; fullRunning = false; status = "cancelled"
-                                        }).padding(start = 12.dp, end = 4.dp))
+                                        }).padding(start = 12.dp, end = 4.dp), 16.dp)
                                 }
                             }
                         }
@@ -1136,11 +1145,19 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                     Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 14.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         TABS.forEach { (id, label) ->
                             val on = id == tab
-                            Text(label, color = if (on) LatentColors.AmberInk else LatentColors.Text, fontSize = 9.sp, letterSpacing = 1.sp,
-                                modifier = Modifier.clip(RoundedCornerShape(999.dp))
+                            // 89c: each tab its glyph over its name (approved proof visual-3/proof/4-icons-in-place.jpg)
+                            val ink = if (on) LatentColors.AmberInk else LatentColors.Text
+                            Column(
+                                Modifier.clip(RoundedCornerShape(12.dp))
                                     .accentFill(on, Color.Transparent)
-                                    .then(if (on) Modifier else Modifier.border(0.5.dp, LatentColors.Line, RoundedCornerShape(999.dp)))
-                                    .combinedClickable(onClick = { Haptics.tick(context); tab = id }).padding(horizontal = 9.dp, vertical = 5.dp))
+                                    .then(if (on) Modifier else Modifier.border(0.5.dp, LatentColors.Line, RoundedCornerShape(12.dp)))
+                                    .combinedClickable(onClick = { Haptics.tick(context); tab = id }).widthIn(min = 52.dp).padding(horizontal = 7.dp, vertical = 5.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                            ) {
+                                GlyphIcon(TAB_GLYPHS[id] ?: Glyph.FILM, if (on) LatentColors.AmberInk else LatentColors.TextBright, size = 18.dp,
+                                    accent = if (on) LatentColors.AmberInk else LatentColors.Amber)
+                                Text(label, color = ink, fontSize = 8.sp, letterSpacing = 0.6.sp, modifier = Modifier.padding(top = 3.dp))
+                            }
                         }
                     }
                     Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 14.dp)) {

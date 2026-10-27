@@ -83,6 +83,8 @@ import com.celestial.latent.develop.Develop
 import com.celestial.latent.develop.DevelopQueue
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import com.celestial.latent.ui.Glyph
+import com.celestial.latent.ui.GlyphIcon
 import com.celestial.latent.ui.LatentColors
 import com.celestial.latent.ui.accentFill
 import com.celestial.latent.ui.OnPhoto
@@ -418,10 +420,10 @@ fun CameraScreen(
         ) {
             Text("CELESTIAL DARKROOM", color = LatentColors.Text, fontSize = 12.sp, letterSpacing = 4.sp, fontWeight = FontWeight.Light)
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(if (drawerOpen) "︿" else "﹀", color = if (drawerOpen) LatentColors.Amber else LatentColors.Text, fontSize = 18.sp,
-                    modifier = Modifier.combinedClickable(onClick = { Haptics.tick(context); drawerOpen = !drawerOpen }).padding(horizontal = 10.dp, vertical = 4.dp))
+                GlyphIcon(if (drawerOpen) Glyph.UNFOLD else Glyph.FOLD, if (drawerOpen) LatentColors.Amber else LatentColors.Text,
+                    Modifier.combinedClickable(onClick = { Haptics.tick(context); drawerOpen = !drawerOpen }).padding(horizontal = 10.dp, vertical = 4.dp), 20.dp)
                 Spacer(Modifier.width(8.dp))
-                Text("⚙", color = LatentColors.Text, fontSize = 18.sp, modifier = Modifier.combinedClickable(onClick = onOpenSettings).padding(4.dp))
+                GlyphIcon(Glyph.SETTINGS, LatentColors.Text, Modifier.combinedClickable(onClick = onOpenSettings).padding(4.dp), 22.dp)
             }
         }
 

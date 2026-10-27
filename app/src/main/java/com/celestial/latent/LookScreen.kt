@@ -43,6 +43,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.celestial.latent.develop.Develop
 import com.celestial.latent.develop.Fingerprint
+import com.celestial.latent.ui.Glyph
+import com.celestial.latent.ui.GlyphIcon
 import com.celestial.latent.ui.LatentColors
 import com.celestial.latent.ui.accentFill
 import com.celestial.latent.ui.OnPhoto
@@ -354,7 +356,7 @@ fun LookScreen(settings: AppSettings, onBack: () -> Unit) {
                     }).padding(horizontal = 8.dp, vertical = 4.dp),
                 )
             }
-            Text("‹", color = LatentColors.Text, fontSize = 20.sp, modifier = Modifier.combinedClickable(onClick = onBack).padding(horizontal = 8.dp))
+            GlyphIcon(Glyph.BACK, LatentColors.Text, Modifier.combinedClickable(onClick = onBack).padding(horizontal = 8.dp), 22.dp)
         }
 
         // The films built so far, with a way to remove one. Deleting is two taps, so a slip
@@ -402,7 +404,7 @@ fun LookScreen(settings: AppSettings, onBack: () -> Unit) {
                 Modifier.weight(1f).aspectRatio(1f).clip(RoundedCornerShape(4.dp)).background(LatentColors.Surface)
                     .combinedClickable(onClick = { Haptics.tick(context); pickRefs.launch(arrayOf("image/*")) }),
                 contentAlignment = Alignment.Center,
-            ) { Text("+", color = LatentColors.TextDim, fontSize = 18.sp) }
+            ) { GlyphIcon(Glyph.ADD, LatentColors.TextDim, size = 20.dp) }
         }
         Text(
             if (references.isEmpty()) "images in the look you want — a dozen is plenty"
