@@ -652,7 +652,7 @@ object Develop {
     fun render(context: Context, source: Source, recipe: Recipe, preview: Boolean, upscale: Float = 1f,
                exposureMap: ExposureMap? = null, softenMask: ExposureMap? = null, saturationMap: ExposureMap? = null,
                lith: LithLook = LithLook(), lithFrame: Region? = null, hdrGlow: Float = 0f,
-               png: PngTarget? = null,
+               png: PngTarget? = null, filmEdge: Int = 0,
                log: (String) -> Unit = {}): Pair<ByteArray, Pair<Int, Int>> {
         val t = System.nanoTime()
         Log.i("Latent", "render start: source ${source.width}x${source.height}, preview=$preview, cap=${recipe.previewMaxSize}")
@@ -695,10 +695,17 @@ object Develop {
                                 "${(m.cover() * 100).toInt()}% of the picture glows, scene at ${"%.2f".format(sceneEv)} EV, in ${(System.nanoTime() - tg) / 1_000_000} ms")
                         }
                     }.getOrElse { t -> Log.e("Latent", "hdr glow: could not make the map", t); null }
-                    // film-still bars and the lith paper's border, around the full-size print only:
-                    // previews stay the bare picture, so painting, zoom and masks all line up with what they draw on
-                    val (bd, bw, bh) = if (!preview) Lith.border(r.data, r.width, r.height, r.colorSpace, lith) else Triple(r.data, r.width, r.height)
-                    val (data, w, h) = if (!preview && source.letterbox) letterbox(bd, bw, bh) else Triple(bd, bw, bh)
+                    // the film's edge (92c), film-still bars and the lith paper's border, around the full-size print only:
+                    // previews stay the bare picture, so painting, zoom and masks all line up with what they draw on.
+                    // The edge is the film itself, so the paper goes round it, and it takes the place of the bars.
+                    val (ed, ew, eh) = if (!preview && filmEdge > 0) {
+                        val te = System.nanoTime()
+                        FilmEdge.apply(context, r.data, r.width, r.height, r.colorSpace, recipe.film, filmEdge).also { (_, a, b) ->
+                            Log.i("Latent", "film edge (${recipe.film}, frame $filmEdge): ${r.width}x${r.height} -> ${a}x$b in ${(System.nanoTime() - te) / 1_000_000} ms")
+                        }
+                    } else Triple(r.data, r.width, r.height)
+                    val (bd, bw, bh) = if (!preview) Lith.border(ed, ew, eh, r.colorSpace, lith) else Triple(ed, ew, eh)
+                    val (data, w, h) = if (!preview && source.letterbox && filmEdge <= 0) letterbox(bd, bw, bh) else Triple(bd, bw, bh)
                     dims = w to h
                     try {
                     // 78b: a PNG print streams into its file (a 50 MP 16-bit print is too big to hold as bytes)
@@ -707,11 +714,12 @@ object Develop {
                         writePng(data, w, h, r.colorSpace, ourSpace, png)
                         Log.i("Latent", "png ${png.bits}-bit ${w}x$h: ${png.file.length() / 1024} KB in ${(System.nanoTime() - tp) / 1_000_000} ms")
                         ByteArray(0)
-                    } else toJpeg(data, w, h, r.colorSpace, ourSpace, glowMap?.let { if (w == bw && h == bh) it to hdrGlow else HdrGlow.framed(it, bw, bh, w, h) to hdrGlow })
+                    } else toJpeg(data, w, h, r.colorSpace, ourSpace, glowMap?.let { if (w == r.width && h == r.height) it to hdrGlow else HdrGlow.framed(it, r.width, r.height, w, h) to hdrGlow })
                     } finally {
-                        // 81b: the bars and the paper border are copies; a big one is native and goes back now
+                        // 81b: the bars, the paper border and the film edge are copies; a big one is native and goes back now
                         if (data !== bd) freeNative(data)
-                        if (bd !== r.data) freeNative(bd)
+                        if (bd !== ed) freeNative(bd)
+                        if (ed !== r.data) freeNative(ed)
                     }
                 }
             }
@@ -1210,14 +1218,14 @@ object Develop {
             val bits = when (format) { DarkroomPrefs.FILE_PNG16 -> 16; DarkroomPrefs.FILE_PNG8 -> 8; else -> 0 }
             if (bits == 0) {
                 val (bytes, dims) = render(context, s, recipe, preview = false, upscale = upscale, exposureMap = exposureMap, softenMask = softenMask, saturationMap = saturationMap, lith = lith,
-                    hdrGlow = if (format == DarkroomPrefs.FILE_ULTRA_HDR) hdrGlow else 0f, log = log)
+                    hdrGlow = if (format == DarkroomPrefs.FILE_ULTRA_HDR) hdrGlow else 0f, filmEdge = framing.edgeFrame, log = log)
                 log("saving ${dims.first}×${dims.second}, ${bytes.size / 1024} KB")
                 saveDeveloped(context, bytes, source, recipe.film, tag = tag, note = note)
             } else {
                 val tmp = File(context.cacheDir, "develop-${System.nanoTime()}.png")
                 try {
                     val (_, dims) = render(context, s, recipe, preview = false, upscale = upscale, exposureMap = exposureMap, softenMask = softenMask, saturationMap = saturationMap, lith = lith,
-                        png = PngTarget(tmp, bits, note), log = log)
+                        png = PngTarget(tmp, bits, note), filmEdge = framing.edgeFrame, log = log)
                     log("saving ${dims.first}×${dims.second}, PNG $bits-bit, ${tmp.length() / 1024} KB")
                     saveDevelopedFile(context, tmp, source, recipe.film, tag = tag)
                 } finally { tmp.delete() }

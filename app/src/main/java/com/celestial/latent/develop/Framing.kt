@@ -36,7 +36,15 @@ data class Framing(
      * each edge trimmed). Fast shot records one so a 23 mm RAW prints as 35 mm; FRAME can take it away.
      */
     val zoom: Float = 1f,
+    /**
+     * 92c: the film's edge around the print (holes, edge print, frame numbers), with this frame number;
+     * 0 = none. Like the bars it comes after the print, so it is not part of [key] (nothing before the
+     * film is prepared again for it) and does not count in [isIdentity].
+     */
+    val edgeFrame: Int = 0,
 ) {
+    val edge: Boolean get() = edgeFrame > 0
+
     /** Quarter turns clockwise, 0..3. */
     val quarter: Int get() = ((turns % 4) + 4) % 4
     private val k get() = quarter
@@ -133,6 +141,11 @@ data class Framing(
     fun key(): String = "$k,${if (flip) 1 else 0},${"%.2f".format(java.util.Locale.US, straighten)}," +
         "${"%.3f".format(java.util.Locale.US, aspect)},${if (bars) 1 else 0}" +
         (if (zoomed) ",${"%.4f".format(java.util.Locale.US, zoom)}" else "")
+
+    /** What is saved: [key], then (92c) the lens crop always and the film edge's frame, when there is an edge. */
+    fun saved(): String = if (!edge) key() else
+        "$k,${if (flip) 1 else 0},${"%.2f".format(java.util.Locale.US, straighten)},${"%.3f".format(java.util.Locale.US, aspect)},${if (bars) 1 else 0}," +
+            "${"%.4f".format(java.util.Locale.US, zoom)},$edgeFrame"
 }
 
 /**
@@ -154,12 +167,13 @@ object Framings {
             val p = v.split(",")
             Framing(p[0].toInt(), p[1] == "1", p[2].toFloat(),
                 aspect = p.getOrNull(3)?.toFloat() ?: 0f, bars = p.getOrNull(4) == "1",
-                zoom = p.getOrNull(5)?.toFloatOrNull()?.coerceIn(1f, 8f) ?: 1f)
+                zoom = p.getOrNull(5)?.toFloatOrNull()?.coerceIn(1f, 8f) ?: 1f,
+                edgeFrame = p.getOrNull(6)?.toIntOrNull()?.coerceIn(0, 99) ?: 0)
         }.getOrDefault(Framing())
     }
 
     fun save(context: Context, photo: Uri, f: Framing) {
-        prefs(context).edit().apply { if (f.isIdentity && !f.bars) remove(photo.toString()) else putString(photo.toString(), f.key()) }.apply()
+        prefs(context).edit().apply { if (f.isIdentity && !f.bars && !f.edge) remove(photo.toString()) else putString(photo.toString(), f.saved()) }.apply()
     }
 
     /**

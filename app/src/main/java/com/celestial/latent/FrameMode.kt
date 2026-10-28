@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Slider
@@ -17,6 +18,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
@@ -46,6 +48,11 @@ fun FramePanel(
     modifier: Modifier = Modifier,
     /** 79a: the lens crop this photo was shot with in Fast shot (how much closer, focal length), or null. */
     shotCrop: Pair<Float, Int>? = null,
+    /** 92c: the film the photo develops on (its name for the edge row), and a small edged copy to show. */
+    filmName: String = "",
+    edgeSample: android.graphics.Bitmap? = null,
+    /** 92c: the frame number the edge would print, asked for when it is turned on. */
+    frameNumber: () -> Int = { 1 },
 ) {
     val context = LocalContext.current
     val angle = live ?: framing.straighten
@@ -61,6 +68,25 @@ fun FramePanel(
             FrameChip("↻ right") { onCommit(framing.copy(turns = framing.turns + 1)) }
             FrameChip("flip", on = framing.flip) { onCommit(framing.copy(flip = !framing.flip)) }
             FrameChip("reset", enabled = !framing.isIdentity) { onCommit(Framing()) }
+        }
+        // 92c: the film's own edge round the print, as it would come off the film (after the print, like the bars)
+        Row(Modifier.fillMaxWidth().padding(top = 14.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f).padding(end = 8.dp)) {
+                Text("film edge", color = LatentColors.Text, fontSize = 12.sp)
+                Text(if (framing.edge) "holes, edge print and frame ${framing.edgeFrame}, as on $filmName" else "holes, edge print and frame number, as on $filmName",
+                    color = LatentColors.TextDim, fontSize = 10.sp, lineHeight = 13.sp)
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                FrameChip("off", on = !framing.edge) { onCommit(framing.copy(edgeFrame = 0)) }
+                FrameChip("edge", on = framing.edge) { if (!framing.edge) onCommit(framing.copy(edgeFrame = frameNumber())) }
+            }
+        }
+        if (framing.edge && edgeSample != null) {
+            androidx.compose.foundation.Image(edgeSample.asImageBitmap(), contentDescription = "The print with its film edge",
+                contentScale = androidx.compose.ui.layout.ContentScale.Fit,
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp).height(110.dp))
+            Text("on the developed print and its exports; the photo above stays bare so painting lines up",
+                color = LatentColors.TextDim, fontSize = 10.sp, lineHeight = 13.sp, modifier = Modifier.padding(top = 4.dp))
         }
         // 79a: a fast shot prints at its focal length; the whole frame the lens saw is still in the RAW
         if (shotCrop != null) {

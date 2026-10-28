@@ -449,6 +449,12 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
     }
     LaunchedEffect(framing) { zoom.reset(); detail = null; if (src != null) render(fast = false) }
     LaunchedEffect(frameOpen) { if (frameOpen) { zoom.reset(); detail = null } }
+    // 92c: a small copy of the print in its film edge, for the FRAME panel while the edge is on
+    val edgeSample by androidx.compose.runtime.produceState<Bitmap?>(null, preview, recipe.film, framing.edgeFrame, frameOpen) {
+        val p = preview
+        value = if (!frameOpen || !framing.edge || p == null) null
+            else kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) { com.celestial.latent.develop.FilmEdge.sample(context, p, recipe.film, framing.edgeFrame) }
+    }
     // When zoomed in and still for a moment, develop the visible part sharp. A new print (any
     // change to recipe, masks or framing) makes the old tile stale.
     LaunchedEffect(preview) { detail = null }
@@ -1012,6 +1018,9 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                     onDone = { frameOpen = false; liveStraighten = null },
                     modifier = Modifier.fillMaxWidth().weight(1f - photoWeight),
                     shotCrop = remember(source) { com.celestial.latent.develop.Framings.shotCrop(context, source) },
+                    filmName = Develop.FILMS.firstOrNull { it.first == recipe.film }?.second ?: recipe.film,
+                    edgeSample = edgeSample,
+                    frameNumber = { com.celestial.latent.develop.FilmEdge.frameNumber(context, source) },
                 ) else Column(
                     Modifier.fillMaxWidth().weight(1f - photoWeight).liftedTop(rim = false).clip(RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)).background(LatentColors.Panel)
                         .litEdge(RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp))
