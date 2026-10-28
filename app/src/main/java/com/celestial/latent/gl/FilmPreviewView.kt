@@ -76,6 +76,15 @@ class FilmPreviewView(context: Context) : GLSurfaceView(context) {
         requestRender()
     }
 
+    /**
+     * 92b: the same small camera copy for the light meter. A slot of its own, so the meter and the
+     * engine's exposure metering never take each other's frame (each would then wait for ever).
+     */
+    fun meterFrame(onFrame: (FloatArray, Int, Int) -> Unit) {
+        renderer.onMeter = onFrame
+        requestRender()
+    }
+
     fun release() = renderer.release()
 
     private fun check(step: String) {
@@ -100,6 +109,7 @@ class FilmPreviewView(context: Context) : GLSurfaceView(context) {
         @Volatile var tint = floatArrayOf(1f, 1f, 1f)
         @Volatile var grabSize = 0
         @Volatile var onGrab: ((FloatArray, Int, Int) -> Unit)? = null
+        @Volatile var onMeter: ((FloatArray, Int, Int) -> Unit)? = null
         private var readBuffer: java.nio.ByteBuffer? = null
         private var grabFbo = 0
         private var grabTex = 0
@@ -223,10 +233,12 @@ class FilmPreviewView(context: Context) : GLSurfaceView(context) {
             // our own output: reading back the screen would measure the gain and look we just
             // applied and chase its own tail. So the camera texture is drawn once into a small
             // off-screen buffer with the look switched off, and that is what gets measured.
-            val want = grabSize
-            val cb = onGrab
-            if (want > 0 && cb != null) {
-                grabSize = 0; onGrab = null
+            val cb = onGrab?.takeIf { grabSize > 0 }
+            val meter = onMeter
+            val want = if (cb != null) maxOf(grabSize, METER_SIDE) else METER_SIDE
+            if (cb != null || meter != null) {
+                if (cb != null) { grabSize = 0; onGrab = null }
+                if (meter != null) onMeter = null
                 val g = want.coerceIn(8, GRAB_SIDE)
                 if (grabFbo == 0) createGrabTarget()
                 if (grabFbo != 0) {
@@ -253,7 +265,8 @@ class FilmPreviewView(context: Context) : GLSurfaceView(context) {
                         out[i * 3 + 1] = SRGB_TO_LINEAR[buf.get(i * 4 + 1).toInt() and 0xFF]
                         out[i * 3 + 2] = SRGB_TO_LINEAR[buf.get(i * 4 + 2).toInt() and 0xFF]
                     }
-                    cb(out, g, g)
+                    cb?.invoke(out, g, g)
+                    meter?.invoke(out, g, g)
                 }
             }
             if (!reportedError && frames.get() > 0) {
@@ -312,6 +325,7 @@ class FilmPreviewView(context: Context) : GLSurfaceView(context) {
         fun release() {
             grabSize = 0
             onGrab = null
+            onMeter = null
             readBuffer = null
             grabFbo = 0
             grabTex = 0
@@ -358,6 +372,8 @@ class FilmPreviewView(context: Context) : GLSurfaceView(context) {
     companion object {
         /** Side of the off-screen square used for metering. */
         private const val GRAB_SIDE = 64
+        /** 92b: the light meter's copy (when it asks alone): small is plenty for an average. */
+        private const val METER_SIDE = 32
 
         /** The display curve undone, once, so metering sees scene-linear light. */
         private val SRGB_TO_LINEAR = FloatArray(256) { i ->
