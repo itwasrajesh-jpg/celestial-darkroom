@@ -15,7 +15,8 @@ import android.os.SystemClock
  * six slightly different takes so no two shots sound copied. A shot is the shutter's "open" half, then the
  * real exposure time, then the "close" half, so 1/500 is one click and 1/2 s is click ... click.
  *
- * Plays only while the phone's ringer is on (silent and vibrate stay quiet). Where the phone says a shutter
+ * Plays at the phone's media volume (91b: the system-sounds volume is off on many phones), and only while
+ * the ringer is on (silent and vibrate stay quiet). Where the phone says a shutter
  * sound is required by law (Japan, Korea), a shutter click always plays, ours or the system's.
  */
 object Sounds {
@@ -37,6 +38,7 @@ object Sounds {
     private val main = Handler(Looper.getMainLooper())
     private val last = HashMap<String, Int>()
     private var legal: MediaActionSound? = null
+    @Volatile private var loaded = 0
 
     /** Every baked take by name, written out so the release build's resource shrinker keeps them. */
     private val RAW = mapOf(
@@ -57,9 +59,10 @@ object Sounds {
         if (pool != null) return
         val c = ctx.applicationContext; app = c
         val p = SoundPool.Builder().setMaxStreams(8).setAudioAttributes(
-            AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_ASSISTANCE_SONIFICATION)
+            AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA)
                 .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build()).build()
         pool = p
+        p.setOnLoadCompleteListener { _, _, status -> if (status == 0) loaded++ else android.util.Log.w("Latent", "sounds: a take failed to load ($status)") }
         for ((n, raws) in RAW) ids[n] = IntArray(TAKES) { t -> p.load(c, raws[t], 1) }
     }
 
@@ -67,6 +70,23 @@ object Sounds {
     private fun mustPlay(): Boolean {
         if (android.os.Build.VERSION.SDK_INT < 33) return false
         return runCatching { MediaActionSound.mustPlayShutterSound() }.getOrDefault(false)
+    }
+
+    /** Why a sound would be silent right now, or null when it can play; for Settings and the log. */
+    fun mutedReason(ctx: Context): String? {
+        val am = ctx.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return null
+        return when {
+            am.ringerMode == AudioManager.RINGER_MODE_SILENT -> "The phone is on silent, so sounds are muted."
+            am.ringerMode == AudioManager.RINGER_MODE_VIBRATE -> "The phone is on vibrate, so sounds are muted."
+            am.getStreamVolume(AudioManager.STREAM_MUSIC) == 0 -> "Media volume is at zero. Sounds play at the media volume."
+            else -> null
+        }
+    }
+
+    private fun report(what: String) {
+        val am = app?.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+        android.util.Log.i("Latent", "sound $what: shutter=$shutterOn wind=$windOn dial=$dialOn camera=${camera.key} loaded=$loaded/${TAKES * RAW.size} " +
+            "ringer=${am?.ringerMode} media=${am?.getStreamVolume(AudioManager.STREAM_MUSIC)}/${am?.getStreamMaxVolume(AudioManager.STREAM_MUSIC)} must=${mustPlay()}")
     }
 
     private fun ringerOn(): Boolean {
@@ -93,6 +113,7 @@ object Sounds {
 
     /** The shutter of one photo, with the real exposure between open and close; the film winds on after. */
     fun shot(exposureNs: Long) {
+        report("shot ${exposureNs / 1000} µs")
         if (shutterOn && (ringerOn() || mustPlay())) playShutter(exposureNs)
         else if (mustPlay()) systemClick()
         if (windOn && ringerOn()) {
@@ -117,6 +138,7 @@ object Sounds {
 
     /** Settings preview: plays whatever is asked even with the switch off, but still not on a silent phone. */
     fun preview(cam: Camera, wind: Boolean) {
+        report("preview ${cam.key}")
         if (!ringerOn()) return
         val k = cam.key
         play("${k}_open")
