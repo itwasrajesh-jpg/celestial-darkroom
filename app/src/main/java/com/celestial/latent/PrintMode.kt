@@ -509,6 +509,9 @@ fun PrintPanel(
     /** The DEVELOP step (75b): the darkroom's own develop page, with the print shown above it. */
     developPage: (@Composable () -> Unit)? = null,
     developPreview: Bitmap? = null,
+    /** Develop step: the picture is the original while held (Simple's hold, shared from the darkroom). */
+    developComparing: Boolean = false,
+    onDevelopHold: (suspend androidx.compose.foundation.gestures.PressGestureScope.() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -581,8 +584,13 @@ fun PrintPanel(
                     val split = LocalPanelSplit.current
                     val room = constraints.maxHeight
                     Column(Modifier.fillMaxSize()) {
-                        Box(Modifier.fillMaxWidth().weight(1f).bench().padding(horizontal = 18.dp, vertical = 8.dp), contentAlignment = Alignment.Center) {
+                        Box(Modifier.fillMaxWidth().weight(1f).bench().padding(horizontal = 18.dp, vertical = 8.dp)
+                            .then(if (onDevelopHold != null) Modifier.pointerInput(Unit) { detectTapGestures(onPress = { onDevelopHold() }) } else Modifier),
+                            contentAlignment = Alignment.Center) {
                             developPreview?.let { androidx.compose.foundation.Image(it.asImageBitmap(), contentDescription = "The print", modifier = Modifier.fillMaxSize()) }
+                            // as in Simple: say what is showing while held
+                            if (developComparing) Text("ORIGINAL", color = Color(0xE6FFFFFF), fontSize = 10.sp, letterSpacing = 1.5.sp,
+                                modifier = Modifier.align(Alignment.TopStart).padding(4.dp))
                         }
                         // 75c: the same handle and split as simple mode
                         Column(if (split != null) Modifier.fillMaxWidth().height(with(LocalDensity.current) { (room * (1f - split.share)).toDp() }) else Modifier.fillMaxWidth().heightIn(max = 340.dp)) {
