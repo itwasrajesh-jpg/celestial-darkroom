@@ -102,11 +102,15 @@ fun SettingsScreen(settings: AppSettings, onChange: (AppSettings) -> Unit, onOpe
 
         // 91a: sounds made from a model of a real camera's parts; off until turned on, quiet when the phone is
         Section("Sounds")
-        ToggleRow("Shutter sound", "The click of a real shutter, with your shutter speed between opening and closing: 1/500 is one click, 1/2 s is click … click. Only while the ringer is on; silent and vibrate stay quiet.", settings.soundShutter) {
+        ToggleRow("Shutter sound", "The click of a real shutter, with your shutter speed between opening and closing: 1/500 is one click, 1/2 s is click … click. Plays at the media volume, only while the ringer is on; silent and vibrate stay quiet.", settings.soundShutter) {
             onChange(settings.copy(soundShutter = it)); if (it) Sounds.preview(Sounds.Camera.of(settings.soundCamera), false)
         }
         ToggleRow("Film wind", "The film winds on after each shot, and once after a burst or bracket.", settings.soundWind) {
             onChange(settings.copy(soundWind = it)); if (it) Sounds.preview(Sounds.Camera.of(settings.soundCamera), true)
+        }
+        val soundCtx = LocalContext.current
+        if (settings.soundShutter || settings.soundWind || settings.soundDial) Sounds.mutedReason(soundCtx)?.let {
+            Text(it, color = LatentColors.Amber, fontSize = 12.sp, modifier = Modifier.padding(bottom = 6.dp))
         }
         ToggleRow("Dial ticks", "A soft click-stop as the S and ISO dials turn.", settings.soundDial) { onChange(settings.copy(soundDial = it)) }
         if (settings.soundShutter || settings.soundWind) OptionRow(
