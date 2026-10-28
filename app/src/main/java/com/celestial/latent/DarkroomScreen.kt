@@ -778,6 +778,26 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
             }
         }
 
+        // Hold the picture: the original, framed as the print is. Shared by the photo here and PRINT's
+        // Develop step (it had no hold at all there).
+        suspend fun androidx.compose.foundation.gestures.PressGestureScope.holdForOriginal() {
+            // a moment's wait, so the start of a pinch or slide never flashes the original
+            val show = zoomScope.launch { delay(140); if (!pinching) comparing = true }
+            // the before, framed as the print is (72a: it used to stay sideways for a turned shot)
+            val f = framing
+            if (originalFraming != f.key()) Thread {
+                val plain = originalPlain ?: plainBefore(context, source, isRaw)
+                    ?.let { uprightBefore(context, it, source, isRaw, Develop.openedSize(source, isRaw, decodeEdge(DECODE_EDGE, framing), pairFirst)) }
+                    ?.also { originalPlain = it }
+                if (plain != null) {
+                    original = runCatching { com.celestial.latent.develop.Framings.frameBitmap(plain, f) }.getOrNull()
+                    originalFraming = f.key()
+                }
+            }.start()
+            tryAwaitRelease(); show.cancel(); comparing = false
+        }
+        val comparingNow = comparing && originalFraming == framing.key()
+
         // PRINT swaps the photo and controls for the enlarger; the header, print size and develop
         // bar stay. A crossfade, so it reads as one room changing, not a new screen.
         Crossfade(targetState = printing, animationSpec = tween(320), modifier = Modifier.fillMaxWidth().weight(1f), label = "darkroom mode") { inPrint ->
@@ -785,7 +805,9 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                 PrintPanel(
                     recipe = recipe,
                     developPage = developPage,
-                    developPreview = preview,
+                    developPreview = if (comparingNow) (original ?: preview) else preview,
+                    developComparing = comparingNow,
+                    onDevelopHold = { holdForOriginal() },
                     renderAt = { r, edge -> renderStill(r, edge) },
                     onExposure = { e -> set { copy(printExposure = e) } },
                     onFilters = { y, m -> set { copy(yFilterShift = y, mFilterShift = m) } },
@@ -878,24 +900,9 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                     .pointerInput(Unit) {
                     detectTapGestures(
                         onDoubleTap = { Haptics.tick(context); zoom.reset(); detail = null },
-                        onPress = {
-                        // a moment's wait, so the start of a pinch or slide never flashes the original
-                        val show = zoomScope.launch { delay(140); if (!pinching) comparing = true }
-                        // the before, framed as the print is (72a: it used to stay sideways for a turned shot)
-                        val f = framing
-                        if (originalFraming != f.key()) Thread {
-                            val plain = originalPlain ?: plainBefore(context, source, isRaw)
-                                ?.let { uprightBefore(context, it, source, isRaw, Develop.openedSize(source, isRaw, decodeEdge(DECODE_EDGE, framing), pairFirst)) }
-                                ?.also { originalPlain = it }
-                            if (plain != null) {
-                                original = runCatching { com.celestial.latent.develop.Framings.frameBitmap(plain, f) }.getOrNull()
-                                originalFraming = f.key()
-                            }
-                        }.start()
-                        tryAwaitRelease(); show.cancel(); comparing = false
-                    })
+                        onPress = { holdForOriginal() })
                 }) {
-                    val shown = if (comparing && originalFraming == framing.key()) (original ?: preview) else preview
+                    val shown = if (comparingNow) (original ?: preview) else preview
                     // While straightening, the print turns live under the finger, scaled so no blank
                     // corner shows — the real framed print develops when the finger lifts.
                     val delta = (liveStraighten ?: framing.straighten) - framing.straighten
