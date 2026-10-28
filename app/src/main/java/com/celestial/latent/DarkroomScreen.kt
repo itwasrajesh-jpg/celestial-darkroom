@@ -193,6 +193,8 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
     var status by remember { mutableStateOf("") }
     var rendering by remember { mutableStateOf(false) }
     var pendingAt by remember { mutableStateOf(0L) }
+    // 96a: a parked request remembers whether any caller wanted the full preview, not only the quick pass
+    var pendingFine by remember { mutableStateOf(false) }
     var src by remember { mutableStateOf<Develop.Source?>(null) }
     var coarse by remember { mutableStateOf(false) }
     var fullRunning by remember { mutableStateOf(false) }
@@ -232,7 +234,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
 
     fun render(fast: Boolean) {
         if (fullRunning) return                      // never compete with a full-size develop
-        if (rendering) { pendingAt = System.currentTimeMillis(); return }
+        if (rendering) { pendingAt = System.currentTimeMillis(); if (!fast) pendingFine = true; return }
         rendering = true
         // While a control moves: smaller, centred, and without the costly spatial stages —
         // except the one being edited, which has to stay visible.
@@ -281,7 +283,10 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                 if (holdsLane) q.engineLane.release()
             }
             rendering = false
-            if (pendingAt > 0) { pendingAt = 0; render(fast) }
+            // 96a: replaying the running pass's own mode lost the full preview whenever the quick pass
+            // outlasted the 450 ms wait (Night Clean's first pass takes seconds): the picture stayed on
+            // the quick pass and the bar never ended. The parked request runs as what was asked for.
+            if (pendingAt > 0) { pendingAt = 0; val fine = pendingFine; pendingFine = false; render(fast = !fine) }
         }.start()
     }
 
