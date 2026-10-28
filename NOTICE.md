@@ -80,3 +80,9 @@ at half size (computed at full precision), and it is hosted as a release asset o
 Apache-2.0 is compatible with this app's GPLv3.
 
 Both models run with **ONNX Runtime** (Microsoft, MIT License) — https://github.com/microsoft/onnxruntime
+
+## Camera sounds
+
+The shutter, film wind and dial sounds are not recordings and contain no third-party audio. They are
+synthesised by this project's own `sounds/camera.py` (a physical model of a camera's parts) and are
+under this app's GPLv3 licence.

@@ -100,6 +100,22 @@ fun SettingsScreen(settings: AppSettings, onChange: (AppSettings) -> Unit, onOpe
             selected = settings.defaultLensId,
         ) { onChange(settings.copy(defaultLensId = it)) }
 
+        // 91a: sounds made from a model of a real camera's parts; off until turned on, quiet when the phone is
+        Section("Sounds")
+        ToggleRow("Shutter sound", "The click of a real shutter, with your shutter speed between opening and closing: 1/500 is one click, 1/2 s is click … click. Only while the ringer is on; silent and vibrate stay quiet.", settings.soundShutter) {
+            onChange(settings.copy(soundShutter = it)); if (it) Sounds.preview(Sounds.Camera.of(settings.soundCamera), false)
+        }
+        ToggleRow("Film wind", "The film winds on after each shot, and once after a burst or bracket.", settings.soundWind) {
+            onChange(settings.copy(soundWind = it)); if (it) Sounds.preview(Sounds.Camera.of(settings.soundCamera), true)
+        }
+        ToggleRow("Dial ticks", "A soft click-stop as the S and ISO dials turn.", settings.soundDial) { onChange(settings.copy(soundDial = it)) }
+        if (settings.soundShutter || settings.soundWind) OptionRow(
+            title = "Camera",
+            subtitle = "Rangefinder: quiet cloth shutter and a smooth lever. SLR: the mirror slap and a ratcheting lever. Compact: leaf blades in the lens and a little motor wind. Tap to hear it.",
+            options = Sounds.Camera.entries.map { it.label to it.key },
+            selected = settings.soundCamera,
+        ) { onChange(settings.copy(soundCamera = it)); Sounds.preview(Sounds.Camera.of(it), settings.soundWind) }
+
         Section("Film")
         UpdateRow()
         ToggleRow("Opening animation", "A black hole, traced live, as the name develops in. Drag and pinch to explore it; tap to close.", settings.openingAnimation) { onChange(settings.copy(openingAnimation = it)) }

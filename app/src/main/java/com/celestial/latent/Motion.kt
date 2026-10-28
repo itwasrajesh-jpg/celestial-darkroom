@@ -82,7 +82,7 @@ internal fun ClickDial(labels: List<String>, index: Int, onIndex: (Int) -> Unit,
     val pulse = remember { Animatable(1f) }
     fun click(i: Int) {
         if (i == reached) return
-        reached = i; Haptics.tick(context); onIndex(i)
+        reached = i; Haptics.tick(context); Sounds.dial(); onIndex(i)
         if (motionOn()) scope.launch { pulse.snapTo(0f); pulse.animateTo(1f, tween(320)) }
     }
     fun settle(i: Int) = scope.launch {

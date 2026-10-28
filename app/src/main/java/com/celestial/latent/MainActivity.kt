@@ -131,6 +131,12 @@ private fun Root() {
     // Pick up a previously copied engine folder, so films built earlier are visible straight
     // away rather than appearing only after something happens to look for them.
     LaunchedEffect(Unit) { com.celestial.latent.develop.EngineAssets.attach(context) }
+    // 91a: the camera sounds follow the settings wherever the shutter is
+    LaunchedEffect(settings.soundShutter, settings.soundWind, settings.soundDial, settings.soundCamera) {
+        Sounds.init(context)
+        Sounds.shutterOn = settings.soundShutter; Sounds.windOn = settings.soundWind; Sounds.dialOn = settings.soundDial
+        Sounds.camera = Sounds.Camera.of(settings.soundCamera)
+    }
     // Shown once per launch, over the camera, which opens behind it. Declared after settings,
     // which it reads.
     var opening by remember { mutableStateOf(settings.openingAnimation) }
