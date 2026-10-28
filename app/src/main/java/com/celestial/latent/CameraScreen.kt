@@ -268,14 +268,16 @@ fun CameraScreen(
     // 87c: the iris closes over the viewfinder as each shot is taken
     val iris = remember { IrisState() }
     val motionScope = rememberCoroutineScope()
+    // 91a: a single shot's shutter sound carries the real shutter speed; a burst clicks per frame (onBurstFrame)
+    fun shotSound() = Sounds.shot(controls.shutterNs ?: readout.shutterNs)
     fun shoot(single: Boolean) {
         if (!single && settings.hdrStack && bracketPlan(settings) == null) { Haptics.tick(context); bracketOpen = true; return }
         Haptics.heavy(context)
-        val fire = { iris.fire(motionScope); if (single) controller.captureSingle() else fireMulti() }
+        val fire = { iris.fire(motionScope); if (single) { shotSound(); controller.captureSingle() } else fireMulti() }
         if (settings.timerSeconds > 0) countdown = settings.timerSeconds else fire()
     }
     LaunchedEffect(countdown) {
-        if (countdown > 0) { delay(1000); countdown -= 1; if (countdown == 0) { iris.fire(motionScope); if (settings.focusStack || settings.hdrStack || settings.burstMode) fireMulti() else controller.captureSingle() } }
+        if (countdown > 0) { delay(1000); countdown -= 1; if (countdown == 0) { iris.fire(motionScope); if (settings.focusStack || settings.hdrStack || settings.burstMode) fireMulti() else { shotSound(); controller.captureSingle() } } }
     }
 
     DisposableEffect(Unit) {
@@ -370,6 +372,7 @@ fun CameraScreen(
     }
     LaunchedEffect(Unit) {
         controller.onVendorEcho = onVendorEcho; controller.onBurstFinished = { Haptics.click(context) }
+        controller.onBurstFrame = { lastFrame -> Sounds.burstFrame(); if (lastFrame) Sounds.burstDone() }
         // A burst roll is not in the gallery, so its thumbnail is the sharpest frame's preview from the roll.
         controller.onRollSaved = { _, jpeg -> jpeg?.let { j -> android.graphics.BitmapFactory.decodeByteArray(j, 0, j.size)?.let { thumb = it } } }
         onController(controller)

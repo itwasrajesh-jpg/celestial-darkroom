@@ -508,7 +508,7 @@ fun ExtensionScreen(settings: AppSettings, onSettingsChange: (AppSettings) -> Un
             Box(Modifier.size(46.dp).floating(RoundedCornerShape(10.dp)).clip(RoundedCornerShape(10.dp)).background(LatentColors.Surface).combinedClickable(onClick = {
                 Haptics.tick(context); onOpenRoll()
             })) { thumb?.let { androidx.compose.foundation.Image(it.asImageBitmap(), contentDescription = "Last photo", contentScale = androidx.compose.ui.layout.ContentScale.Crop, modifier = Modifier.fillMaxSize()) } }
-            Box(Modifier.size(78.dp).shutterRing(CircleShape).combinedClickable(onClick = { Haptics.heavy(context); cam.capture() }), contentAlignment = Alignment.Center) {
+            Box(Modifier.size(78.dp).shutterRing(CircleShape).combinedClickable(onClick = { Haptics.heavy(context); Sounds.shot(16_666_667L); cam.capture() }), contentAlignment = Alignment.Center) {
                 Box(Modifier.size(62.dp).clip(CircleShape).background(shutterFace()))
             }
             Spacer(Modifier.size(46.dp))

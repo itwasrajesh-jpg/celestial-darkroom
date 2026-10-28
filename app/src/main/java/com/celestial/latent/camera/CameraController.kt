@@ -187,6 +187,8 @@ class CameraController(
     }
     @Volatile var onVendorEcho: (String) -> Unit = {}
     @Volatile var onBurstFinished: () -> Unit = {}
+    /** 91a: each burst or bracket frame as the sensor starts it (true for the last), for the shutter sound. */
+    @Volatile var onBurstFrame: (Boolean) -> Unit = {}
     /** 85a: each new session's first preview frame (ends a mode switch's freeze-frame). Camera thread. */
     @Volatile var onFirstFrame: () -> Unit = {}
     /** A burst roll was saved: its file and the sharpest frame's preview JPEG (for the last-shot thumbnail). */
@@ -731,7 +733,11 @@ class CameraController(
                 " (${"%.2f".format(Bracket.stops(steps.first(), steps.last()))} stops${if (dcg) ", DCG" else ""})")
             if (dark != null) log("hdr stack: preview ${seenShutterNs / 1000} µs ISO $seenIso -> frames ${dark.shutterNs / 1000} µs ISO ${dark.iso} " +
                 "(${"%.2f".format(Math.log(dark.base / (dark.shutterNs.toDouble() * dark.iso)) / Math.log(2.0))} stops darker)")
+            var started = 0
             s.captureBurst(reqs, object : CameraCaptureSession.CaptureCallback() {
+                override fun onCaptureStarted(sess: CameraCaptureSession, req: CaptureRequest, timestamp: Long, frameNumber: Long) {
+                    started++; onBurstFrame(started >= frames)
+                }
                 override fun onCaptureCompleted(sess: CameraCaptureSession, req: CaptureRequest, result: TotalCaptureResult) { onResult(result, null) }
                 override fun onCaptureFailed(sess: CameraCaptureSession, req: CaptureRequest, failure: android.hardware.camera2.CaptureFailure) {
                     log("burst frame failed reason=${failure.reason}")

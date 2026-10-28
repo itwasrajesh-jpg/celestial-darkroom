@@ -45,6 +45,11 @@ data class AppSettings(
     val bracketBrightIso: Int = 0,
     val bracketFrames: Int = 5,
     val haptics: Boolean = true,
+    // 91a: camera sounds, all off until turned on; which camera they come from
+    val soundShutter: Boolean = false,
+    val soundWind: Boolean = false,
+    val soundDial: Boolean = false,
+    val soundCamera: String = "rangefinder",
     val film: String = "kodak_portra_400",   // film used for the live preview and auto-develop
     val preset: String = "portra400_endura_wedding",  // the authored look; carries per-stock grain etc.
     val autoDevelop: Boolean = true,         // develop single shots in the background (never bursts)
@@ -120,6 +125,10 @@ data class AppSettings(
                 bracketBrightIso = p.getInt("bracketBrightIso", 0),
                 bracketFrames = p.getInt("bracketFrames", 5),
                 haptics = p.getBoolean("haptics", true),
+                soundShutter = p.getBoolean("soundShutter", false),
+                soundWind = p.getBoolean("soundWind", false),
+                soundDial = p.getBoolean("soundDial", false),
+                soundCamera = p.getString("soundCamera", "rangefinder") ?: "rangefinder",
                 film = p.getString("film", "kodak_portra_400") ?: "kodak_portra_400",
                 preset = p.getString("preset", "portra400_endura_wedding") ?: "portra400_endura_wedding",
                 autoDevelop = p.getBoolean("autoDevelop", true),
@@ -166,6 +175,10 @@ data class AppSettings(
                 .putInt("bracketBrightIso", s.bracketBrightIso)
                 .putInt("bracketFrames", s.bracketFrames)
                 .putBoolean("haptics", s.haptics)
+                .putBoolean("soundShutter", s.soundShutter)
+                .putBoolean("soundWind", s.soundWind)
+                .putBoolean("soundDial", s.soundDial)
+                .putString("soundCamera", s.soundCamera)
                 .putString("film", s.film)
                 .putString("preset", s.preset)
                 .putBoolean("autoDevelop", s.autoDevelop)
