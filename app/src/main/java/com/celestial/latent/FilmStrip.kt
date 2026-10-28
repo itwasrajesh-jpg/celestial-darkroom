@@ -7,17 +7,12 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.size
 import androidx.compose.ui.Alignment
-import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.StrokeJoin
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
@@ -76,27 +71,19 @@ fun FilmStrip(
         ) { change, dy -> change.consume(); total += dy }
     }
     if (folded) {
-        val current = if (selected.startsWith("stock:")) selected.removePrefix("stock:")
-            else looks.firstOrNull { it.id == selected }?.name?.substringBefore(" — ") ?: "FILM"
+        // 92a: folded, the cards are the end flap of the film box loaded (visual-4 proof): a film built
+        // here keeps its base stock's box under its own name. Tap or swipe up opens the cards as before.
+        val box = remember(selected, ours.size) {
+            if (selected.startsWith("stock:")) {
+                val name = selected.removePrefix("stock:")
+                FilmBoxes.of(com.celestial.latent.develop.Recipes.load(context, name)?.film ?: "", name)
+            } else looks.firstOrNull { it.id == selected }?.let { FilmBoxes.of(it.recipe.film) } ?: FilmBoxes.of("")
+        }
         Box(modifier.then(swipe), contentAlignment = Alignment.Center) {
-            Row(
-                Modifier.clip(RoundedCornerShape(999.dp)).background(Color(0x8C000000))
-                    .combinedClickable(
-                        onClick = { Haptics.tick(context); onFold(false) },
-                        onLongClick = { Haptics.click(context); onLongPress() },
-                    )
-                    .padding(horizontal = 16.dp, vertical = 9.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                Text(current.uppercase(), color = OnPhoto.TextBright, fontSize = 11.sp, letterSpacing = 1.sp)
-                // a small up-chevron: there is more above
-                Canvas(Modifier.size(10.dp, 6.dp)) {
-                    val w = size.width; val h = size.height
-                    drawPath(Path().apply { moveTo(0f, h); lineTo(w / 2f, 0f); lineTo(w, h) }, OnPhoto.TextBright,
-                        style = Stroke(width = 1.6.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round))
-                }
-            }
+            FilmBoxTab(box, Modifier.combinedClickable(
+                onClick = { Haptics.tick(context); onFold(false) },
+                onLongClick = { Haptics.click(context); onLongPress() },
+            ))
         }
         return
     }
