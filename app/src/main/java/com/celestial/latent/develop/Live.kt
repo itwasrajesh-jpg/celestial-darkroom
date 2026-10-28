@@ -175,7 +175,7 @@ object Live {
         val (pristine, _) = framed.use { f ->
             nativeSource(w, h, f.image.colorSpace).also { (s, b) ->
                 f.image.data.rewind(); b.rewind(); b.put(f.image.data); f.image.data.rewind(); b.rewind()
-                s.filmScale = f.filmScale; s.letterbox = f.letterbox
+                s.filmScale = f.filmScale; s.nativeScale = f.nativeScale; s.letterbox = f.letterbox
             }
         }
         val opened2 = ArrayList<AutoCloseable>()

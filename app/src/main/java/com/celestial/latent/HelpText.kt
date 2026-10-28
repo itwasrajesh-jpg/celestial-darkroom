@@ -127,6 +127,11 @@ object HelpText {
                         "More digital speckle under the film grain.",
                         "Smoother, with the film grain as the only texture. Too high can look waxy.",
                         "Indoor and night shots, and any photo where fog or added lights make noise more visible."),
+                    Item("Night Clean", "Off / On, strength 5 – 50",
+                        "A small AI model that removes the sensor's noise before the film, more thoroughly than the two above (which step aside while it is on, unless you set an amount). 25 is the strength of the approved proof; the preview is cleaned in proportion to its size, so it shows what the full-size develop will. Follow the phone's noise spreads the same amount by this photo's own measured noise at each brightness. It runs on the phone: a few seconds in the preview, about 20 – 60 s more on a full-size develop.",
+                        "Some speckle stays under the film grain.",
+                        "Smoother and cleaner; too high flattens fine texture into smooth patches.",
+                        "Dark street and indoor shots where the noise looks digital rather than like grain."),
                 )),
                 Section("DIR COUPLERS", "While a colour film develops, it releases chemicals that hold back development nearby. This is a big part of why film colour looks the way it does: cleaner colours and crisper edges. Turn the switch off to see the film without them.", listOf(
                     Item("Amount", "0 – 2",
