@@ -1010,6 +1010,17 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                                 .background(Color(0x66000000)).padding(horizontal = 10.dp, vertical = 3.dp))
                     }
 
+                    // 95a: Night Clean at work, and a tag while it is on
+                    val nightCleaning = (rendering || fullRunning) && status.contains("night clean")
+                    if (nightCleaning) {
+                        var since by remember { mutableStateOf(0) }
+                        LaunchedEffect(Unit) { while (true) { delay(1000); since++ } }
+                        Text("NIGHT CLEAN · cleaning the RAW · $since s", color = Color(0xE6FFFFFF), fontSize = 10.sp, letterSpacing = 1.sp,
+                            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = if (zoom.zoomed) 36.dp else 12.dp).clip(RoundedCornerShape(999.dp))
+                                .background(Color(0x99000000)).padding(horizontal = 12.dp, vertical = 5.dp))
+                    } else if (recipe.nightClean && !comparing && preview != null && !frameOpen) Text("NIGHT CLEAN", color = Color(0xE6FFFFFF), fontSize = 10.sp, letterSpacing = 1.5.sp,
+                        modifier = Modifier.align(Alignment.BottomStart).padding(12.dp).clip(RoundedCornerShape(999.dp))
+                            .background(Color(0x66000000)).padding(horizontal = 10.dp, vertical = 4.dp))
                     if (!rendering && !fullRunning && preview == null) Text(if (status.isEmpty()) "no preview yet" else status, color = OnPhoto.Text, fontSize = 11.sp, modifier = Modifier.align(Alignment.Center).padding(24.dp))
                     Text(if (comparing) "ORIGINAL" else (Develop.FILMS.firstOrNull { it.first == recipe.film }?.second?.uppercase() ?: recipe.film),
                         color = Color(0xE6FFFFFF), fontSize = 10.sp, letterSpacing = 1.5.sp,
@@ -1264,6 +1275,15 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                                 }
                                 if (!lumaAuto) S("Amount", recipe.lumaDenoise, 0f, 1f, "%.2f") { set { copy(lumaDenoise = it) } }
                                 Note("The sensor's grey speckle in dim shots is digital noise, not film grain. This smooths it while keeping edges, before the film — so the film's own grain is the texture. Lights and fog no longer make it worse.")
+                                // 95a: the AI clean, right under the noise controls it goes beyond (approved mock ai-models/ui-proof/)
+                                Head("NIGHT CLEAN", recipe.nightClean) { set { copy(nightClean = it) } }
+                                S("Strength", recipe.nightCleanStrength, 5f, 50f, "%.0f", recipe.nightClean) { set { copy(nightCleanStrength = Math.round(it).toFloat()) } }
+                                Toggle("Follow the phone's noise", recipe.nightCleanFollow) { set { copy(nightCleanFollow = it) } }
+                                Note("For dark shots: a small AI model cleans the sensor's noise before the film, so the film's grain is the only texture. " +
+                                    "With it on, the automatic colour and brightness noise cleaning above steps aside (a set amount still applies). " +
+                                    "25 is the strength of the approved proof. The small preview is cleaned in proportion to its size, so it shows what the full-size develop will. " +
+                                    "Follow the phone's noise spreads the same amount by this photo's own measured noise at each brightness — usually more in the mid-tones, less in the deep shadows. " +
+                                    "A few seconds in the preview; about 20–60 s more on a full-size develop.")
                                 Head("DIR COUPLERS", recipe.dir) { set { copy(dir = it) } }
                                 S("Amount", recipe.dirAmount, 0f, 2f, "%.2f", recipe.dir) { set { copy(dirAmount = it) } }
                                 S("Same-layer inhibition", recipe.dirSameLayer, 0f, 2f, "%.2f", recipe.dir) { set { copy(dirSameLayer = it) } }

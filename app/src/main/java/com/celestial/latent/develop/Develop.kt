@@ -39,6 +39,12 @@ object Develop {
          */
         @Volatile var filmScale = 1f
         /**
+         * 95a: this picture's pixels per pixel of the photo's own file (1 = full size, 0.3 = the darkroom's
+         * small copy). Noise shrinks as a picture is made smaller, so Night Clean cleans less by this much
+         * and the preview shows what the full-size develop will.
+         */
+        @Volatile var nativeScale = 1f
+        /**
          * What this working copy was last prepared for (framing, noise cleaning, diffusion). A
          * render never writes into its source — the engine reads it as const, and Latent's own
          * render step only reads it — so a copy prepared for the same things can be used again
@@ -59,6 +65,7 @@ object Develop {
             diffused = false
             printDiffused = false
             filmScale = from.filmScale
+            nativeScale = from.nativeScale
             preparedFor = null
             letterbox = from.letterbox
         }
@@ -102,6 +109,7 @@ object Develop {
             // straightening and a widescreen crop can both shorten the long edge: the share of
             // the film the picture shows follows whatever survives
             filmScale = from.filmScale * f.filmShare(sw, sh)
+            nativeScale = from.nativeScale
             preparedFor = null
             letterbox = f.letterbox
         }
@@ -258,7 +266,7 @@ object Develop {
      * filters, the film format) — and nothing else, so a change made for the film stage reuses it.
      */
     private fun preparedKey(r: Recipe): String = listOf(
-        r.chromaDenoise, r.lumaDenoise, r.lens85b,
+        r.chromaDenoise, r.lumaDenoise, r.nightClean, r.nightCleanStrength, r.nightCleanFollow, r.lens85b,
         r.diffusion, r.diffusionFamily, r.diffusionStrength, r.diffusionScale, r.diffusionCore, r.diffusionCoreSize,
         r.diffusionHalo, r.diffusionHaloSize, r.diffusionBloom, r.diffusionBloomSize, r.diffusionWarmth,
         r.fastDiffusion, r.filmFormatMm, r.printDiffusion, r.printDiffusionFamily, r.printDiffusionStrength,
@@ -381,11 +389,13 @@ object Develop {
         // the depth comes from the framed picture as it was, before fog or light touch it
         val sunIn = sunInput(context, source, framing, working, listOf(raysLook) + extraLights, log, glowing, wet)
         // the sensor's noise is cleaned first, so fog and light never work with it
+        nightCleanSource(context, working, recipe, log)
         denoiseSource(working, recipe, isoUsed, log)
         sensorNoiseSource(working, recipe, isoUsed, log)
         // what lies under the lights: while it is unchanged, the noise-free copy they land on is reused
         // (the photo — both frames of a pair — and its size, by the decode's own key, then everything applied before the lights)
         val underLights = listOf(key, framing.key(), isoUsed, recipe.chromaDenoise, recipe.lumaDenoise,
+            recipe.nightClean, recipe.nightCleanStrength, recipe.nightCleanFollow,
             raysMask?.stops?.contentHashCode() ?: 0, split?.stops?.contentHashCode() ?: 0, working.width, working.height).joinToString("|")
         // the lights on what they meet first, then the air in front of them (60e): fog laid before the
         // light was lit by it as if it were a wall, in patches where the depth said shadow or sun
@@ -425,9 +435,11 @@ object Develop {
         val ev = brightenOf(context, dng)
         if (ev > 0f) { Log.i("Latent", "hdr stack: brightened by +${"%.2f".format(ev)} EV (the file's BaselineExposure)"); log("HDR stack +${"%.1f".format(ev)} EV") }
         val longest = maxOf(w, h)
+        // the file's own size, for Night Clean (95a); a capped decode is a smaller copy of it
+        val native = storedSize(context, dng, true)?.let { maxOf(it.first, it.second) } ?: 0
         if (maxEdge <= 0 || longest <= maxEdge) {
             return Source(LinearImage(decoded.data, w, h, colorSpace = decoded.colorSpace, onClose = { RawDecoder.freeOffHeap(it) }), w, h)
-                .also { if (ev > 0f) brighten(it, ev) }
+                .also { if (ev > 0f) brighten(it, ev); if (native > 0) it.nativeScale = minOf(1f, longest.toFloat() / native) }
         }
         // The cap was ignored: shrink it ourselves, then free the big native buffer.
         var step = 1
@@ -459,6 +471,7 @@ object Develop {
         }
         RawDecoder.freeOffHeap(decoded.data)
         if (ev > 0f) brighten(small, ev)
+        if (native > 0) small.nativeScale = minOf(1f, maxOf(outW, outH).toFloat() / native)
         return small
     }
 
@@ -477,7 +490,7 @@ object Develop {
         val scale = if (maxEdge > 0) minOf(1f, maxEdge.toFloat() / maxOf(src.width, src.height)) else 1f
         val bmp = if (scale < 1f) android.graphics.Bitmap.createScaledBitmap(src, (src.width * scale).toInt(), (src.height * scale).toInt(), true) else src
         val w = bmp.width; val h = bmp.height
-        val out = pictureSource(w, h, "ProPhoto RGB")
+        val out = pictureSource(w, h, "ProPhoto RGB").also { it.nativeScale = scale }
         val f = out.image.data.asFloatBuffer()
         val row = IntArray(w)
         // sRGB's curve removed, then sRGB primaries → ProPhoto primaries. The engine always
@@ -530,15 +543,28 @@ object Develop {
      * (none up to ISO 200), or the recipe's amount.
      */
     fun sensorNoiseSource(source: Source, recipe: Recipe, iso: Int, log: (String) -> Unit = {}) {
-        val amount = if (recipe.lumaDenoise >= 0f) recipe.lumaDenoise else GuidedClean.strengthForIso(iso)
+        // Night Clean has already cleaned it: the automatic amount would only soften it twice (a set amount still applies)
+        val amount = if (recipe.lumaDenoise >= 0f) recipe.lumaDenoise else if (recipe.nightClean) 0f else GuidedClean.strengthForIso(iso)
         if (amount <= 0.001f) return
         log("cleaning sensor noise")
         GuidedClean.applyInPlace(source.image.data.order(java.nio.ByteOrder.nativeOrder()).asFloatBuffer(), source.width, source.height, amount)
     }
 
+    /**
+     * 95a: Night Clean, the first thing done to the picture — before the colour and brightness noise
+     * cleaning, which it replaces when they are automatic. Once per filled buffer, like them (it runs
+     * only before [denoiseSource] marks the buffer). A failure is logged and the photo develops without it.
+     */
+    fun nightCleanSource(context: Context, source: Source, recipe: Recipe, log: (String) -> Unit = {}) {
+        if (!recipe.nightClean || source.denoised) return
+        runCatching { NightClean.apply(context, source, recipe.nightCleanStrength, recipe.nightCleanFollow, source.nativeScale, log) }
+            .onFailure { t -> Log.e("Latent", "night clean failed; developing without it", t) }
+    }
+
     fun denoiseSource(source: Source, recipe: Recipe, iso: Int, log: (String) -> Unit = {}) {
         if (source.denoised) return
-        val strength = if (recipe.chromaDenoise >= 0f) recipe.chromaDenoise else ChromaDenoise.strengthForIso(iso)
+        // as for brightness noise: after Night Clean, only a set amount
+        val strength = if (recipe.chromaDenoise >= 0f) recipe.chromaDenoise else if (recipe.nightClean) 0f else ChromaDenoise.strengthForIso(iso)
         if (strength > 0.001f) {
             log("cleaning colour noise")
             ChromaDenoise.apply(source.image.data, source.width, source.height, strength)
@@ -1248,6 +1274,7 @@ object Develop {
                                depthSplit: ExposureMap?, wetMask: ExposureMap?, wetLook: WetLook, rainMask: ExposureMap?,
                                log: (String) -> Unit, fogScale: Float = 1f, beforeRain: ((Source) -> Unit)? = null) {
         val sunIn = sunInput(context, source, framing, s, listOf(raysLook) + extraLights, log, fogMask != null && fogLook.lit > 0f, Wet.wanted(wetMask))
+        nightCleanSource(context, s, recipe, log)
         denoiseSource(s, recipe, iso, log)
         sensorNoiseSource(s, recipe, iso, log)
         val split = splitFor(context, source, listOf(raysLook) + extraLights, depthSplit)
@@ -1361,6 +1388,7 @@ object Develop {
         }
         return Source(LinearImage(out, cw, ch, colorSpace = src.image.colorSpace), cw, ch).also {
             it.filmScale = src.filmScale * maxOf(cw, ch).toFloat() / maxOf(src.width, src.height)
+            it.nativeScale = src.nativeScale
         }
     }
 
@@ -1379,7 +1407,7 @@ object Develop {
             var i = ((y0 + y) * src.width + x0) * 3
             for (x in 0 until cw * 3) { of.put(inBuf.get(i)); i++ }
         }
-        return Source(LinearImage(out, cw, ch, colorSpace = src.image.colorSpace), cw, ch).also { it.filmScale = src.filmScale }
+        return Source(LinearImage(out, cw, ch, colorSpace = src.image.colorSpace), cw, ch).also { it.filmScale = src.filmScale; it.nativeScale = src.nativeScale }
     }
 
     /** The most recent developed JPEG for a capture, if there is one. */

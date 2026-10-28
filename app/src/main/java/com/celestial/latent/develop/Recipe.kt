@@ -194,6 +194,14 @@ data class Recipe(
      */
     val lumaDenoise: Float = -1f,
     /**
+     * 95a Night Clean: a small AI model cleans the sensor's noise before the film ([NightClean]).
+     * Strength 5 … 50 (25 = the approved proof); [nightCleanFollow] sets it per brightness from the
+     * photo's own measured noise instead of one level for the whole picture.
+     */
+    val nightClean: Boolean = false,
+    val nightCleanStrength: Float = 25f,
+    val nightCleanFollow: Boolean = false,
+    /**
      * A look's own tone curve on the finished print (70a), as x0, y0, x1, y1 … in 0–1; empty = none.
      * Two of the engine's looks need it: Faded Matte lifts the blacks with it, Bleach Bypass adds
      * its contrast with it. Applied by the engine as its very last step, so the preview has it too.
@@ -317,6 +325,7 @@ data class Recipe(
         put("halationBoostRange", halationBoostRange.toDouble())
         put("chromaDenoise", chromaDenoise.toDouble())
         put("lumaDenoise", lumaDenoise.toDouble())
+        put("nightClean", nightClean); put("nightCleanStrength", nightCleanStrength.toDouble()); put("nightCleanFollow", nightCleanFollow)
         put("filterUvAmount", filterUvAmount.toDouble()); put("filterUvNm", filterUvNm.toDouble()); put("filterUvWidth", filterUvWidth.toDouble())
         put("filterIrAmount", filterIrAmount.toDouble()); put("filterIrNm", filterIrNm.toDouble()); put("filterIrWidth", filterIrWidth.toDouble())
         put("meteringMethod", meteringMethod)
@@ -377,6 +386,8 @@ data class Recipe(
                 halationBoostRange = f("halationBoostRange", d.halationBoostRange),
                 chromaDenoise = f("chromaDenoise", d.chromaDenoise),
                 lumaDenoise = f("lumaDenoise", d.lumaDenoise),
+                nightClean = o.optBoolean("nightClean", d.nightClean), nightCleanStrength = f("nightCleanStrength", d.nightCleanStrength),
+                nightCleanFollow = o.optBoolean("nightCleanFollow", d.nightCleanFollow),
                 filterUvAmount = f("filterUvAmount", d.filterUvAmount), filterUvNm = f("filterUvNm", d.filterUvNm),
                 filterUvWidth = f("filterUvWidth", d.filterUvWidth),
                 filterIrAmount = f("filterIrAmount", d.filterIrAmount), filterIrNm = f("filterIrNm", d.filterIrNm),
