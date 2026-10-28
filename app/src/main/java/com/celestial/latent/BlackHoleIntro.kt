@@ -45,15 +45,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.navigationBarsPadding
-import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.ui.platform.LocalLifecycleOwner
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontStyle
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.compose.ui.viewinterop.AndroidView
@@ -107,13 +100,11 @@ private fun BlackHoleScene(duration: Float, onDone: () -> Unit, onFail: () -> Un
     val fade = remember { Animatable(1f) }
     var finishing by remember { mutableStateOf(false) }
     var elapsed by remember { mutableStateOf(0f) }
-    var explored by remember { mutableStateOf(false) }          // the hint goes at the first touch
     val main = remember { Handler(Looper.getMainLooper()) }
     val density = LocalDensity.current.density
     val context = LocalContext.current
     // Android's "remove animations" (the page's reduced motion): no idle drift
     val reduced = remember { android.provider.Settings.Global.getFloat(context.contentResolver, android.provider.Settings.Global.ANIMATOR_DURATION_SCALE, 1f) == 0f }
-    var shownDist by remember { mutableStateOf(27f) }
     var glView by remember { mutableStateOf<GLSurfaceView?>(null) }
     // black until the first frame is drawn: the surface is see-through before that, and the camera is behind it
     var drawn by remember { mutableStateOf(false) }
@@ -130,7 +121,6 @@ private fun BlackHoleScene(duration: Float, onDone: () -> Unit, onFail: () -> Un
         while (!finishing) {
             val now = withFrameNanos { it }
             elapsed = (now - start) / 1e9f
-            shownDist = renderer.distNow
         }
     }
     // the back gesture closes it too
@@ -188,27 +178,7 @@ private fun BlackHoleScene(duration: Float, onDone: () -> Unit, onFail: () -> Un
             Text("A FILM CAMERA", color = LatentColors.TextDim, fontSize = 10.sp, letterSpacing = 4.sp, textAlign = TextAlign.Center,
                 modifier = Modifier.padding(top = 14.dp).alpha(dev))
         }
-        // Once it is yours (arrived, or touched): the live page's text. Title and line at the top left;
-        // the hint at the bottom left, fading over 1.2 s at the first touch; the distance at the bottom right.
-        val ink = Color(0xFFEFE6D6); val dim = Color(0xFF9C917F); val warm = Color(0xFFFFB46B)
-        val hud = (if (explored) 1f else ((elapsed - duration) / 0.6f).coerceIn(0f, 1f)) * fade.value
-        val hintFade by androidx.compose.animation.core.animateFloatAsState(if (explored) 0f else 1f, tween(1200), label = "hint")
-        if (hud > 0f) {
-            Column(Modifier.align(Alignment.TopStart).statusBarsPadding().padding(start = 20.dp, top = 18.dp).alpha(hud)) {
-                Text("Black hole", color = ink, fontSize = 21.sp, fontFamily = FontFamily.Serif, fontStyle = FontStyle.Italic)
-                Text("Light paths traced live, pixel by pixel", color = dim, fontSize = 13.sp, fontFamily = FontFamily.Serif,
-                    modifier = Modifier.padding(top = 4.dp))
-            }
-            Row(Modifier.align(Alignment.BottomCenter).fillMaxWidth().navigationBarsPadding().padding(start = 20.dp, end = 20.dp, bottom = 20.dp).alpha(hud),
-                horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.Bottom) {
-                Text("Drag to look around. Pinch to fall closer. Tap to close.", color = ink, fontSize = 15.sp, lineHeight = 20.sp,
-                    fontFamily = FontFamily.Serif, fontStyle = FontStyle.Italic, modifier = Modifier.weight(1f).widthIn(max = 240.dp).alpha(hintFade))
-                Column(horizontalAlignment = Alignment.End, modifier = Modifier.padding(start = 16.dp)) {
-                    Text("%.1f".format(java.util.Locale.US, shownDist), color = warm, fontSize = 20.sp, fontFamily = FontFamily.Serif)
-                    Text("radii away", color = dim, fontSize = 13.sp, fontFamily = FontFamily.Serif)
-                }
-            }
-        }
+        // 93a: no words over the black hole once it settles, only the name above (Celestial, 28 Oct)
         if (!drawn) Box(Modifier.fillMaxSize().background(Color.Black))
         // Touch, caught on top (the GPU surface below may keep touches to itself): one finger orbits,
         // two pinch, a quick still tap closes. Moves are in density-independent pixels, as the demo's are.
@@ -218,7 +188,7 @@ private fun BlackHoleScene(duration: Float, onDone: () -> Unit, onFail: () -> Un
                 val down = awaitFirstDown()
                 val t0 = down.uptimeMillis
                 var moved = 0f; var pinching = false; var everPinched = false; var startSpread = 0f; var lastTime = t0
-                renderer.touchDown(); explored = true
+                renderer.touchDown()
                 while (true) {
                     val ev = awaitPointerEvent()
                     val pressed = ev.changes.filter { it.pressed }
@@ -284,7 +254,11 @@ private class BlackHoleRenderer(
     private val lock = Any(); private var dYaw = 0f; private var dPitch = 0f      // drags since the last frame
 
     fun touchDown() { held = true; takeOver = true; lastTouch = System.nanoTime() }
-    fun touchUp() { held = false; lastTouch = System.nanoTime() }
+    fun touchUp() {
+        held = false; lastTouch = System.nanoTime()
+        // 93a: where the camera was let go, to choose the resting tilt from (REST_PITCH)
+        Log.i("Latent", "black hole: let go at pitch %.3f yaw %.3f dist %.1f".format(java.util.Locale.US, pitch + dPitch, yaw + dYaw, dist))
+    }
     /** One finger moved (dx, dy) density-independent pixels: orbit, as the demo does (0.0055 rad each). */
     fun drag(dx: Float, dy: Float) {
         vyaw = -dx * 0.0055f; vpitch = dy * 0.0055f
@@ -358,7 +332,9 @@ private class BlackHoleRenderer(
         val k = minOf(1f, el / duration); val e = k * k * (3 - 2 * k)
         val roll = 0.3f
         if (!exploring) {
-            yaw = 0.6f + 0.5f * e; dist = 27f - 9f * e; pitch = 0.11f
+            // 93a: the tilt rises on the same easing, so it comes to rest seen a little from above, the ring
+            // reaching down to the name
+            yaw = 0.6f + 0.5f * e; dist = 27f - 9f * e; pitch = 0.11f + (REST_PITCH - 0.11f) * e
             // arrived, or touched: from here it is yours, starting exactly where the glide is
             if (k >= 1f || takeOver) { exploring = true; distTarget = dist; acc = 0f; frames = 0; scale = 0.85f }   // the page starts at 0.85
         }
@@ -469,6 +445,10 @@ private class BlackHoleRenderer(
 }
 
 // The three shaders, copied from the black hole intro's handoff (GLSL ES 3.00); changes: the sky band squares with x*x (61e), noise() uses a whole-number hash (61f) with highp int (61g).
+/** 93a: the tilt (radians) the glide comes to rest at. A first guess from Celestial's screenshot; the
+ *  "let go at pitch" log line gives the exact number for the look they choose. */
+private const val REST_PITCH = 0.45f
+
 private const val VS = """#version 300 es
 in vec2 aPos;
 void main(){ gl_Position = vec4(aPos, 0.0, 1.0); }"""
