@@ -358,6 +358,26 @@ fun CameraScreen(
         }
     }
 
+    // 92b: the light meter. On auto it learns what brightness the phone aims for (twice a second); with
+    // S or ISO set by hand it measures the picture those make (eight times a second) for the needle.
+    val filmPreviewNow by androidx.compose.runtime.rememberUpdatedState(settings.filmPreview)
+    LaunchedEffect(Unit) {
+        LightMeter.load(context)
+        val main = android.os.Handler(android.os.Looper.getMainLooper())
+        while (true) {
+            val c = controls
+            val auto = !c.manualExposure
+            if (lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
+                val gl = if (filmPreviewNow) glPreview else null
+                if (gl != null) gl.meterFrame { f, w, h ->
+                    val lv = LightMeter.level(f, w, h)
+                    main.post { LightMeter.feed(context, lv, auto, c.locked, c.evIndex / 6f) }
+                } else plainPreview?.let { v -> LightMeter.plainLevel(v)?.let { LightMeter.feed(context, it, auto, c.locked, c.evIndex / 6f) } }
+            }
+            delay(if (auto) 500 else 125)
+        }
+    }
+
     // Any of these changes the streams or the session tags: push them, then let the controller rebuild if needed.
     // 85a: they are also pushed once when the controller is made (pushSessionSettings below), before the
     // first open, so it no longer opens with defaults and then again with these.
@@ -773,7 +793,9 @@ fun CameraScreen(
         // 87a: the settings row and its slider on their own layer (a raised white tile in Clay)
         Column(Modifier.fillMaxWidth().controlBar()) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp)) {
-            StripCell("EV", evStr, false, selected == Cell.EV, controls.manualExposure, Modifier.weight(1f)) { selected = if (selected == Cell.EV) null else Cell.EV }
+            // 92b: with S or ISO set by hand the EV dial does nothing, so its cell becomes the light meter
+            if (controls.manualExposure) MeterCell(LightMeter.stops, Modifier.weight(1f))
+            else StripCell("EV", evStr, false, selected == Cell.EV, false, Modifier.weight(1f)) { selected = if (selected == Cell.EV) null else Cell.EV }
             // 79a: in fast shot an untouched shutter is the motion's choice, not the phone's
             val fastAuto = settings.fastShot && controls.shutterNs == null && readout.fast.startsWith("MOTION")
             StripCell(if (fastAuto) "S · MOTION" else "S", sStr, controls.shutterNs == null && !fastAuto, selected == Cell.S, false, Modifier.weight(1f)) { selected = if (selected == Cell.S) null else Cell.S }
