@@ -92,5 +92,5 @@ under this app's GPLv3 licence.
 The collage pages (step 98a) write their titles and captions in three fonts bundled unmodified in
 `app/src/main/assets/collage/`, each under the **SIL Open Font License 1.1** (its full text beside it):
 **Dancing Script** (The Dancing Script Project Authors), **Caveat** (The Caveat Project Authors) and
-**Playfair Display** italic (The Playfair Display Project Authors), all from Google Fonts. The OFL
+**Playfair Display** italic and regular (The Playfair Display Project Authors; the regular face prints the Cut-out calendar, 99a), all from Google Fonts. The OFL
 allows them to be bundled with software under any licence, including this app's GPLv3.

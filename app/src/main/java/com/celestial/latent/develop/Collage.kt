@@ -49,14 +49,17 @@ object Collage {
     val CAP = mapOf("grid" to 13, "hexagon" to 13, "strip" to 7, "scrapbook" to 5, "polaroid" to 12, "cutout" to 10)
     /** The layouts with a caption under each print. */
     val CAPTIONED = setOf("scrapbook", "polaroid")
+    /** On a calendar page: the scrapbook's notebook holds the month, and its fifth print would lie under the pen note. */
+    val CALENDAR_CAP = CAP + ("scrapbook" to 4)
 
-    class Fonts(val script: Typeface, val hand: Typeface, val serifItalic: Typeface, val sans: Typeface)
+    class Fonts(val script: Typeface, val hand: Typeface, val serifItalic: Typeface, val sans: Typeface, val serif: Typeface)
     private var fontCache: Fonts? = null
     fun fonts(context: Context): Fonts = fontCache ?: Fonts(
         Typeface.createFromAsset(context.assets, "collage/dancing_script.ttf"),
         Typeface.createFromAsset(context.assets, "collage/caveat.ttf"),
         Typeface.createFromAsset(context.assets, "collage/playfair_italic.ttf"),
         Typeface.create("sans-serif-medium", Typeface.NORMAL),
+        Typeface.createFromAsset(context.assets, "collage/playfair.ttf"),
     ).also { fontCache = it }
 
     /** The words on the page: a title, a line under it, a caption per photo (in the photos' order) and a note. */
@@ -68,17 +71,42 @@ object Collage {
     class Page(val bitmap: Bitmap, val width: Int, val height: Int, val spots: List<TextSpot>)
 
     /**
+     * A month to print on the page, which makes it a calendar page (99a). [month] is 1..12. [marks] are the days the
+     * roll has photos from (a dot under the number); [circle] is the day ringed in pen, and [note] what is written
+     * beside it. Each day's place is kept as a [TextSpot] "day:<n>", so a tap on it can circle it.
+     */
+    data class Month(val year: Int, val month: Int, val marks: Set<Int> = emptySet(), val circle: Int? = null, val note: String = "")
+
+    /** The month's name, "October". */
+    fun monthName(month: Int): String = java.time.Month.of(month).getDisplayName(java.time.format.TextStyle.FULL, java.util.Locale.ENGLISH)
+
+    /** 12 → "12th". */
+    fun ordinal(d: Int): String = "$d" + if (d % 100 in 11..13) "th" else when (d % 10) { 1 -> "st"; 2 -> "nd"; 3 -> "rd"; else -> "th" }
+
+    /** The month's weeks, Monday first, 0 for the days of the months either side. */
+    fun weeks(year: Int, month: Int): List<IntArray> {
+        val first = java.time.LocalDate.of(year, month, 1)
+        val lead = first.dayOfWeek.value - 1
+        val days = first.lengthOfMonth()
+        val out = ArrayList<IntArray>()
+        var d = 1 - lead
+        while (d <= days) { out += IntArray(7) { i -> (d + i).takeIf { it in 1..days } ?: 0 }; d += 7 }
+        return out
+    }
+
+    /**
      * The page for [layout] with [photos] (the hero first), drawn [scale] pixels per page unit.
      * [seed] 0 keeps the photos in the order picked; Shuffle passes another, which reorders the others and moves the
      * loose prints. [cut] is the hero's subject cut out (its alpha the outline), for Cut-out; without it the hero
-     * stands in front as a print.
+     * stands in front as a print. With a [month] the page is a calendar page: taller, with the month block in the
+     * place the approved calendar pages (calendar/proof) give it.
      */
-    fun render(layout: String, photos: List<Bitmap>, words: Words, seed: Long, scale: Float, fonts: Fonts, cut: Bitmap? = null): Page {
+    fun render(layout: String, photos: List<Bitmap>, words: Words, seed: Long, scale: Float, fonts: Fonts, cut: Bitmap? = null, month: Month? = null): Page {
         val rng = Random(seed * 7919 + 17)
         val order = photos.indices.toMutableList()
         if (seed != 0L) { val rest = order.drop(1).toMutableList(); java.util.Collections.shuffle(rest, rng); order.clear(); order += 0; order += rest }
-        val used = order.take(CAP.getValue(layout))
-        val d = Draw(photos, used, words, rng, fonts)
+        val used = order.take(if (month != null) CALENDAR_CAP.getValue(layout) else CAP.getValue(layout))
+        val d = Draw(photos, used, words, rng, fonts, month)
         val h = d.height(layout)
         val bw = max(1, (W * scale).roundToInt()); val bh = max(1, (h * scale).roundToInt())
         val bmp = Bitmap.createBitmap(bw, bh, Bitmap.Config.ARGB_8888)
@@ -100,13 +128,18 @@ object Collage {
     // The pages
     // -------------------------------------------------------------------------------------------------------------
 
-    private class Draw(val photos: List<Bitmap>, val used: List<Int>, val words: Words, val rng: Random, val f: Fonts) {
+    private class Draw(val photos: List<Bitmap>, val used: List<Int>, val words: Words, val rng: Random, val f: Fonts, val month: Month?) {
         val spots = ArrayList<TextSpot>()
         var scale = 1f
         val hero get() = photos[used[0]]
         val others get() = used.drop(1)
 
-        fun height(layout: String): Int = when (layout) {
+        fun height(layout: String): Int = if (month != null) when (layout) {
+            // calendar pages: A4 (1754) as the proofs, except where the page grows with its photos
+            "grid" -> gridPlan().let { it.bottom + 50 + 536 }
+            "polaroid" -> { val rows = ceil(used.size / 3.0).toInt(); 260 + (rows - 1) * 370 + 355 + 414 }
+            else -> 1754
+        } else when (layout) {
             "grid" -> gridPlan().let { it.bottom + 50 + 290 }
             "hexagon" -> 1290
             "strip" -> 1520
@@ -160,8 +193,9 @@ object Collage {
             photo(c, hero, hr, fy = 0.45f)
             c.drawRect(RectF(hr.left - 1, hr.top - 1, hr.right + 1, hr.bottom + 1), stroke(mat, 6f))
             val y0 = p.bottom + 50f
-            text(c, "title", words.title, 70f, y0 + 10, f.script, 150f, rgb(46, 40, 34), Anchor.LA, maxW = W - 140f)
+            text(c, "title", words.title, 70f, y0 + 10, f.script, 150f, rgb(46, 40, 34), Anchor.LA, maxW = if (month != null) 545f else W - 140f)
             text(c, "sub", words.sub, 78f, y0 + 205, f.sans, 26f, rgb(150, 136, 118), Anchor.LA, spacing = 0.08f)
+            if (month != null) monthBlock(c, RectF(640f, y0, W - 70f, y0 + 466), rgb(46, 40, 34), rgb(196, 92, 58), noteX = 615f, noteSize = 40f, dated = true)
         }
 
         // ---- 2) SHAPES: a honeycomb down the left, the hero bleeding off the right, dark ------------------------
@@ -186,11 +220,13 @@ object Collage {
             val n = others.size
             val rows = max(1, ceil(n / 2.0).toInt())
             // the cells grow to fill the column when there are fewer photos (the proof: 10 cells of radius 112)
-            val avail = h - 2 * 70f
+            // on a calendar page the honeycomb and the title keep the collage's 1290 and the month goes below
+            val area = if (month != null) 1290 else h
+            val avail = area - 2 * 70f
             val r = min(220f, (avail / ((if (n > 1) rows + 0.5f else rows.toFloat()) * 1.0f) - 10f) / sqrt(3f))
             val hh = sqrt(3f) * r
             val colH = rows * (hh + 10) + (if (n > 1) (hh + 10) / 2 else 0f) - 10
-            val top = (h - colH) / 2 - 10
+            val top = (area - colH) / 2 - 10
             val gold = rgb(232, 196, 120)
             others.forEachIndexed { i, k ->
                 val col = i % 2; val row = i / 2
@@ -205,8 +241,9 @@ object Collage {
                 c.drawPath(path, stroke(gold, 10f))
                 c.save(); c.clipPath(path); photo(c, photos[k], RectF(cx - r, cy - hh / 2, cx + r, cy + hh / 2)); c.restore()
             }
-            text(c, "title", words.title, W - 70f, h - 140f, f.script, 150f, gold, Anchor.RS, maxW = W - 520f)
-            text(c, "sub", words.sub.uppercase(), W - 76f, h - 100f, f.sans, 24f, rgb(200, 190, 170), Anchor.RS, spacing = 0.08f)
+            text(c, "title", words.title, W - 70f, area - 140f, f.script, 150f, gold, Anchor.RS, maxW = W - 520f)
+            text(c, "sub", words.sub.uppercase(), W - 76f, area - 100f, f.sans, 24f, rgb(200, 190, 170), Anchor.RS, spacing = 0.08f)
+            if (month != null) monthBlock(c, RectF(560f, 1250f, W - 70f, h - 80f), rgb(236, 232, 222), gold, noteX = 545f, noteSize = 38f)
         }
 
         // ---- 3) HERO + SIDE: a full-bleed hero, a real film strip of the others down the edge, a frosted band ---
@@ -241,12 +278,15 @@ object Collage {
                 s.restore()
             }
             // the frosted band at the bottom, for the words
-            val bandTop = h - 300f
+            val bandTop = if (month != null) 1220f else h - 300f
             frost(c, page, bandTop, h.toFloat())
             c.drawRect(0f, bandTop, W.toFloat(), h.toFloat(), fill(argb(140, 20, 16, 12)))
             c.drawLine(70f, bandTop, W - 70f, bandTop, stroke(rgb(240, 220, 180), 1f))
             text(c, "title", words.title, 70f, bandTop + 30, f.serifItalic, 120f, rgb(250, 244, 232), Anchor.LA, maxW = W - 140f)
-            text(c, "sub", words.sub, 76f, bandTop + 190, f.hand, 44f, rgb(240, 210, 160), Anchor.LA, maxW = W - 140f)
+            if (month != null) {
+                text(c, "sub", words.sub, 76f, bandTop + 190, f.hand, 44f, rgb(240, 210, 160), Anchor.LA, maxW = 540f)
+                monthBlock(c, RectF(640f, 1260f, W - 70f, h - 60f), rgb(250, 244, 232), rgb(240, 180, 90), noteX = 620f, noteSize = 40f)
+            } else text(c, "sub", words.sub, 76f, bandTop + 190, f.hand, 44f, rgb(240, 210, 160), Anchor.LA, maxW = W - 140f)
         }
 
         // ---- 4) SCRAPBOOK: kraft paper, torn prints, tape, captions in pen, a note on notebook paper ------------
@@ -287,6 +327,7 @@ object Collage {
                     tape(c, px, py, 170f, 50f, ta, rgb(232, 220, 186), 170, i * 7L + 3)
                 }
             }
+            if (month != null) { calendarNotebook(c); return }
             // a note on a torn page of a notebook
             val nw = 600f; val nh = 300f; val nx = 890f; val ny = 1440f
             val nOut = torn(nw, nh, 12f, 7, "t")
@@ -299,6 +340,28 @@ object Collage {
                 textBlock(p, "note", words.note, 80f, 44f, nw - 110f, 36f, f.hand, 40f, rgb(40, 60, 120))
             }
             tape(c, nx, ny - nh / 2 + 6, 200f, 54f, 3f, rgb(214, 168, 170), 170, 9)
+        }
+
+        /** The scrapbook's calendar: the month written on a bigger torn page of the notebook. */
+        fun calendarNotebook(c: Canvas) {
+            val nw = 620f; val nh = 560f; val nx = 840f; val ny = 1440f; val ang = -2f
+            val nOut = torn(nw, nh, 12f, 7, "t")
+            put(c, nx, ny, nw, nh, ang, 0.4f, 14f, 8f, 12f, nOut) { p ->
+                p.save(); p.clipPath(nOut)
+                p.drawRect(0f, 0f, nw, nh, fill(rgb(250, 248, 240)))
+                var y = 40f; while (y < nh) { p.drawLine(0f, y, nw, y, stroke(rgb(150, 180, 210), 1f)); y += 36f }
+                p.drawLine(60f, 0f, 60f, nh, stroke(rgb(220, 120, 120), 2f))
+                p.restore()
+            }
+            // the month is written on the page as it lies (the box round the turned page, as the proof)
+            val rad = Math.toRadians(2.0)
+            val ww = (nw * cos(rad) + nh * sin(rad)).toFloat(); val hh = (nh * cos(rad) + nw * sin(rad)).toFloat()
+            val x = nx - ww / 2; val y = ny - hh / 2
+            val m = month!!
+            text(c, null, "${monthName(m.month)} ${m.year}", x + 80, y + 18, f.hand, 50f, rgb(40, 60, 120), Anchor.LA)
+            monthBlock(c, RectF(x + 70, y + 90, x + ww - 30, y + hh - 20), rgb(40, 60, 120), rgb(200, 40, 40), noteX = x - 14, noteSize = 42f,
+                num = f.hand, headSize = 34f)
+            tape(c, x + ww / 2, y + 6, 200f, 54f, 3f, rgb(214, 168, 170), 170, 9)
         }
 
         // ---- 5) SCATTER: polaroids on black, captions in pen, a gold title --------------------------------------
@@ -329,6 +392,7 @@ object Collage {
             val ty = 260f + (rows - 1) * 370f + 205 + 150
             text(c, "title", words.title, W / 2f, ty, f.script, 160f, gold, Anchor.MS, maxW = W - 120f)
             text(c, "sub", words.sub, W / 2f, ty + 40, f.sans, 28f, rgb(200, 180, 140), Anchor.MM, spacing = 0.05f)
+            if (month != null) monthBlock(c, RectF(340f, ty + 70, W - 170f, ty + 364), rgb(236, 228, 214), gold, noteX = 325f, noteSize = 36f)
         }
 
         // ---- 6) CUT-OUT: a black and white grid in a frame; the hero's subject steps out over it in colour -----
@@ -367,6 +431,48 @@ object Collage {
             }
             text(c, "title", words.title, W / 2f - 210, 150f, f.script, 120f, rgb(40, 34, 30), Anchor.MM, maxW = W - 520f)
             text(c, "sub", words.sub.uppercase(), W / 2f - 210, 245f, f.sans, 22f, rgb(130, 118, 104), Anchor.MM, spacing = 0.08f)
+            if (month != null) monthBlock(c, RectF(330f, 1300f, W - 330f, h - 60f), rgb(40, 34, 30), rgb(190, 60, 50), noteX = 315f, noteSize = 38f, num = f.serif)
+        }
+
+        /**
+         * The month in [box]: the weekday letters in [accent], then the days in [ink], a dot under each day with
+         * photos, a loose pen ring round the circled day and its note written to the left of the block on the same
+         * row, its right end at [noteX] ([dated] puts the day in front: "12th: …"). [num] is the face of the numbers
+         * and letters; [headSize] the letters' size when it isn't 0.8 of the numbers'.
+         */
+        fun monthBlock(c: Canvas, box: RectF, ink: Int, accent: Int, noteX: Float, noteSize: Float, dated: Boolean = false,
+                       num: Typeface = f.sans, headSize: Float = 0f) {
+            val m = month ?: return
+            val rows = weeks(m.year, m.month)
+            val cw = box.width() / 7; val rh = box.height() / (rows.size + 1)
+            val fs = (min(cw, rh) * 0.42f).toInt().toFloat()
+            "MTWTFSS".forEachIndexed { i, d ->
+                text(c, null, d.toString(), box.left + cw * (i + 0.5f), box.top + rh * 0.5f, num, if (headSize > 0) headSize else (fs * 0.8f).toInt().toFloat(), accent, Anchor.MM)
+            }
+            var circled: Pair<Float, Float>? = null
+            rows.forEachIndexed { r, wk ->
+                wk.forEachIndexed { col, d ->
+                    if (d == 0) return@forEachIndexed
+                    val cx = box.left + cw * (col + 0.5f); val cy = box.top + rh * (r + 1.5f)
+                    text(c, null, "$d", cx, cy, num, fs, ink, Anchor.MM)
+                    if (d in m.marks) c.drawCircle(cx, cy + fs * 0.62f, 3.5f, fill(accent))
+                    if (d == m.circle) {
+                        // a loose hand-drawn ring: two passes that don't quite close
+                        val rr = fs * 0.95f
+                        for ((a0, a1, e) in listOf(Triple(-60f, 300f, 1f), Triple(-20f, 250f, 1.08f))) {
+                            c.drawArc(RectF(cx - rr * e * 1.15f, cy - rr * e, cx + rr * e * 1.15f, cy + rr * e * 0.95f), a0, a1 - a0, false,
+                                stroke(accent, max(2f, (fs / 9).toInt().toFloat())))
+                        }
+                        circled = cx to cy
+                    }
+                    spots += TextSpot("day:$d", onPage(RectF(cx - cw / 2, cy - rh / 2, cx + cw / 2, cy + rh / 2)))
+                }
+            }
+            val at = circled
+            if (at != null && m.note.isNotBlank()) {
+                val s = if (dated) "${ordinal(m.circle!!)}: ${m.note}" else m.note
+                text(c, "day:${m.circle}", s, noteX, at.second, f.hand, noteSize, accent, Anchor.RM, maxW = noteX - 40f)
+            }
         }
 
         // ---------------------------------------------------------------------------------------------------------
@@ -503,8 +609,8 @@ object Collage {
             if (maxW > 0 && wide > maxW) p.textSize = size * maxW / wide
             val fm = p.fontMetrics
             val w = p.measureText(s)
-            val left = when (anchor) { Anchor.LA -> x; Anchor.RS -> x - w; Anchor.MS, Anchor.MM -> x - w / 2 }
-            val base = when (anchor) { Anchor.LA -> y - fm.ascent; Anchor.RS, Anchor.MS -> y; Anchor.MM -> y - (fm.ascent + fm.descent) / 2 }
+            val left = when (anchor) { Anchor.LA -> x; Anchor.RS, Anchor.RM -> x - w; Anchor.MS, Anchor.MM -> x - w / 2 }
+            val base = when (anchor) { Anchor.LA -> y - fm.ascent; Anchor.RS, Anchor.MS -> y; Anchor.MM, Anchor.RM -> y - (fm.ascent + fm.descent) / 2 }
             if (s.isNotEmpty()) c.drawText(s, left, base, p)
             if (id != null) {
                 // an empty caption still has a place to tap
@@ -541,7 +647,7 @@ object Collage {
         }
     }
 
-    private enum class Anchor { LA, RS, MS, MM }
+    private enum class Anchor { LA, RS, MS, MM, RM }
 
     private fun rgb(r: Int, g: Int, b: Int) = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
     private fun argb(a: Int, r: Int, g: Int, b: Int) = (a shl 24) or (r shl 16) or (g shl 8) or b

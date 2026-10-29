@@ -104,6 +104,8 @@ private fun Root() {
     var burstRoll by remember { mutableStateOf<android.net.Uri?>(null) }
     // 98a: the frames picked in the roll for a collage, in the order picked
     var collagePicks by remember { mutableStateOf<List<CollagePick>>(emptyList()) }
+    // 99a: after a calendar month is saved, the roll picks for the next one and the collage opens on it
+    var calendarNext by remember { mutableStateOf<CalendarResume?>(null) }
     var darkroomBack by remember { mutableStateOf("roll") }   // where Back leaves the darkroom to
     var crash by remember { mutableStateOf(CrashLog.read(context)) }
     // 84a: the camera screen in use is the mode row's: Xiaomi's for Night/Auto, ours otherwise
@@ -160,7 +162,7 @@ private fun Root() {
     BackHandler(enabled = screen != "camera") {
         if (screen == "extension") CameraModes.setXiaomi(context, "")
         if (screen == "darkroom" && darkroomBack == "roll") darkroomSource?.let { PhotoFlight.back(it) }
-        screen = when (screen) { "settings", "extension" -> "camera"; "roll" -> cameraHome(); "darkroom" -> darkroomBack; "burst", "collage" -> "roll"; else -> "settings" }
+        screen = when (screen) { "settings", "extension" -> "camera"; "roll" -> { calendarNext = null; cameraHome() }; "darkroom" -> darkroomBack; "burst", "collage" -> "roll"; else -> "settings" }
     }
 
     // The overlay is drawn after the screens, so it covers them while the camera starts behind.
@@ -184,7 +186,8 @@ private fun Root() {
         )
         "recipes-export" -> RecipesScreen(importing = false, onBack = { screen = "settings" }, onOpenCamera = { screen = "camera" })
         "recipes-import" -> RecipesScreen(importing = true, onBack = { screen = "settings" }, onOpenCamera = { screen = "camera" })
-        "collage" -> CollageScreen(collagePicks, onBack = { screen = "roll" })
+        "collage" -> CollageScreen(collagePicks, resume = calendarNext, onBack = { screen = "roll" },
+            onNextMonth = { calendarNext = it; screen = "roll" })
         "look" -> LookScreen(settings = settings, onBack = { screen = "roll" })
         "roll" -> RollScreen(
             settings = settings, onSettingsChange = { s -> settings = s; AppSettings.save(context, s) },
@@ -192,7 +195,8 @@ private fun Root() {
             onOpenLookBuilder = { screen = "look" },
             onOpenBurst = { uri -> burstRoll = uri; screen = "burst" },
             onOpenCollage = { picks -> collagePicks = picks; screen = "collage" },
-            onBack = { screen = cameraHome() },
+            pickFor = calendarNext, onStopPickFor = { calendarNext = null },
+            onBack = { calendarNext = null; screen = cameraHome() },
         )
         "darkroom" -> darkroomSource?.let { src ->
             DarkroomScreen(
