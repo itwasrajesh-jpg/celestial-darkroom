@@ -1467,6 +1467,13 @@ object Develop {
         save(context, null, baseNameOf(context, source) + (if (tag != null) "_$tag" else "") + "_" + film.substringAfterLast('_') + ".png", from = file)
 
     /**
+     * A collage (98a), saved beside the photos it was made from. "LATENT_COLLAGE-<time>": no capture's stem comes
+     * before its last underscore, so the roll shows it as a photo of its own, never hidden behind a capture.
+     */
+    fun saveCollage(context: Context, bytes: ByteArray): Uri =
+        save(context, bytes, "LATENT_COLLAGE-" + java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.US).format(java.util.Date()) + ".jpg")
+
+    /**
      * An 85B filter on the lens, as gains on the linear ProPhoto light: the ratio of 3200K to
      * 5500K blackbody light as ProPhoto sees it (computed from the CIE 1931 observer), green held
      * at 1 as if the meter read through the filter. +131 mireds — exactly the 85B, which converts

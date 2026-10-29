@@ -83,6 +83,7 @@ fun RollScreen(
     onOpenDarkroom: (Uri, Boolean) -> Unit = { _, _ -> },
     onOpenLookBuilder: () -> Unit = {},
     onOpenBurst: (Uri) -> Unit = {},
+    onOpenCollage: (List<CollagePick>) -> Unit = {},
     onBack: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -450,9 +451,18 @@ fun RollScreen(
                 Text("Open in gallery", color = if (one != null) LatentColors.Text else LatentColors.TextDim, fontSize = 12.sp,
                     modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(LatentColors.Surface)
                         .combinedClickable(enabled = one != null, onClick = { one?.let { openInGallery(it) } }).padding(horizontal = 14.dp, vertical = 8.dp))
-                Text("Delete", color = LatentColors.AmberInk, fontSize = 12.sp,
-                    modifier = Modifier.clip(RoundedCornerShape(999.dp)).accentFill()
+                Text("Delete", color = LatentColors.Text, fontSize = 12.sp,
+                    modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(LatentColors.Surface)
                         .combinedClickable(onClick = { Haptics.tick(context); withCopies = true; deleteAsk = true }).padding(horizontal = 14.dp, vertical = 8.dp))
+                // 98a: the photos picked, in the order picked (the first is the hero), make a collage; it needs two prints
+                val forCollage = selected.mapNotNull { u -> chosen.firstOrNull { it.uri == u } }.filter { !it.isBurst }
+                val prints = forCollage.count { it.developed || !it.isRaw }
+                Text("Collage", color = if (prints >= 2) LatentColors.AmberInk else LatentColors.TextDim, fontSize = 12.sp,
+                    modifier = Modifier.clip(RoundedCornerShape(999.dp)).then(if (prints >= 2) Modifier.accentFill() else Modifier.background(LatentColors.Surface))
+                        .combinedClickable(enabled = prints >= 2, onClick = {
+                            Haptics.tick(context)
+                            onOpenCollage(forCollage.map { CollagePick(it.uri, it.isRaw, it.date) })
+                        }).padding(horizontal = 14.dp, vertical = 8.dp))
             }
         } else Row(Modifier.fillMaxWidth().padding(vertical = 12.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             val filmLabel = Develop.FILMS.firstOrNull { it.first == settings.film }?.second?.uppercase() ?: ""
