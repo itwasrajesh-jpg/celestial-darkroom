@@ -74,6 +74,9 @@ import kotlin.math.roundToInt
 /** A frame picked in the roll for a collage: the capture (or photo) and when it was taken. */
 class CollagePick(val uri: Uri, val isRaw: Boolean, val date: Long)
 
+/** 99a: the calendar to open on, after Next month: its layout, and the month ([month] 1..12). */
+class CalendarResume(val layout: String, val year: Int, val month: Int)
+
 /** The preview's size, in pixels per page unit (a page 930 px wide), and the saved collage's (1984 px wide). */
 private const val PREVIEW_SCALE = 0.75f
 private const val SAVE_SCALE = 1.6f
@@ -83,9 +86,13 @@ private const val SAVE_SCALE = 1.6f
  * picked photos sit underneath (tap one to make it the HERO); SCENES | LAYOUTS chips pick the page; Shuffle tries
  * another arrangement; FADE and WEAR age every print at once. Tapping a title or caption on the page types it.
  * The collage is saved to the roll as a new photo; the photos it was made from stay as they are.
+ *
+ * CALENDAR (99a) is the same six pages with a month on them, one month at a time: ‹ › picks the month, the days the
+ * roll has photos from get a dot, and a tap on a day circles it and types its note. Once a month is saved, Next takes
+ * the roll to picking for the month after ([onNextMonth]), and the collage comes back on that month ([resume]).
  */
 @Composable
-fun CollageScreen(picks: List<CollagePick>, onBack: () -> Unit) {
+fun CollageScreen(picks: List<CollagePick>, resume: CalendarResume? = null, onBack: () -> Unit, onNextMonth: (CalendarResume) -> Unit = {}) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     // each pick's picture (its developed print), small enough for the preview
@@ -93,8 +100,10 @@ fun CollageScreen(picks: List<CollagePick>, onBack: () -> Unit) {
     var smalls by remember { mutableStateOf<Map<Int, Bitmap>>(emptyMap()) }
     var loading by remember { mutableStateOf(true) }
     var hero by remember { mutableStateOf(0) }
-    var scenes by remember { mutableStateOf(false) }
-    var layout by remember { mutableStateOf("grid") }
+    // "scenes", "layouts" or "calendar"
+    var tab by remember { mutableStateOf(if (resume != null) "calendar" else "layouts") }
+    val scenes = tab == "scenes"; val calendar = tab == "calendar"
+    var layout by remember { mutableStateOf(resume?.layout?.takeIf { it in Collage.LAYOUTS } ?: "grid") }
     var seed by remember { mutableStateOf(0L) }
     // the dials as shown, and as last let go (the page is aged again only then)
     var fade by remember { mutableStateOf(0f) }
@@ -118,6 +127,17 @@ fun CollageScreen(picks: List<CollagePick>, onBack: () -> Unit) {
         val f = java.text.SimpleDateFormat("d MMMM", java.util.Locale.getDefault())
         mutableStateOf(if (ds.isEmpty()) "" else if (f.format(ds.min()) == f.format(ds.max())) f.format(ds.min()) else f.format(ds.min()) + " – " + f.format(ds.max()))
     }
+    // the calendar: its month (from the photos, or the one Next asked for), the days with photos, the circled day
+    val start = remember(picks) { java.time.Instant.ofEpochMilli(month.time).atZone(java.time.ZoneId.systemDefault()) }
+    var calYear by remember { mutableStateOf(resume?.year ?: start.year) }
+    var calMonth by remember { mutableStateOf(resume?.month ?: start.monthValue) }
+    var marks by remember { mutableStateOf<Set<Int>>(emptySet()) }
+    var circle by remember { mutableStateOf<Int?>(null) }
+    var dayNote by remember { mutableStateOf("") }
+    // the calendar's title and line follow the month until typed over
+    var calTitle by remember { mutableStateOf<String?>(null) }
+    var calSub by remember { mutableStateOf<String?>(null) }
+    var savedMonth by remember { mutableStateOf<Pair<Int, Int>?>(null) }
     var editing by remember { mutableStateOf<String?>(null) }
     var page by remember { mutableStateOf<Collage.Page?>(null) }
     var rendering by remember { mutableStateOf(false) }
@@ -146,7 +166,16 @@ fun CollageScreen(picks: List<CollagePick>, onBack: () -> Unit) {
     // the page's photos: the hero first, then the others as picked
     val order = listOf(hero).filter { it in smalls } + usable.filter { it != hero }
 
-    fun words() = Collage.Words(title, sub, order.map { captions.getOrElse(it) { "" } }, note)
+    fun words() = if (calendar) Collage.Words(calTitle ?: Collage.monthName(calMonth), calSub ?: "$calYear", order.map { captions.getOrElse(it) { "" } }, note)
+        else Collage.Words(title, sub, order.map { captions.getOrElse(it) { "" } }, note)
+    fun monthOf() = if (calendar) Collage.Month(calYear, calMonth, marks, circle, dayNote) else null
+
+    LaunchedEffect(calYear, calMonth) { marks = withContext(Dispatchers.IO) { CollageSources.shotDays(context, calYear, calMonth) } }
+    fun moveMonth(by: Int) {
+        val m = java.time.YearMonth.of(calYear, calMonth).plusMonths(by.toLong())
+        calYear = m.year; calMonth = m.monthValue; circle = null; dayNote = ""; savedMonth = null; status = ""
+        if (editing?.startsWith("day") == true) editing = null
+    }
 
     // the hero read once by the model for Cut-out; its outline from the spot tapped
     LaunchedEffect(layout, hero, modelsReady, smalls.size) {
@@ -167,7 +196,7 @@ fun CollageScreen(picks: List<CollagePick>, onBack: () -> Unit) {
     }
 
     // the preview, drawn again whenever anything on it changes (a newer change cancels an older drawing)
-    LaunchedEffect(smalls, hero, layout, seed, fadeSet, wearSet, title, sub, captions, note, answer) {
+    LaunchedEffect(smalls, hero, layout, seed, fadeSet, wearSet, title, sub, captions, note, answer, tab, calYear, calMonth, marks, circle, dayNote, calTitle, calSub) {
         if (smalls.isEmpty() || order.size < 2) return@LaunchedEffect
         delay(80)
         rendering = true
@@ -178,7 +207,7 @@ fun CollageScreen(picks: List<CollagePick>, onBack: () -> Unit) {
                 CollageSources.aged(context, b, CollageSources.storyOf(context, picks[i].uri), fadeSet, wearSet, AgedPrint.seedOf(picks[i].uri))
             }
             val cut = if (layout == "cutout" && embedding?.first == hero) answer?.let { CollageSources.cut(aged[0], it) } else null
-            Collage.render(layout, aged, words(), seed, PREVIEW_SCALE, Collage.fonts(context), cut).also {
+            Collage.render(layout, aged, words(), seed, PREVIEW_SCALE, Collage.fonts(context), cut, monthOf()).also {
                 cut?.recycle(); aged.forEachIndexed { k, b -> if (b !== smalls[o[k]]) b.recycle() }
             }
         }
@@ -190,6 +219,7 @@ fun CollageScreen(picks: List<CollagePick>, onBack: () -> Unit) {
         if (saving || order.size < 2) return
         saving = true; status = "saving the collage…"
         val o = order; val lay = layout; val sd = seed; val fd = fadeSet; val wr = wearSet; val w = words(); val ans = answer
+        val mo = monthOf()
         val cutOn = lay == "cutout" && embedding?.first == hero
         scope.launch {
             val ok = withContext(Dispatchers.IO) {
@@ -200,14 +230,15 @@ fun CollageScreen(picks: List<CollagePick>, onBack: () -> Unit) {
                         CollageSources.aged(context, b, CollageSources.storyOf(context, picks[i].uri), fd, wr, AgedPrint.seedOf(picks[i].uri)).also { if (it !== b && b !== smalls[i]) b.recycle() }
                     }
                     val cut = if (cutOn) ans?.let { CollageSources.cut(full[0], it) } else null
-                    val pg = Collage.render(lay, full, w, sd, SAVE_SCALE, Collage.fonts(context), cut)
+                    val pg = Collage.render(lay, full, w, sd, SAVE_SCALE, Collage.fonts(context), cut, mo)
                     cut?.recycle(); full.forEachIndexed { k, b -> if (b !== smalls[o[k]]) b.recycle() }
                     try { CollageSources.save(context, pg.bitmap) } finally { pg.bitmap.recycle() }
-                    android.util.Log.i("Latent", "collage saved: $lay, ${o.size} photos, ${pg.width}x${pg.height}")
+                    android.util.Log.i("Latent", "collage saved: $lay, ${o.size} photos, ${pg.width}x${pg.height}" + (mo?.let { " · calendar ${it.year}-${it.month}" } ?: ""))
                 }.onFailure { android.util.Log.e("Latent", "collage: save failed", it) }.isSuccess
             }
             saving = false
             status = if (ok) "saved to the roll" else "could not save (Settings → Logs says why)"
+            if (ok && mo != null) { savedMonth = mo.year to mo.month; status = "" }
             if (ok) Haptics.click(context)
         }
     }
@@ -232,7 +263,13 @@ fun CollageScreen(picks: List<CollagePick>, onBack: () -> Unit) {
                     val units = Collage.W / p.width.toFloat()
                     val ux = (o.x - left) / k * units; val uy = (o.y - top) / k * units
                     val hit = p.spots.lastOrNull { it.box.contains(ux, uy) }
-                    editing = hit?.id
+                    val day = hit?.id?.removePrefix("day:")?.toIntOrNull()
+                    if (day != null) {
+                        // a day: circle it (a new day starts a new note) and type its note
+                        Haptics.tick(context)
+                        if (circle != day) { circle = day; dayNote = "" }
+                        editing = "day"
+                    } else editing = hit?.id
                 }
             }, contentAlignment = Alignment.Center) {
             val p = page
@@ -244,17 +281,25 @@ fun CollageScreen(picks: List<CollagePick>, onBack: () -> Unit) {
         // typing the words tapped on the page
         val ed = editing
         if (ed != null) {
-            val label = when { ed == "title" -> "TITLE"; ed == "sub" -> "LINE UNDER THE TITLE"; ed == "note" -> "NOTE"; else -> "CAPTION" }
+            val label = when { ed == "title" -> "TITLE"; ed == "sub" -> "LINE UNDER THE TITLE"; ed == "note" -> "NOTE"
+                ed == "day" -> "${circle ?: ""} ${Collage.monthName(calMonth).take(3).uppercase()} NOTE"; else -> "CAPTION" }
             val capIdx = ed.removePrefix("cap:").toIntOrNull()?.let { order.getOrNull(it) }
-            val value = when { ed == "title" -> title; ed == "sub" -> sub; ed == "note" -> note; capIdx != null -> captions.getOrElse(capIdx) { "" }; else -> "" }
+            val value = when {
+                ed == "title" -> if (calendar) calTitle ?: Collage.monthName(calMonth) else title
+                ed == "sub" -> if (calendar) calSub ?: "$calYear" else sub
+                ed == "note" -> note; ed == "day" -> dayNote; capIdx != null -> captions.getOrElse(capIdx) { "" }; else -> "" }
             Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text(label, color = LatentColors.TextDim, fontSize = 9.sp, letterSpacing = 1.sp, modifier = Modifier.width(70.dp))
                 BasicTextField(value, onValueChange = { v ->
                     val t = v.take(60)
-                    when { ed == "title" -> title = t; ed == "sub" -> sub = t; ed == "note" -> note = v.take(160)
+                    when { ed == "title" -> if (calendar) calTitle = t else title = t; ed == "sub" -> if (calendar) calSub = t else sub = t
+                        ed == "note" -> note = v.take(160); ed == "day" -> dayNote = v.take(40)
                         capIdx != null -> captions = captions.toMutableList().also { it[capIdx] = t } }
+                    savedMonth = null
                 }, singleLine = ed != "note", textStyle = TextStyle(color = LatentColors.TextBright, fontSize = 13.sp), cursorBrush = SolidColor(LatentColors.Amber),
                     modifier = Modifier.weight(1f).clip(RoundedCornerShape(6.dp)).background(LatentColors.Surface).padding(horizontal = 10.dp, vertical = 8.dp))
+                if (ed == "day") Text("Uncircle", color = LatentColors.Text, fontSize = 12.sp,
+                    modifier = Modifier.combinedClickable(onClick = { circle = null; dayNote = ""; editing = null; savedMonth = null }).padding(start = 10.dp, top = 6.dp, bottom = 6.dp))
                 Text("Done", color = LatentColors.Amber, fontSize = 12.sp, modifier = Modifier.combinedClickable(onClick = { editing = null }).padding(start = 10.dp, top = 6.dp, bottom = 6.dp))
             }
         }
@@ -275,7 +320,8 @@ fun CollageScreen(picks: List<CollagePick>, onBack: () -> Unit) {
         }
         // two kinds: staged scenes (the next step) and flat layouts
         Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(top = 12.dp), horizontalArrangement = Arrangement.spacedBy(18.dp)) {
-            for ((label, on) in listOf("SCENES" to scenes, "LAYOUTS" to !scenes)) Column(Modifier.combinedClickable(onClick = { scenes = label == "SCENES" })) {
+            for ((label, on) in listOf("SCENES" to scenes, "LAYOUTS" to (tab == "layouts"), "CALENDAR" to calendar)) Column(Modifier.combinedClickable(onClick = {
+                tab = label.lowercase(); editing = null; status = "" })) {
                 Text(label, color = if (on) LatentColors.Amber else LatentColors.TextDim, fontSize = 10.sp, letterSpacing = 1.5.sp)
                 Box(Modifier.padding(top = 4.dp).height(2.dp).width(if (on) 40.dp else 0.dp).clip(RoundedCornerShape(1.dp)).accentFill())
             }
@@ -284,10 +330,29 @@ fun CollageScreen(picks: List<CollagePick>, onBack: () -> Unit) {
             if (scenes) listOf("Table", "Album", "Fridge", "Wall").forEach { Chip(it, on = false, enabled = false) {} }
             else Collage.LAYOUTS.forEach { id -> Chip(Collage.LABELS.getValue(id), on = id == layout) { Haptics.tick(context); layout = id; editing = null } }
         }
-        val cap = Collage.CAP.getValue(layout)
+        // the calendar's month
+        if (calendar) Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(top = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("MONTH", color = LatentColors.TextDim, fontSize = 10.sp, letterSpacing = 1.5.sp)
+            Spacer(Modifier.weight(1f))
+            Text("‹", color = LatentColors.Amber, fontSize = 18.sp, modifier = Modifier.combinedClickable(onClick = { Haptics.tick(context); moveMonth(-1) }).padding(horizontal = 12.dp))
+            Text("${Collage.monthName(calMonth).uppercase()} $calYear", color = LatentColors.TextBright, fontSize = 12.sp, letterSpacing = 1.5.sp)
+            Text("›", color = LatentColors.Amber, fontSize = 18.sp, modifier = Modifier.combinedClickable(onClick = { Haptics.tick(context); moveMonth(1) }).padding(horizontal = 12.dp))
+        }
+        // a month saved: on to the next one, picked in the roll
+        val saved = savedMonth
+        if (calendar && saved != null) Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(top = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+            val next = java.time.YearMonth.of(saved.first, saved.second).plusMonths(1)
+            Text("✓ ${Collage.monthName(saved.second)} saved to the roll", color = LatentColors.Text, fontSize = 12.sp, modifier = Modifier.weight(1f))
+            Text("Next: ${Collage.monthName(next.monthValue)}", color = LatentColors.AmberInk, fontSize = 12.sp,
+                modifier = Modifier.clip(RoundedCornerShape(999.dp)).accentFill()
+                    .combinedClickable(onClick = { Haptics.tick(context); onNextMonth(CalendarResume(layout, next.year, next.monthValue)) }).padding(horizontal = 14.dp, vertical = 8.dp))
+        }
+        val cap = (if (calendar) Collage.CALENDAR_CAP else Collage.CAP).getValue(layout)
         val line = when {
             scenes -> "Table, Album, Fridge and Wall come in the next update"
             status.isNotEmpty() -> status
+            calendar && circle != null -> "${circle} ${Collage.monthName(calMonth).take(3)} circled · tap it to change the note"
+            calendar && layout != "cutout" -> "Dots: days with photos · tap a day to circle it"
             layout == "cutout" && !modelsReady -> downloading?.let { "downloading the tap-to-select models… ${(it * 100).roundToInt()}%" } ?: "Cut-out uses the tap-to-select models (25 MB)"
             layout == "cutout" -> "Cut-out · tap the hero again to change who"
             usable.size > cap -> "${Collage.LABELS[layout]} · uses $cap of your ${usable.size} photos"
@@ -295,7 +360,8 @@ fun CollageScreen(picks: List<CollagePick>, onBack: () -> Unit) {
             else -> "${Collage.LABELS[layout]} · tap the title to type"
         }
         Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(top = 10.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text(line, color = LatentColors.Text, fontSize = 12.sp, modifier = Modifier.weight(1f).padding(end = 8.dp), maxLines = 2)
+            if (calendar && saved != null) Spacer(Modifier.weight(1f))
+            else Text(line, color = LatentColors.Text, fontSize = 12.sp, modifier = Modifier.weight(1f).padding(end = 8.dp), maxLines = 2)
             if (!scenes && layout == "cutout" && !modelsReady) {
                 Text("Download", color = if (downloading == null) LatentColors.Amber else LatentColors.TextDim, fontSize = 12.sp,
                     modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(LatentColors.Surface)

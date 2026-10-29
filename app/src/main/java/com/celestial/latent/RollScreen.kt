@@ -57,6 +57,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.celestial.latent.develop.Collage
 import com.celestial.latent.develop.Develop
 import com.celestial.latent.develop.DevelopQueue
 import com.celestial.latent.ui.Glyph
@@ -84,6 +85,8 @@ fun RollScreen(
     onOpenLookBuilder: () -> Unit = {},
     onOpenBurst: (Uri) -> Unit = {},
     onOpenCollage: (List<CollagePick>) -> Unit = {},
+    pickFor: CalendarResume? = null,
+    onStopPickFor: () -> Unit = {},
     onBack: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -229,10 +232,16 @@ fun RollScreen(
     }
 
     val own = frames.filter { it.folder == null }
+    // 99a: picking for a calendar month: that month's frames have their own chip, shown first once the roll is read
+    val inMonth = { f: Frame -> pickFor != null && java.time.Instant.ofEpochSecond(f.date).atZone(java.time.ZoneId.systemDefault()).let { it.year == pickFor.year && it.monthValue == pickFor.month } }
+    val monthName = pickFor?.let { Collage.monthName(it.month) }
+    LaunchedEffect(pickFor, scanned) {
+        if (pickFor == null) { if (filter == "month") filter = "all" } else if (scanned && own.any(inMonth)) filter = "month"
+    }
     // a removed folder's chip goes, so fall back to the whole roll
     LaunchedEffect(folders) { if (filter.startsWith("folder:") && folders.none { "folder:$it" == filter }) filter = "all" }
     val shown = if (filter.startsWith("folder:")) frames.filter { "folder:" + it.folder == filter } else own.filter {
-        when (filter) { "developed" -> it.developed; "latent" -> it.isRaw && !it.developed && !it.isBurst; "bursts" -> it.isBurst; else -> true }
+        when (filter) { "developed" -> it.developed; "latent" -> it.isRaw && !it.developed && !it.isBurst; "bursts" -> it.isBurst; "month" -> inMonth(it); else -> true }
     }
     val selecting = selected.isNotEmpty()
 
@@ -260,8 +269,8 @@ fun RollScreen(
             }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(bottom = 10.dp)) {
-            listOf("all" to "ALL ${own.size}", "developed" to "DEVELOPED ${own.count { it.developed }}", "latent" to "LATENT ${own.count { it.isRaw && !it.developed && !it.isBurst }}",
-                "bursts" to "BURSTS ${own.count { it.isBurst }}").forEach { (id, label) ->
+            (listOfNotNull(monthName?.let { "month" to "${it.uppercase()} ${own.count(inMonth)}" }) + listOf("all" to "ALL ${own.size}", "developed" to "DEVELOPED ${own.count { it.developed }}", "latent" to "LATENT ${own.count { it.isRaw && !it.developed && !it.isBurst }}",
+                "bursts" to "BURSTS ${own.count { it.isBurst }}")).forEach { (id, label) ->
                 val on = id == filter
                 Text(label, color = if (on) LatentColors.AmberInk else LatentColors.Text, fontSize = 11.sp, letterSpacing = 1.sp,
                     modifier = Modifier.clip(RoundedCornerShape(999.dp)).accentFill(on, LatentColors.Surface)
@@ -464,6 +473,13 @@ fun RollScreen(
                             onOpenCollage(forCollage.map { CollagePick(it.uri, it.isRaw, it.date) })
                         }).padding(horizontal = 14.dp, vertical = 8.dp))
             }
+        } else if (monthName != null) Row(Modifier.fillMaxWidth().padding(vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+            // 99a: the next calendar month is waiting for its photos
+            Text("PICK PHOTOS FOR ${monthName.uppercase()} · HOLD ONE TO START", color = LatentColors.Text, fontSize = 9.sp, letterSpacing = 1.5.sp,
+                modifier = Modifier.weight(1f), maxLines = 2)
+            Text("Not now", color = LatentColors.Text, fontSize = 12.sp,
+                modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(LatentColors.Surface)
+                    .combinedClickable(onClick = { Haptics.tick(context); if (filter == "month") filter = "all"; onStopPickFor() }).padding(horizontal = 14.dp, vertical = 8.dp))
         } else Row(Modifier.fillMaxWidth().padding(vertical = 12.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             val filmLabel = Develop.FILMS.firstOrNull { it.first == settings.film }?.second?.uppercase() ?: ""
             Text(if (queued > 0) "$queued DEVELOPING · $filmLabel" else "$filmLabel · TAP A FRAME FOR THE DARKROOM", color = LatentColors.Line, fontSize = 9.sp, letterSpacing = 1.5.sp)

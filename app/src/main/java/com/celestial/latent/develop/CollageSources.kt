@@ -97,6 +97,34 @@ object CollageSources {
         return out
     }
 
+    /**
+     * The days of [month] ([year]) the roll has photos from, for the calendar's dots (99a): when each was taken, or
+     * when it reached the roll if it doesn't say. Collages and calendars saved to the roll don't count.
+     */
+    fun shotDays(context: Context, year: Int, month: Int): Set<Int> {
+        val zone = java.time.ZoneId.systemDefault()
+        val start = java.time.LocalDate.of(year, month, 1).atStartOfDay(zone)
+        val from = start.toInstant().toEpochMilli(); val to = start.plusMonths(1).toInstant().toEpochMilli()
+        val days = HashSet<Int>()
+        runCatching {
+            context.contentResolver.query(
+                MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                arrayOf(MediaStore.Images.Media.DATE_TAKEN, MediaStore.Images.Media.DATE_ADDED),
+                "${MediaStore.Images.Media.RELATIVE_PATH} LIKE ? AND ${MediaStore.Images.Media.DISPLAY_NAME} NOT LIKE ? AND " +
+                    "((${MediaStore.Images.Media.DATE_TAKEN} >= ? AND ${MediaStore.Images.Media.DATE_TAKEN} < ?) OR " +
+                    "((${MediaStore.Images.Media.DATE_TAKEN} IS NULL OR ${MediaStore.Images.Media.DATE_TAKEN} = 0) AND ${MediaStore.Images.Media.DATE_ADDED} >= ? AND ${MediaStore.Images.Media.DATE_ADDED} < ?))",
+                arrayOf("DCIM/Latent%", "LATENT_COLLAGE-%", "$from", "$to", "${from / 1000}", "${to / 1000}"), null,
+            )?.use { c ->
+                while (c.moveToNext()) {
+                    val ms = c.getLong(0).takeIf { it > 0 } ?: (c.getLong(1) * 1000)
+                    val d = java.time.Instant.ofEpochMilli(ms).atZone(zone)
+                    if (d.year == year && d.monthValue == month) days += d.dayOfMonth
+                }
+            }
+        }.onFailure { android.util.Log.e("Latent", "calendar: could not read the roll's dates", it) }
+        return days
+    }
+
     /** Saves the collage to the roll as a new photo. */
     fun save(context: Context, page: Bitmap): Uri {
         val bytes = java.io.ByteArrayOutputStream().also { page.compress(Bitmap.CompressFormat.JPEG, 95, it) }.toByteArray()
