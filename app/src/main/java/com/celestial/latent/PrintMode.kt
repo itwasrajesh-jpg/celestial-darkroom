@@ -345,7 +345,7 @@ private fun StepIndicator(active: Int, available: Int, onSelect: (Int) -> Unit, 
     // Four names in one row, measured: "TEST STRIP" and 16 dp gaps would need ~394 dp of the ~357
     // a phone has, and the last would be crushed. "STRIP", 12 dp gaps and 1.2 sp letter spacing
     // come to about 331 dp.
-    val steps = listOf("STRIP", "COLOUR", "DODGE & BURN", "SOFTEN", "FOG", "LIGHT", "WET", "LITH", "DEVELOP")
+    val steps = listOf("STRIP", "COLOUR", "DODGE & BURN", "SOFTEN", "FOG", "LIGHT", "WET", "LITH", "AGE", "DEVELOP")
     // Eight names since 64a's WET (seven since 63a's LITH), measured on this phone as it draws them (61d): spread across the width when they fit;
     // a phone that draws everything larger (the Xiaomi) gets them up to 20% smaller so all six still
     // show; only beyond that does the row scroll, and then it keeps the chosen step in view.
@@ -484,6 +484,11 @@ fun PrintPanel(
     /** Lith paper and how the print was pulled (63a, the LITH step). */
     lithLook: com.celestial.latent.develop.LithLook = com.celestial.latent.develop.LithLook(),
     onLithLook: (com.celestial.latent.develop.LithLook) -> Unit = {},
+    /** How the print has aged (97a, the AGE step), its marks' seed and what is written on its back. */
+    ageLook: com.celestial.latent.develop.AgeLook = com.celestial.latent.develop.AgeLook(),
+    onAgeLook: (com.celestial.latent.develop.AgeLook) -> Unit = {},
+    ageSeed: Long = 1L,
+    ageWords: List<String> = emptyList(),
     /** Where the ground is wet and how it shines (64a, the WET step). */
     wetMap: ExposureMap? = null,
     onWetMap: (ExposureMap?) -> Unit = {},
@@ -559,7 +564,7 @@ fun PrintPanel(
 
     Column(modifier.background(LatentColors.Background)) {
         StepIndicator(
-            active = step, available = 9,
+            active = step, available = 10,
             onSelect = { i -> if (i != step) Haptics.tick(context); step = i },
             modifier = Modifier.padding(horizontal = 18.dp).padding(top = 6.dp),
         )
@@ -579,8 +584,10 @@ fun PrintPanel(
         ) { s ->
             when (s) {
                 0 -> TestStripStep(recipe, render, onExposure, Modifier.fillMaxSize(), onGrain = onGrain, onGrainAmount = onGrainAmount)
+                // 97a: the print aged, as kept on a fridge, in an album, a wallet or a shoebox
+                8 -> AgeStep(recipe, ageLook, onAgeLook, ageSeed, ageWords, render = { r, e -> renderWithMasks(r, e, all) }, modifier = Modifier.fillMaxSize())
                 // 75b: finish the print without leaving PRINT
-                8 -> BoxWithConstraints(Modifier.fillMaxSize()) {
+                9 -> BoxWithConstraints(Modifier.fillMaxSize()) {
                     val split = LocalPanelSplit.current
                     val room = constraints.maxHeight
                     Column(Modifier.fillMaxSize()) {
@@ -3010,6 +3017,104 @@ private fun LithStep(
         LithSlider("grain", look.grit, look.on) { onLook(look.copy(grit = it)) }
         LithSlider("edges", look.burn, look.on) { onLook(look.copy(burn = it)) }
         LithSlider("glow", look.glow, look.on) { onLook(look.copy(glow = it)) }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Step nine (97a): age this print. The finished print as it would look after years somewhere.
+// ---------------------------------------------------------------------------------------------
+
+/** The print the AGE step ages: big enough to see the scuffs and the paper. */
+private const val AGE_EDGE = 1080
+private val AGE_NAMES = mapOf("fridge" to "On the fridge", "album" to "In an album", "wallet" to "In a wallet", "shoebox" to "In a shoebox")
+
+/**
+ * Step nine, age: where the print was kept (approved proof aged-print/proof, the stories) and how far it went, as two
+ * dials (aged-print/v2): FADE, the dyes only, and WEAR, the paper only; 100% is the story's own years. Off by default.
+ * The print shown is the whole print, every painting included, aged; hold it to see it new. A develop saves the
+ * aged print as its own copy beside the clean one.
+ *
+ * Widths (11 sp chips, 6 dp gaps): off 38 + fridge 52 + album 54 + wallet 54 + shoebox 66 + 24 = about 288 dp of the 321.
+ */
+@Composable
+private fun AgeStep(
+    recipe: Recipe,
+    look: com.celestial.latent.develop.AgeLook,
+    onLook: (com.celestial.latent.develop.AgeLook) -> Unit,
+    seed: Long,
+    words: List<String>,
+    render: (Recipe, Int) -> Bitmap?,
+    modifier: Modifier = Modifier,
+) {
+    val context = LocalContext.current
+    var clean by remember { mutableStateOf<Bitmap?>(null) }
+    var aged by remember { mutableStateOf<Bitmap?>(null) }
+    var ageing by remember { mutableStateOf(false) }
+    var holding by remember { mutableStateOf(false) }
+    LaunchedEffect(recipe) { clean = withContext(Dispatchers.Default) { render(recipe, AGE_EDGE) } }
+    LaunchedEffect(clean, look) {
+        val c = clean
+        if (c == null || !look.on) { aged = null; return@LaunchedEffect }
+        ageing = true
+        try {
+            val t = System.nanoTime()
+            aged = withContext(Dispatchers.Default) { com.celestial.latent.develop.AgedPrint.sample(context, c, look, seed, words, AGE_EDGE) }
+            android.util.Log.i("Latent", "age: ${look.story} fade ${look.fade} wear ${look.wear} shown in ${(System.nanoTime() - t) / 1_000_000} ms")
+        } finally { ageing = false }
+    }
+    Column(modifier) {
+        Text(
+            if (look.on) "Hold the print to see it new. Develop saves the aged print as its own copy; the clean one is kept."
+            else "Where was this print kept all these years? Pick a story to age it.",
+            color = LatentColors.TextDim, fontSize = 11.sp, maxLines = 2,
+            modifier = Modifier.padding(horizontal = 18.dp).padding(top = 10.dp),
+        )
+        Box(Modifier.fillMaxWidth().weight(1f).bench().padding(horizontal = 18.dp, vertical = 12.dp)
+            .pointerInput(Unit) { detectTapGestures(onPress = { holding = true; tryAwaitRelease(); holding = false }) },
+            contentAlignment = Alignment.Center) {
+            val shown = if (holding || !look.on) clean else (aged ?: clean)
+            shown?.let { androidx.compose.foundation.Image(it.asImageBitmap(), contentDescription = "The print", modifier = Modifier.fillMaxSize()) }
+            val tag = when {
+                shown == null -> "printing…"
+                ageing -> "ageing the print…"
+                holding && look.on -> "NEW PRINT"
+                else -> null
+            }
+            if (tag != null) Text(tag, color = Color(0xE6FFFFFF), fontSize = 10.sp, letterSpacing = 1.5.sp,
+                modifier = Modifier.align(Alignment.TopStart).clip(RoundedCornerShape(999.dp)).background(Color(0x66000000)).padding(horizontal = 10.dp, vertical = 4.dp))
+        }
+        Text(
+            if (look.on) "${AGE_NAMES[look.story]} · ${com.celestial.latent.develop.AgedPrint.YEARS[look.story]} years at 100%"
+            else "a new print · not aged",
+            color = LatentColors.Text, fontSize = 12.sp,
+            modifier = Modifier.padding(horizontal = 18.dp).padding(bottom = 6.dp),
+        )
+        Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+            Chip("off", on = !look.on) { onLook(look.copy(story = "")) }
+            for (st in com.celestial.latent.develop.AgedPrint.STORIES) Chip(st, on = look.story == st) { onLook(look.copy(story = st)) }
+        }
+        AgeSlider("fade", "colour", look.fade, look.on) { onLook(look.copy(fade = it)) }
+        AgeSlider("wear", "paper", look.wear, look.on) { onLook(look.copy(wear = it)) }
+    }
+}
+
+/** One of the age step's dials: its name (40 dp), what it changes (40 dp), 0 … 140% in 5% steps, its value (44 dp). */
+@Composable
+private fun AgeSlider(name: String, what: String, value: Float, enabled: Boolean, onDone: (Float) -> Unit) {
+    var live by remember(value) { mutableStateOf(value) }
+    Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(name.uppercase(), color = if (enabled) LatentColors.Text else LatentColors.TextDim, fontSize = 10.sp, letterSpacing = 1.sp, modifier = Modifier.width(40.dp))
+        Text(what, color = LatentColors.TextDim, fontSize = 9.sp, modifier = Modifier.width(40.dp))
+        androidx.compose.material3.Slider(
+            value = live, onValueChange = { live = (it * 20f).roundToInt() / 20f },
+            onValueChangeFinished = { onDone(live) }, valueRange = 0f..com.celestial.latent.develop.AgedPrint.MAX,
+            enabled = enabled,
+            colors = androidx.compose.material3.SliderDefaults.colors(thumbColor = LatentColors.Amber,
+                activeTrackColor = LatentColors.SliderFill, inactiveTrackColor = LatentColors.SliderTrackDim),
+            modifier = Modifier.weight(1f).padding(horizontal = 6.dp),
+        )
+        Text("${(live * 100f).roundToInt()}%", color = LatentColors.Text, fontSize = 10.sp, modifier = Modifier.width(44.dp).padding(start = 4.dp))
     }
 }
 

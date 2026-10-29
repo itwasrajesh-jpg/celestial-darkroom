@@ -678,7 +678,7 @@ object Develop {
     fun render(context: Context, source: Source, recipe: Recipe, preview: Boolean, upscale: Float = 1f,
                exposureMap: ExposureMap? = null, softenMask: ExposureMap? = null, saturationMap: ExposureMap? = null,
                lith: LithLook = LithLook(), lithFrame: Region? = null, hdrGlow: Float = 0f,
-               png: PngTarget? = null, filmEdge: Int = 0,
+               png: PngTarget? = null, filmEdge: Int = 0, aged: AgedTarget? = null,
                log: (String) -> Unit = {}): Pair<ByteArray, Pair<Int, Int>> {
         val t = System.nanoTime()
         Log.i("Latent", "render start: source ${source.width}x${source.height}, preview=$preview, cap=${recipe.previewMaxSize}")
@@ -735,12 +735,25 @@ object Develop {
                     dims = w to h
                     try {
                     // 78b: a PNG print streams into its file (a 50 MP 16-bit print is too big to hold as bytes)
-                    if (!preview && png != null) {
+                    val clean = if (!preview && png != null) {
                         val tp = System.nanoTime()
                         writePng(data, w, h, r.colorSpace, ourSpace, png)
                         Log.i("Latent", "png ${png.bits}-bit ${w}x$h: ${png.file.length() / 1024} KB in ${(System.nanoTime() - tp) / 1_000_000} ms")
                         ByteArray(0)
                     } else toJpeg(data, w, h, r.colorSpace, ourSpace, glowMap?.let { if (w == r.width && h == r.height) it to hdrGlow else HdrGlow.framed(it, r.width, r.height, w, h) to hdrGlow })
+                    // 97a: the same print aged, as its own copy; the clean print above is untouched. An old print never glows.
+                    if (!preview && aged != null && aged.look.on) {
+                        log("ageing the print…")
+                        val ta = System.nanoTime()
+                        val (ad, aw, ah) = AgedPrint.apply(context, data, w, h, r.colorSpace, aged.look, aged.seed, aged.words)
+                        try {
+                            aged.dims = aw to ah
+                            aged.bytes = if (aged.png != null) { writePng(ad, aw, ah, r.colorSpace, ourSpace, aged.png); ByteArray(0) }
+                                else toJpeg(ad, aw, ah, r.colorSpace, ourSpace)
+                            Log.i("Latent", "aged print (${aged.look.story}, fade ${aged.look.fade}, wear ${aged.look.wear}): ${w}x$h -> ${aw}x$ah in ${(System.nanoTime() - ta) / 1_000_000} ms")
+                        } finally { freeNative(ad) }
+                    }
+                    clean
                     } finally {
                         // 81b: the bars, the paper border and the film edge are copies; a big one is native and goes back now
                         if (data !== bd) freeNative(data)
@@ -882,6 +895,12 @@ object Develop {
 
     /** Where and how a full develop writes a PNG print (78b): [bits] 8 or 16, the film [note] inside it. */
     class PngTarget(val file: File, val bits: Int, val note: String?)
+
+    /** 97a: the aged copy a full develop also makes ([AgedPrint]); [bytes] and [dims] are filled by [render]. */
+    class AgedTarget(val look: AgeLook, val seed: Long, val words: List<String>, val png: PngTarget?) {
+        var bytes: ByteArray? = null
+        var dims = 0 to 0
+    }
 
     /**
      * The print as a PNG ([PngFile]), tagged with the colour chunks Android itself writes for this space: a
@@ -1194,7 +1213,7 @@ object Develop {
                     extraLights: List<RaysLook> = emptyList(),
                     depthSplit: ExposureMap? = null, saturationMap: ExposureMap? = null, lith: LithLook = LithLook(),
                     wetMask: ExposureMap? = null, wetLook: WetLook = WetLook(), rainMask: ExposureMap? = null,
-                    hdrGlow: Float = 0f, format: String = DarkroomPrefs.FILE_JPEG, log: (String) -> Unit = {}): Uri {
+                    hdrGlow: Float = 0f, format: String = DarkroomPrefs.FILE_JPEG, age: AgeLook = AgeLook(), log: (String) -> Unit = {}): Uri {
         log(if (maxEdge > 0) "decoding…" else "decoding at full size…")
         lastFullNote = ""
         val stored = storedSize(context, source, isRaw)
@@ -1242,19 +1261,33 @@ object Develop {
             val tag = if (pair) "DX" else null
             // 78b: the kind of file — a JPEG (with the Ultra HDR glow only when that is the choice) or a PNG
             val bits = when (format) { DarkroomPrefs.FILE_PNG16 -> 16; DarkroomPrefs.FILE_PNG8 -> 8; else -> 0 }
+            // 97a: an aged print is saved as its own copy, beside the clean one, and is what the darkroom then shows
+            val agedTag = (if (tag != null) "${tag}_" else "") + "AGED"
             if (bits == 0) {
+                val aged = if (age.on) AgedTarget(age, AgedPrint.seedOf(source), AgedPrint.backWords(context, source, recipe.film), null) else null
                 val (bytes, dims) = render(context, s, recipe, preview = false, upscale = upscale, exposureMap = exposureMap, softenMask = softenMask, saturationMap = saturationMap, lith = lith,
-                    hdrGlow = if (format == DarkroomPrefs.FILE_ULTRA_HDR) hdrGlow else 0f, filmEdge = framing.edgeFrame, log = log)
+                    hdrGlow = if (format == DarkroomPrefs.FILE_ULTRA_HDR) hdrGlow else 0f, filmEdge = framing.edgeFrame, aged = aged, log = log)
                 log("saving ${dims.first}×${dims.second}, ${bytes.size / 1024} KB")
-                saveDeveloped(context, bytes, source, recipe.film, tag = tag, note = note)
+                val clean = saveDeveloped(context, bytes, source, recipe.film, tag = tag, note = note)
+                val ab = aged?.bytes
+                if (aged != null && ab != null) {
+                    log("saving the aged copy ${aged.dims.first}×${aged.dims.second}, ${ab.size / 1024} KB")
+                    saveDeveloped(context, ab, source, recipe.film, tag = agedTag, note = note)
+                } else clean
             } else {
                 val tmp = File(context.cacheDir, "develop-${System.nanoTime()}.png")
+                val tmpAged = File(context.cacheDir, "develop-aged-${System.nanoTime()}.png")
                 try {
+                    val aged = if (age.on) AgedTarget(age, AgedPrint.seedOf(source), AgedPrint.backWords(context, source, recipe.film), PngTarget(tmpAged, bits, note)) else null
                     val (_, dims) = render(context, s, recipe, preview = false, upscale = upscale, exposureMap = exposureMap, softenMask = softenMask, saturationMap = saturationMap, lith = lith,
-                        png = PngTarget(tmp, bits, note), filmEdge = framing.edgeFrame, log = log)
+                        png = PngTarget(tmp, bits, note), filmEdge = framing.edgeFrame, aged = aged, log = log)
                     log("saving ${dims.first}×${dims.second}, PNG $bits-bit, ${tmp.length() / 1024} KB")
-                    saveDevelopedFile(context, tmp, source, recipe.film, tag = tag)
-                } finally { tmp.delete() }
+                    val clean = saveDevelopedFile(context, tmp, source, recipe.film, tag = tag)
+                    if (aged != null && aged.bytes != null && tmpAged.length() > 0) {
+                        log("saving the aged copy ${aged.dims.first}×${aged.dims.second}, PNG $bits-bit, ${tmpAged.length() / 1024} KB")
+                        saveDevelopedFile(context, tmpAged, source, recipe.film, tag = agedTag)
+                    } else clean
+                } finally { tmp.delete(); tmpAged.delete() }
             }
         }
         } finally { peaks.stop(developedW, developedH) }
