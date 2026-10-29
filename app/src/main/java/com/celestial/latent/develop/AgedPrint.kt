@@ -332,14 +332,10 @@ object AgedPrint {
         val alpha: FloatArray
         when (story) {
             "fridge" -> {
-                // the window side fades more; the square under the magnet stays fresher; the edges lift off the door
-                val mg = FloatArray(pw * ph)
-                val y0 = (ph * 0.06).toInt(); val x0 = (pw * 0.40).toInt(); val sz = (pw * 0.22).toInt()
-                for (y in y0 until min(ph, y0 + sz)) for (x in x0 until min(pw, x0 + sz)) mg[y * pw + x] = 1f
-                val mb = blur(mg, pw, ph, 1.2 * sc)
+                // the window side fades more; the edges lift off the door. 97b: no magnet square on a print alone (with no
+                // magnet in the picture it read as a fault); the fridge collage puts it back under its magnet.
                 for (y in 0 until ph) for (x in 0 until pw) {
-                    val sun = (1.0 - 0.4 * x / max(1, pw - 1)).toFloat()
-                    fadeK[(y + b) * w + x + b] = sun * (1 - mb[y * pw + x])
+                    fadeK[(y + b) * w + x + b] = (1.0 - 0.4 * x / max(1, pw - 1)).toFloat()
                 }
                 val nz = noise(w, h, 1.0 * sc, sd + 1)
                 val height = FloatArray(n) { i -> exp(-edgeDist(i % w, i / w, w, h) / (14 * scF)) * 5 * scF * wear + nz[i] * 0.05f * scF }
