@@ -451,7 +451,7 @@ object HelpText {
                 )),
             )),
 
-        Topic("print", "PRINT", "PRINT ROOM", "Strips, ring-around, painting, fog, light, wet, lith",
+        Topic("print", "PRINT", "PRINT ROOM", "Strips, ring-around, painting, fog, light, wet, lith, age",
             "PRINT turns the darkroom into an enlarger. The steps run left to right, but you can visit any of them. Everything you paint belongs to this photo only, never to a recipe.",
             listOf(
                 Section("STRIP", items = listOf(
@@ -513,6 +513,14 @@ object HelpText {
                 Section("LITH", items = listOf(
                     Item("Lith print", "five pulls, early to late", "Lith paper pulled from the developer at five moments: gritty blacks and soft, coloured mid-tones. Paper tan, salmon or olive; grain, edges and glow; an optional border.",
                         use = "Moody portraits, old buildings, anything that should feel hand-made."),
+                )),
+                Section("AGE", items = listOf(
+                    Item("Age this print", "off · fridge · album · wallet · shoebox", "The print as it would look after years somewhere. On the fridge, sunlight fades magenta and yellow first, so it turns cyan, worse on the window side, fresher under the magnet. In an album the dark fades cyan first, so it warms, with yellowed paper and glue at the corners. A wallet print is folded, cracked and scuffed. A shoebox print fades warm, with brown spots, silvering at the edges and the writing on its back showing through. The colour change uses the paper's real dyes.",
+                        use = "Hold the print to see it new. Develop saves the aged print as its own copy; the clean print is saved too."),
+                    Item("Fade", "0 … 140%", "The colour only: how far the dyes have faded and the paper yellowed. 100% is the story's years (fridge 8, album 25, wallet 15, shoebox 30).",
+                        lower = "fresher colour", higher = "more faded"),
+                    Item("Wear", "0 … 140%", "The paper only: curl, glue, folds and cracks, scuffs, spots, silvering and frayed corners.",
+                        lower = "a well-kept print", higher = "a battered one", use = "Full wear with little fade is a well-handled print that kept its colour."),
                 )),
             )),
 

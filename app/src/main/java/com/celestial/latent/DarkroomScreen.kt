@@ -149,6 +149,10 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
     var saturationMap by remember { mutableStateOf(ExposureMaps.load(context, source, ExposureMaps.SATURATION)) }
     // ...and whether it is printed on lith paper, and how (63a, PRINT's LITH step)
     var lithLook by remember { mutableStateOf(com.celestial.latent.develop.LithLooks.load(context, source)) }
+    // ...and how its print has aged (97a, PRINT's AGE step): the same marks every time, and what is written on its back
+    var ageLook by remember { mutableStateOf(com.celestial.latent.develop.AgeLooks.load(context, source)) }
+    val ageSeed = remember(source) { com.celestial.latent.develop.AgedPrint.seedOf(source) }
+    val ageWords = remember(source, recipe.film) { com.celestial.latent.develop.AgedPrint.backWords(context, source, recipe.film) }
     // ...and how far its brightest lights glow on HDR screens (78a): Settings' starting value until it is moved
     var hdrGlow by remember { mutableStateOf(com.celestial.latent.develop.HdrGlows.load(context, source)) }
     var hdrGlowTouched by remember { mutableStateOf(false) }
@@ -393,6 +397,12 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
         }
         if (!printing && src != null) render(fast = false)
     }
+    // The age (97a), kept with the photo. Only the AGE step and the full develop show it: nothing to re-develop.
+    LaunchedEffect(ageLook) {
+        delay(400)
+        val l = ageLook
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { com.celestial.latent.develop.AgeLooks.save(context, source, l) }
+    }
     // The lith settings (63a), kept with the photo; a change re-develops the preview.
     LaunchedEffect(lithLook) {
         delay(400)
@@ -536,6 +546,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
             (if (com.celestial.latent.develop.Wet.wanted(wetMap)) " · WET" else "") +
             (if (com.celestial.latent.develop.Rain.wanted(wetLook.window)) " · RAIN ON GLASS" else "") +
             (if (lithLook.on) " · LITH" else "") +
+            (if (ageLook.on) " · AGED (${ageLook.story.uppercase()}), A COPY" else "") +
             when (fileFormat) {
                 com.celestial.latent.develop.DarkroomPrefs.FILE_ULTRA_HDR ->
                     if (com.celestial.latent.develop.HdrGlow.wanted(hdrGlow, lithLook)) " · ULTRA HDR ${com.celestial.latent.develop.HdrGlow.label(hdrGlow)}" else " · JPEG"
@@ -553,7 +564,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
             context, source, isRaw, recipe, upscale = printSize, exposureMap = exposureMap, softenMask = softenMap, pairFirst = pairFirst, framing = framing,
             fogMask = fogMap, fogLook = fogLook, raysMask = raysMap, raysLook = raysLook, extraLights = extraLights, depthSplit = depthSplit,
             saturationMap = saturationMap, lith = lithLook, wetMask = wetMap, wetLook = wetLook, rainMask = rainMap,
-            hdrGlow = hdrGlow, format = fileFormat,
+            hdrGlow = hdrGlow, format = fileFormat, age = ageLook,
             onStatus = { m ->
                 status = "full size: $m"
                 if (m.startsWith("failed")) fullError =
@@ -832,6 +843,10 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                     onFogLook = { fogLook = it },
                     lithLook = lithLook,
                     onLithLook = { lithLook = it },
+                    ageLook = ageLook,
+                    onAgeLook = { ageLook = it },
+                    ageSeed = ageSeed,
+                    ageWords = ageWords,
                     wetMap = wetMap,
                     onWetMap = { wetMap = it },
                     wetLook = wetLook,
