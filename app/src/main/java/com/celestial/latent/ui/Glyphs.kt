@@ -27,7 +27,7 @@ enum class Glyph(val label: String) {
     BACK("back"), CLOSE("close"), FOLD("fold"), ADD("add"), SETTINGS("settings"), HELP("help"),
     GRID("grid"), CAROUSEL("carousel"), PRINTS("prints"), SHEET("contact sheet"),
     IMPORT("import"), LOOK("look"), FOLDER("folder"), DELETE("delete"), SHARE("share"),
-    FILM("film"), HALATION("halation"), GRAIN("grain"), DIFFUSION("diffusion"), CAMERA("camera"),
+    LIGHT("light"), FILM("film"), HALATION("halation"), GRAIN("grain"), DIFFUSION("diffusion"), CAMERA("camera"),
     DEVELOP("develop"), BURST("burst"), HDR("hdr"), LOUPE("loupe"),
     ENLARGER("enlarger"), SCANNER("scanner"), GLARE("glare"), COLOUR("colour"), ENGINE("engine"), UNFOLD("unfold"), NEXT("next"),
 }
@@ -86,6 +86,14 @@ fun DrawScope.drawGlyph(g: Glyph, ink: Color, accent: Color) {
         Glyph.DELETE -> { stroke(path(4f to 7f, 20f to 7f)); stroke(path(9.5f to 7f, 9.5f to 4.5f, 14.5f to 4.5f, 14.5f to 7f))
             stroke(path(6.5f to 7f, 7.5f to 19.5f, 16.5f to 19.5f, 17.5f to 7f)); stroke(path(10.5f to 11f, 10.5f to 16f)); stroke(path(13.5f to 11f, 13.5f to 16f)) }
         Glyph.SHARE -> { stroke(path(8f to 9f, 5f to 9f, 5f to 20f, 19f to 20f, 19f to 9f, 16f to 9f)); stroke(path(12f to 3.5f, 12f to 14f)); stroke(path(8.5f to 7f, 12f to 3.5f, 15.5f to 7f)) }
+        // 100a: a sun, its disc in the accent (approved proof light-tab/proof/, scripts/Dark.kt)
+        Glyph.LIGHT -> {
+            ring(12f, 12f, 4.2f, accent)
+            for (k in 0 until 8) {
+                val a = k * PI / 4
+                stroke(path((12f + 7.5f * cos(a).toFloat()) to (12f + 7.5f * sin(a).toFloat()), (12f + 10f * cos(a).toFloat()) to (12f + 10f * sin(a).toFloat())))
+            }
+        }
         // a 35 mm canister with its leader out
         Glyph.FILM -> {
             box(3.5f, 6f, 9f, 13f, 1.6f); stroke(path(6f to 4f, 10f to 4f))

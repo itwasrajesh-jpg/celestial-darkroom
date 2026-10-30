@@ -92,7 +92,8 @@ private fun decodeEdge(edge: Int, framing: com.celestial.latent.develop.Framing)
     if (framing.zoomed) (edge * framing.zoom.coerceAtMost(2f)).toInt() else edge
 
 private val TABS = listOf(
-    "film" to "FILM", "halation" to "HALATION", "grain" to "GRAIN", "diffusion" to "DIFFUSION",
+    // 100a: the scene's light first, before the film sees it
+    "light" to "LIGHT", "film" to "FILM", "halation" to "HALATION", "grain" to "GRAIN", "diffusion" to "DIFFUSION",
     "camera" to "CAMERA", "enlarger" to "ENLARGER", "scanner" to "SCANNER", "glare" to "GLARE",
     "colour" to "COLOUR", "engine" to "ENGINE",
     // 75a: print size, Live, the develop's summary, and reset / clear / save, out of the bottom bar
@@ -100,7 +101,7 @@ private val TABS = listOf(
 )
 
 private val TAB_GLYPHS = mapOf(
-    "film" to Glyph.FILM, "halation" to Glyph.HALATION, "grain" to Glyph.GRAIN, "diffusion" to Glyph.DIFFUSION,
+    "light" to Glyph.LIGHT, "film" to Glyph.FILM, "halation" to Glyph.HALATION, "grain" to Glyph.GRAIN, "diffusion" to Glyph.DIFFUSION,
     "camera" to Glyph.CAMERA, "enlarger" to Glyph.ENLARGER, "scanner" to Glyph.SCANNER, "glare" to Glyph.GLARE,
     "colour" to Glyph.COLOUR, "engine" to Glyph.ENGINE, "develop" to Glyph.DEVELOP,
 )
@@ -214,7 +215,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
     var elapsed by remember { mutableStateOf(0) }
     var lastRenderMs by remember { mutableStateOf(0) }
     var fullJob by remember { mutableStateOf<com.celestial.latent.develop.DevelopQueue.Running?>(null) }
-    var tab by remember { mutableStateOf("film") }
+    var tab by remember { mutableStateOf("light") }
     // 74a: App help, drawn over the darkroom at the page for what is on screen
     var helpTopic by remember { mutableStateOf<String?>(null) }
     // 75b: the photo's share of the room above the controls, set by dragging the handle freely
@@ -1209,9 +1210,9 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                     }
                     Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 14.dp)) {
                         when (tab) {
-                            "film" -> {
-                                com.celestial.latent.develop.Presets.byId(context, lookId)?.let { p -> Note(p.description) }
-                                // Brightness, meaning what you expect it to mean.
+                            "light" -> {
+                                // 100a: the LIGHT tab (approved proof light-tab/proof/3-layout-*.jpg).
+                                // Exposure, meaning what you expect it to mean (moved here from FILM).
                                 //
                                 // On the print route the enlarger recomputes its exposure from the film
                                 // exposure — a printer compensating, which is faithful but means the film
@@ -1223,13 +1224,14 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                                 if (onPrintRoute) {
                                     // Print exposure is the light reaching the paper, and paper darkens
                                     // with light — longer exposure, darker print, exactly as in a
-                                    // darkroom. So the slider shows brightness and inverts it, or
-                                    // dragging right would make the picture darker.
-                                    S("Brightness", 1f / recipe.printExposure.coerceAtLeast(0.01f), 0.45f, 2.5f, "%.2f×") {
-                                        set { copy(printExposure = (1f / it).coerceIn(com.celestial.latent.develop.PRINT_EXPOSURE_MIN, com.celestial.latent.develop.PRINT_EXPOSURE_MAX)) }
+                                    // darkroom. So the slider shows brightness in stops and inverts it,
+                                    // or dragging right would make the picture darker.
+                                    val ev = (Math.log(1.0 / recipe.printExposure.coerceAtLeast(0.01f)) / Math.log(2.0)).toFloat()
+                                    S("Exposure", ev, -1.5f, 1.5f, "%+.1f EV") {
+                                        set { copy(printExposure = Math.pow(2.0, -it.toDouble()).toFloat().coerceIn(com.celestial.latent.develop.PRINT_EXPOSURE_MIN, com.celestial.latent.develop.PRINT_EXPOSURE_MAX)) }
                                     }
                                 } else {
-                                    S("Brightness", recipe.exposureEv, -3f, 3f, "%+.1f EV") { set { copy(exposureEv = it) } }
+                                    S("Exposure", recipe.exposureEv, -3f, 3f, "%+.1f EV") { set { copy(exposureEv = it) } }
                                 }
                                 Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                     // The photo opens at the brightness it was shot at. This asks the film
@@ -1257,17 +1259,28 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                                                     }.start()
                                                 }
                                             }).padding(horizontal = 12.dp, vertical = 7.dp))
-                                    Text("Reset to shot", color = LatentColors.Text, fontSize = 11.sp,
+                                    // back to the brightness it was shot at, and the four tones untouched
+                                    Text("Reset light", color = LatentColors.Text, fontSize = 11.sp,
                                         modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(LatentColors.Surface)
                                             .combinedClickable(onClick = {
                                                 Haptics.tick(context)
-                                                recipe = if (onPrintRoute) recipe.copy(printExposure = 1f) else recipe.copy(exposureEv = 0f)
+                                                val toned = recipe.copy(lightHighlights = 0f, lightShadows = 0f, lightWhites = 0f, lightBlacks = 0f)
+                                                recipe = if (onPrintRoute) toned.copy(printExposure = 1f) else toned.copy(exposureEv = 0f)
                                             }).padding(horizontal = 12.dp, vertical = 7.dp))
                                 }
+                                // the four tones, on the scene's light before the film ([SceneLight]): −1 … 1 shown as −100 … +100
+                                fun tone(v: Float) = (if (Math.round(v * 100) > 0) "+" else "") + Math.round(v * 100)
+                                S("Highlights", recipe.lightHighlights, -1f, 1f, tone(recipe.lightHighlights)) { set { copy(lightHighlights = Math.round(it * 100) / 100f) } }
+                                S("Shadows", recipe.lightShadows, -1f, 1f, tone(recipe.lightShadows)) { set { copy(lightShadows = Math.round(it * 100) / 100f) } }
+                                S("Whites", recipe.lightWhites, -1f, 1f, tone(recipe.lightWhites)) { set { copy(lightWhites = Math.round(it * 100) / 100f) } }
+                                S("Blacks", recipe.lightBlacks, -1f, 1f, tone(recipe.lightBlacks)) { set { copy(lightBlacks = Math.round(it * 100) / 100f) } }
                                 Note(if (onPrintRoute)
-                                    "Brightness sets how long the print is exposed under the enlarger — the darkroom's own way of controlling it. (In the ENLARGER tab the same control appears as print exposure, which runs the other way: more light on the paper means a darker print.) Film exposure is in Full mode: with the print compensating, it shapes contrast and colour rather than brightness."
+                                    "Exposure sets how long the print is exposed under the enlarger — the darkroom's own way of controlling brightness. Highlights, Shadows, Whites and Blacks change the scene's light before the film, so the film still draws the result."
                                 else
-                                    "This film is scanned directly, with no print stage, so brightness is the film exposure itself.")
+                                    "This film is scanned directly, with no print stage, so exposure is the film exposure itself. Highlights, Shadows, Whites and Blacks change the scene's light before the film, so the film still draws the result.")
+                            }
+                            "film" -> {
+                                com.celestial.latent.develop.Presets.byId(context, lookId)?.let { p -> Note(p.description) }
                                 S("Push / pull", recipe.pushStops, -2f, 3f, "%+.1f stop") { set { copy(pushStops = it) } }
                                 S("Film contrast", recipe.filmContrast, 0.6f, 1.6f, "%.2f") { set { copy(filmContrast = it) } }
                                 if (full) {
