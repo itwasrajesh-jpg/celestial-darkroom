@@ -122,6 +122,8 @@ internal fun <T> RollCarousel(
     }
     // a tick as each frame settles in the middle, like a click-stop
     LaunchedEffect(pager.settledPage) { if (items.isNotEmpty()) Haptics.tick(context) }
+    // 102c: the prints lean a little as the phone tilts, and catch the light
+    val tilt by rememberTilt()
     BoxWithConstraints(modifier) {
         val full = maxWidth
         val cardW = full * 0.72f
@@ -142,11 +144,15 @@ internal fun <T> RollCarousel(
                                 // how far this page is from the middle, in pages: negative to the right
                                 val o = (pager.currentPage - page) + pager.currentPageOffsetFraction
                                 val a = abs(o)
-                                rotationY = o.coerceIn(-1f, 1f) * 42f
+                                // 102c: the middle print leans fully with the phone, its neighbours half as much
+                                val lean = 1f - 0.5f * minOf(a, 1f)
+                                rotationY = o.coerceIn(-1f, 1f) * 42f + tilt.x * lean
+                                rotationX = -tilt.y * lean
                                 val s = 1f - 0.16f * minOf(a, 1.6f)
                                 scaleX = s; scaleY = s
                                 // tucked in behind the middle frame rather than a full page away
-                                translationX = o * size.width * 0.36f
+                                translationX = o * size.width * 0.36f - tilt.x * 1.5f * density * lean
+                                translationY = -tilt.y * 1.5f * density * lean
                                 cameraDistance = 14f * density
                             }
                             .width(cardW).aspectRatio(3f / 4f)
@@ -160,6 +166,18 @@ internal fun <T> RollCarousel(
                                 drawContent()
                                 val o = abs((pager.currentPage - page) + pager.currentPageOffsetFraction)
                                 if (o > 0.01f) drawRect(Color.Black.copy(alpha = 0.35f * minOf(o, 1.5f) / 1.5f))
+                                // 102c: a soft band of light that slides across the print as the phone tilts
+                                val sheen = 0.28f * (1f - minOf(o, 1f))
+                                if (sheen > 0.005f && (tilt.x != 0f || tilt.y != 0f)) {
+                                    val span = size.width + size.height * 0.7f
+                                    val pos = (0.5f + tilt.x / 14f * 0.55f + tilt.y / 8f * 0.2f) * span
+                                    // along x + 0.7 y, as in the proof; 1.2207 = its length
+                                    val dir = androidx.compose.ui.geometry.Offset(1f, 0.7f) / 1.2207f
+                                    val half = 0.20f * span
+                                    drawRect(androidx.compose.ui.graphics.Brush.linearGradient(
+                                        0f to Color.Transparent, 0.5f to Color.White.copy(alpha = sheen), 1f to Color.Transparent,
+                                        start = dir * ((pos - half) / 1.2207f), end = dir * ((pos + half) / 1.2207f)))
+                                }
                             },
                     ) { card(item) }
                 }

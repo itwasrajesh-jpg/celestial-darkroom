@@ -60,7 +60,8 @@ open class MainActivity : ComponentActivity() {
             // Clay is light: dark status and navigation icons, set again whenever the theme changes
             val light = LatentColors.Light
             SideEffect { systemBars(light) }
-            LatentTheme { Root() }
+            // 102c: a new theme spreads out from the chip that chose it
+            LatentTheme { ThemeRevealHost { Root() } }
         }
     }
 
