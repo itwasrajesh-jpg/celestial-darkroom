@@ -183,6 +183,10 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
     var preview by remember { mutableStateOf<Bitmap?>(null) }
     // 87c: the print develops out of white paper when it first appears, and again when Develop finishes
     val printDevelop = remember { PrintDevelop() }
+    // 102b: the full-size print rising out of its slot, and the stamp on a recipe just saved
+    val printOut = remember { PrintOut() }
+    var stampFor by remember { mutableStateOf<String?>(null) }
+    val lookRow = rememberScrollState()
     val developScope = rememberCoroutineScope()
     val hasPrint = preview != null
     // 88a: a frame flown in from the roll covers the mat until the print is ready; it develops as that fades
@@ -596,7 +600,12 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                     // 78a: in HDR view, the saved file itself (a thumbnail would drop its glow)
                     val b = (if (hdrView) com.celestial.latent.develop.HdrGlow.decodeSmall(context, out, 1600) else null)
                         ?: runCatching { context.contentResolver.loadThumbnail(out, android.util.Size(1600, 1600), null) }.getOrNull()
-                    if (b != null) { preview = b; previewIsPartial = false; lastFull = b; printDevelop.play(developScope) }
+                    if (b != null) {
+                        preview = b; previewIsPartial = false; lastFull = b
+                        // 102b: the print comes out of its slot; with animations off, nothing moves at all
+                        if (!printOut.play(developScope, b, "saved to DCIM/Latent" + developSummary().substringAfterLast(" · ", "").let { if (it.isEmpty()) "" else " · $it" }))
+                            printDevelop.play(developScope)
+                    }
                 }
             },
         )
@@ -727,6 +736,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                             Haptics.tick(context)
                             Recipes.save(context, clean, recipe); saveName = clean; naming = null
                             lookId = "stock:" + clean; recipesRevision++
+                            stampFor = clean; developScope.launch { lookRow.animateScrollTo(0) }
                         }).padding(horizontal = 12.dp, vertical = 7.dp))
                 Text("Cancel", color = LatentColors.Text, fontSize = 11.sp,
                     modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(LatentColors.Surface)
@@ -968,6 +978,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                         ReachGlow(reach, lightHold, com.celestial.latent.develop.SceneLight.exposureStops(recipe), aspect)
                         Safelight(renderingFine || fullRunning, aspect)
                     }
+                    PrintOutLayer(printOut)
                     // film-still bars, shown around the picture as they will be printed
                     if (framing.letterbox && !zoom.zoomed && !frameOpen && !comparing && preview != null) {
                         val pb = preview!!
@@ -1127,10 +1138,10 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                     val savedRecipes = remember(recipesRevision, com.celestial.latent.develop.Recipes.names(context).size) {
                         com.celestial.latent.develop.Recipes.saved(context)
                     }
-                    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 14.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(Modifier.fillMaxWidth().horizontalScroll(lookRow).padding(horizontal = 14.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         savedRecipes.forEachIndexed { n, (name, saved) ->
                             val on = lookId == "stock:" + name
-                            Column(
+                            Box { Column(
                                 // 87a-2: in Clay each film has its own pastel card, as in the approved proof
                                 Modifier.floating(RoundedCornerShape(6.dp), 3.dp).clip(RoundedCornerShape(6.dp)).accentFill(on, LatentColors.card(n))
                                     .combinedClickable(
@@ -1141,6 +1152,9 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                             ) {
                                 Text(name.uppercase(), color = if (on) LatentColors.AmberInk else LatentColors.TextBright, fontSize = 10.sp, letterSpacing = 1.sp)
                                 Text("your recipe", color = if (on) LatentColors.AmberInk.copy(alpha = 0.7f) else LatentColors.Text, fontSize = 8.sp)
+                            }
+                            // 102b: a recipe just saved gets its stamp
+                            if (stampFor == name) RecipeStamp(Modifier.matchParentSize()) { stampFor = null }
                             }
                         }
                         ourStocks.forEachIndexed { n, (name, saved) ->
