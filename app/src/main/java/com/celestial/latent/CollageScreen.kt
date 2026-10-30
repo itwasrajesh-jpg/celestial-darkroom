@@ -57,6 +57,8 @@ import androidx.compose.ui.unit.sp
 import com.celestial.latent.develop.Collage
 import com.celestial.latent.develop.CollageSources
 import com.celestial.latent.develop.AgedPrint
+import com.celestial.latent.develop.Occasion
+import com.celestial.latent.develop.Occasions
 import com.celestial.latent.develop.Select
 import com.celestial.latent.ui.Glyph
 import com.celestial.latent.ui.GlyphIcon
@@ -90,6 +92,11 @@ private const val SAVE_SCALE = 1.6f
  * CALENDAR (99a) is the same six pages with a month on them, one month at a time: ‹ › picks the month, the days the
  * roll has photos from get a dot, and a tap on a day circles it and types its note. Once a month is saved, Next takes
  * the roll to picking for the month after ([onNextMonth]), and the collage comes back on that month ([resume]).
+ *
+ * OCCASIONS (103b), under the month: the month's birthdays, anniversaries and festivals, each kept once and back every
+ * year. + Add (or a tap on one) opens a small form: the name, the day, the kind, and its photos, picked by tapping the
+ * prints in the strip below. Every calendar page then shows them (each face in its date, a row of portraits), and the
+ * Hearts and Portraits pages are built round them.
  */
 @Composable
 fun CollageScreen(picks: List<CollagePick>, resume: CalendarResume? = null, onBack: () -> Unit, onNextMonth: (CalendarResume) -> Unit = {}) {
@@ -140,6 +147,10 @@ fun CollageScreen(picks: List<CollagePick>, resume: CalendarResume? = null, onBa
     var calTitle by remember { mutableStateOf<String?>(null) }
     var calSub by remember { mutableStateOf<String?>(null) }
     var savedMonth by remember { mutableStateOf<Pair<Int, Int>?>(null) }
+    // 103b: every occasion kept, the one being added or changed, and the faces of this month's (by id)
+    var occasions by remember { mutableStateOf(Occasions.all(context)) }
+    var occEdit by remember { mutableStateOf<Occasion?>(null) }
+    var faces by remember { mutableStateOf<Map<Long, Bitmap>>(emptyMap()) }
     var editing by remember { mutableStateOf<String?>(null) }
     var page by remember { mutableStateOf<Collage.Page?>(null) }
     var rendering by remember { mutableStateOf(false) }
@@ -170,12 +181,21 @@ fun CollageScreen(picks: List<CollagePick>, resume: CalendarResume? = null, onBa
 
     fun words() = if (calendar) Collage.Words(calTitle ?: Collage.monthName(calMonth), calSub ?: "$calYear", order.map { captions.getOrElse(it) { "" } }, note, big)
         else Collage.Words(title, sub, order.map { captions.getOrElse(it) { "" } }, note, big)
-    fun monthOf() = if (calendar) Collage.Month(calYear, calMonth, marks, circle, dayNote) else null
+    val monthOcc = Occasions.inMonth(occasions, calYear, calMonth)
+    fun monthOf() = if (calendar) Collage.Month(calYear, calMonth, marks, circle, dayNote,
+        monthOcc.map { Collage.Occ(it.name, it.day, it.kind, faces[it.id]) }) else null
+    // each of the month's occasions' first photo, read once
+    LaunchedEffect(monthOcc.map { it.id to it.photos.firstOrNull() }) {
+        val want = monthOcc.associate { it.id to it.photos.firstOrNull() }
+        faces = withContext(Dispatchers.IO) {
+            want.mapNotNull { (id, u) -> u?.let { CollageSources.load(context, Uri.parse(it), 900) }?.let { id to it } }.toMap()
+        }
+    }
 
     LaunchedEffect(calYear, calMonth) { marks = withContext(Dispatchers.IO) { CollageSources.shotDays(context, calYear, calMonth) } }
     fun moveMonth(by: Int) {
         val m = java.time.YearMonth.of(calYear, calMonth).plusMonths(by.toLong())
-        calYear = m.year; calMonth = m.monthValue; circle = null; dayNote = ""; savedMonth = null; status = ""
+        calYear = m.year; calMonth = m.monthValue; circle = null; dayNote = ""; savedMonth = null; status = ""; occEdit = null
         if (editing?.startsWith("day") == true) editing = null
     }
 
@@ -198,7 +218,7 @@ fun CollageScreen(picks: List<CollagePick>, resume: CalendarResume? = null, onBa
     }
 
     // the preview, drawn again whenever anything on it changes (a newer change cancels an older drawing)
-    LaunchedEffect(smalls, hero, layout, seed, fadeSet, wearSet, title, sub, captions, note, big, answer, tab, calYear, calMonth, marks, circle, dayNote, calTitle, calSub) {
+    LaunchedEffect(smalls, hero, layout, seed, fadeSet, wearSet, title, sub, captions, note, big, faces, answer, tab, calYear, calMonth, marks, circle, dayNote, calTitle, calSub) {
         if (smalls.isEmpty() || order.size < 2) return@LaunchedEffect
         delay(80)
         rendering = true
@@ -308,16 +328,24 @@ fun CollageScreen(picks: List<CollagePick>, resume: CalendarResume? = null, onBa
             }
         }
         // the picked photos: tap one to make it the hero
-        Text("${usable.size} PHOTOS · TAP ONE TO MAKE IT THE HERO" + if (usable.size < picks.size) " · ${picks.size - usable.size} NOT DEVELOPED" else "",
+        val oe = occEdit
+        Text(if (oe != null) "TAP THE PHOTOS OF ${oe.name.ifBlank { "THIS OCCASION" }.uppercase()} · ${oe.photos.size} PICKED"
+            else "${usable.size} PHOTOS · TAP ONE TO MAKE IT THE HERO" + if (usable.size < picks.size) " · ${picks.size - usable.size} NOT DEVELOPED" else "",
             color = LatentColors.TextDim, fontSize = 9.sp, letterSpacing = 1.5.sp, maxLines = 1,
             modifier = Modifier.padding(horizontal = 18.dp).padding(top = 6.dp, bottom = 6.dp))
         Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 18.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             usable.forEach { i ->
-                val on = i == hero
+                val pic = pictures.getOrNull(i)?.toString()
+                val inOcc = oe != null && pic != null && pic in oe.photos
+                val on = if (oe != null) inOcc else i == hero
                 Box(Modifier.size(40.dp, 50.dp).clip(RoundedCornerShape(3.dp)).then(if (on) Modifier.border(2.dp, LatentColors.Amber, RoundedCornerShape(3.dp)) else Modifier)
-                    .combinedClickable(onClick = { Haptics.tick(context); if (hero == i && layout == "cutout" && modelsReady) choosing = true else hero = i })) {
+                    .combinedClickable(onClick = {
+                        Haptics.tick(context)
+                        if (oe != null) { if (pic != null) occEdit = oe.copy(photos = if (inOcc) oe.photos - pic else oe.photos + pic) }
+                        else if (hero == i && layout == "cutout" && modelsReady) choosing = true else hero = i
+                    })) {
                     smalls[i]?.let { Image(it.asImageBitmap(), null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize()) }
-                    if (on) Text("HERO", color = LatentColors.AmberInk, fontSize = 7.sp, letterSpacing = 0.5.sp, textAlign = TextAlign.Center,
+                    if (on) Text(if (oe != null) "✓" else "HERO", color = LatentColors.AmberInk, fontSize = 7.sp, letterSpacing = 0.5.sp, textAlign = TextAlign.Center,
                         modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth().accentFill().padding(vertical = 1.dp))
                 }
             }
@@ -325,7 +353,7 @@ fun CollageScreen(picks: List<CollagePick>, resume: CalendarResume? = null, onBa
         // two kinds: staged scenes (the next step) and flat layouts
         Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(top = 12.dp), horizontalArrangement = Arrangement.spacedBy(18.dp)) {
             for ((label, on) in listOf("SCENES" to scenes, "LAYOUTS" to (tab == "layouts"), "CALENDAR" to calendar)) Column(Modifier.combinedClickable(onClick = {
-                tab = label.lowercase(); editing = null; status = "" })) {
+                tab = label.lowercase(); editing = null; occEdit = null; status = "" })) {
                 Text(label, color = if (on) LatentColors.Amber else LatentColors.TextDim, fontSize = 10.sp, letterSpacing = 1.5.sp)
                 Box(Modifier.padding(top = 4.dp).height(2.dp).width(if (on) 40.dp else 0.dp).clip(RoundedCornerShape(1.dp)).accentFill())
             }
@@ -342,6 +370,43 @@ fun CollageScreen(picks: List<CollagePick>, resume: CalendarResume? = null, onBa
             Text("${Collage.monthName(calMonth).uppercase()} $calYear", color = LatentColors.TextBright, fontSize = 12.sp, letterSpacing = 1.5.sp)
             Text("›", color = LatentColors.Amber, fontSize = 18.sp, modifier = Modifier.combinedClickable(onClick = { Haptics.tick(context); moveMonth(1) }).padding(horizontal = 12.dp))
         }
+        // 103b: the month's occasions, and the form for one
+        if (calendar) Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("OCCASIONS", color = LatentColors.TextDim, fontSize = 10.sp, letterSpacing = 1.5.sp, modifier = Modifier.padding(end = 10.dp))
+            Row(Modifier.weight(1f).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                monthOcc.forEach { o -> Chip("${o.name.ifBlank { "?" }} · ${o.day}", on = occEdit?.id == o.id) { Haptics.tick(context); editing = null; occEdit = occasions.firstOrNull { it.id == o.id } } }
+                Chip("+ Add", on = occEdit != null && occasions.none { it.id == occEdit?.id }) {
+                    Haptics.tick(context); editing = null
+                    occEdit = Occasion(System.currentTimeMillis(), "", calMonth, circle ?: 1, "birthday", emptyList())
+                }
+            }
+        }
+        val form = occEdit
+        if (calendar && form != null) Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(top = 8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                BasicTextField(form.name, onValueChange = { occEdit = form.copy(name = it.take(30)) }, singleLine = true,
+                    textStyle = TextStyle(color = LatentColors.TextBright, fontSize = 13.sp), cursorBrush = SolidColor(LatentColors.Amber),
+                    decorationBox = { inner -> Box { if (form.name.isEmpty()) Text("Name", color = LatentColors.TextDim, fontSize = 13.sp); inner() } },
+                    modifier = Modifier.weight(1f).clip(RoundedCornerShape(6.dp)).background(LatentColors.Surface).padding(horizontal = 10.dp, vertical = 8.dp))
+                val days = java.time.Month.of(form.month).maxLength()
+                Text("‹", color = LatentColors.Amber, fontSize = 18.sp, modifier = Modifier.combinedClickable(onClick = { occEdit = form.copy(day = if (form.day <= 1) days else form.day - 1) }).padding(horizontal = 10.dp))
+                Text("${form.day} ${Collage.monthName(form.month).take(3).uppercase()}", color = LatentColors.TextBright, fontSize = 12.sp, letterSpacing = 1.sp)
+                Text("›", color = LatentColors.Amber, fontSize = 18.sp, modifier = Modifier.combinedClickable(onClick = { occEdit = form.copy(day = if (form.day >= days) 1 else form.day + 1) }).padding(horizontal = 10.dp))
+            }
+            Row(Modifier.padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Occasion.KINDS.forEach { k -> Chip(k.replaceFirstChar { it.uppercase() }, on = form.kind == k) { occEdit = form.copy(kind = k) } }
+                Spacer(Modifier.weight(1f))
+                val known = occasions.any { it.id == form.id }
+                if (known) Text("Delete", color = LatentColors.Text, fontSize = 12.sp, modifier = Modifier.combinedClickable(onClick = {
+                    Occasions.remove(context, form.id); occasions = Occasions.all(context); occEdit = null; savedMonth = null }).padding(6.dp))
+                Text("Cancel", color = LatentColors.Text, fontSize = 12.sp, modifier = Modifier.combinedClickable(onClick = { occEdit = null }).padding(6.dp))
+                val ok = form.name.isNotBlank()
+                Text("Keep", color = if (ok) LatentColors.Amber else LatentColors.TextDim, fontSize = 12.sp, modifier = Modifier.combinedClickable(enabled = ok, onClick = {
+                    Haptics.click(context); Occasions.put(context, form); occasions = Occasions.all(context); occEdit = null; savedMonth = null
+                    android.util.Log.i("Latent", "occasion kept: ${form.kind} ${form.day}/${form.month}, ${form.photos.size} photos")
+                }).padding(6.dp))
+            }
+        }
         // a month saved: on to the next one, picked in the roll
         val saved = savedMonth
         if (calendar && saved != null) Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(top = 10.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -356,6 +421,7 @@ fun CollageScreen(picks: List<CollagePick>, resume: CalendarResume? = null, onBa
             scenes -> "Table, Album, Fridge and Wall come in the next update"
             status.isNotEmpty() -> status
             calendar && circle != null -> "${circle} ${Collage.monthName(calMonth).take(3)} circled · tap it to change the note"
+            calendar && layout in Collage.OCCASION && monthOcc.isEmpty() -> "${Collage.LABELS[layout]} · add this month's birthdays under OCCASIONS"
             calendar && layout != "cutout" -> "Dots: days with photos · tap a day to circle it"
             layout == "cutout" && !modelsReady -> downloading?.let { "downloading the tap-to-select models… ${(it * 100).roundToInt()}%" } ?: "Cut-out uses the tap-to-select models (25 MB)"
             layout == "cutout" -> "Cut-out · tap the hero again to change who"
