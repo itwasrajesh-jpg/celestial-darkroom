@@ -202,6 +202,15 @@ data class Recipe(
     val nightCleanStrength: Float = 25f,
     val nightCleanFollow: Boolean = false,
     /**
+     * 100a: the LIGHT tab, on the scene's light BEFORE the film ([SceneLight]): −1 … 1 (shown as
+     * −100 … +100), 0 = untouched. Highlights / Shadows / Whites / Blacks each lift or lower their
+     * part of the picture by up to 1.6 / 1.6 / 1 / 1 stops.
+     */
+    val lightHighlights: Float = 0f,
+    val lightShadows: Float = 0f,
+    val lightWhites: Float = 0f,
+    val lightBlacks: Float = 0f,
+    /**
      * A look's own tone curve on the finished print (70a), as x0, y0, x1, y1 … in 0–1; empty = none.
      * Two of the engine's looks need it: Faded Matte lifts the blacks with it, Bleach Bypass adds
      * its contrast with it. Applied by the engine as its very last step, so the preview has it too.
@@ -326,6 +335,8 @@ data class Recipe(
         put("chromaDenoise", chromaDenoise.toDouble())
         put("lumaDenoise", lumaDenoise.toDouble())
         put("nightClean", nightClean); put("nightCleanStrength", nightCleanStrength.toDouble()); put("nightCleanFollow", nightCleanFollow)
+        put("lightHighlights", lightHighlights.toDouble()); put("lightShadows", lightShadows.toDouble())
+        put("lightWhites", lightWhites.toDouble()); put("lightBlacks", lightBlacks.toDouble())
         put("filterUvAmount", filterUvAmount.toDouble()); put("filterUvNm", filterUvNm.toDouble()); put("filterUvWidth", filterUvWidth.toDouble())
         put("filterIrAmount", filterIrAmount.toDouble()); put("filterIrNm", filterIrNm.toDouble()); put("filterIrWidth", filterIrWidth.toDouble())
         put("meteringMethod", meteringMethod)
@@ -388,6 +399,8 @@ data class Recipe(
                 lumaDenoise = f("lumaDenoise", d.lumaDenoise),
                 nightClean = o.optBoolean("nightClean", d.nightClean), nightCleanStrength = f("nightCleanStrength", d.nightCleanStrength),
                 nightCleanFollow = o.optBoolean("nightCleanFollow", d.nightCleanFollow),
+                lightHighlights = f("lightHighlights", d.lightHighlights), lightShadows = f("lightShadows", d.lightShadows),
+                lightWhites = f("lightWhites", d.lightWhites), lightBlacks = f("lightBlacks", d.lightBlacks),
                 filterUvAmount = f("filterUvAmount", d.filterUvAmount), filterUvNm = f("filterUvNm", d.filterUvNm),
                 filterUvWidth = f("filterUvWidth", d.filterUvWidth),
                 filterIrAmount = f("filterIrAmount", d.filterIrAmount), filterIrNm = f("filterIrNm", d.filterIrNm),

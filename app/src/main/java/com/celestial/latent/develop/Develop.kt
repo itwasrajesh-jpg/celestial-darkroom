@@ -270,6 +270,7 @@ object Develop {
         r.diffusion, r.diffusionFamily, r.diffusionStrength, r.diffusionScale, r.diffusionCore, r.diffusionCoreSize,
         r.diffusionHalo, r.diffusionHaloSize, r.diffusionBloom, r.diffusionBloomSize, r.diffusionWarmth,
         r.fastDiffusion, r.filmFormatMm, r.printDiffusion, r.printDiffusionFamily, r.printDiffusionStrength,
+        SceneLight.key(r),
     ).joinToString(",")
 
     /** The foreground split for lights limited to a side: the one given, or the photo's saved split; null when no light needs it. */
@@ -392,10 +393,12 @@ object Develop {
         nightCleanSource(context, working, recipe, log)
         denoiseSource(working, recipe, isoUsed, log)
         sensorNoiseSource(working, recipe, isoUsed, log)
+        // 100a: the LIGHT tab, on the photo's own light — the lights placed after it are as you set them
+        SceneLight.apply(working, recipe, log)
         // what lies under the lights: while it is unchanged, the noise-free copy they land on is reused
         // (the photo — both frames of a pair — and its size, by the decode's own key, then everything applied before the lights)
         val underLights = listOf(key, framing.key(), isoUsed, recipe.chromaDenoise, recipe.lumaDenoise,
-            recipe.nightClean, recipe.nightCleanStrength, recipe.nightCleanFollow,
+            recipe.nightClean, recipe.nightCleanStrength, recipe.nightCleanFollow, SceneLight.key(recipe),
             raysMask?.stops?.contentHashCode() ?: 0, split?.stops?.contentHashCode() ?: 0, working.width, working.height).joinToString("|")
         // the lights on what they meet first, then the air in front of them (60e): fog laid before the
         // light was lit by it as if it were a wall, in patches where the depth said shadow or sun
@@ -1295,7 +1298,7 @@ object Develop {
 
     /**
      * Everything a full develop does to the framed picture before the film, in order, in place:
-     * noise, the lights on surfaces, wet ground, the fog, the light in the air, god rays, the rain
+     * noise, the LIGHT tab (100a), the lights on surfaces, wet ground, the fog, the light in the air, god rays, the rain
      * on the window, the lens filter and the diffusion filters. Shared by [developFull] and the
      * living photo (66a), which develops the same edit several times with one thing changed.
      * [fogScale] thickens the fog alone (not the lights' reading of it); [beforeRain] is shown the
@@ -1310,6 +1313,7 @@ object Develop {
         nightCleanSource(context, s, recipe, log)
         denoiseSource(s, recipe, iso, log)
         sensorNoiseSource(s, recipe, iso, log)
+        SceneLight.apply(s, recipe, log)
         val split = splitFor(context, source, listOf(raysLook) + extraLights, depthSplit)
         // the lights on surfaces, then the air in front of them (60e), as in the preview
         sunOnSurfaces(s, listOf(raysLook) + extraLights, raysMask, sunIn, log, null, split)
