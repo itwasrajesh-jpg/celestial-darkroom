@@ -531,6 +531,12 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
     // The decoded copy is kept by Develop.Cache so coming back is instant; nothing to free here.
 
     fun set(block: Recipe.() -> Recipe) { recipe = recipe.block() }
+    // 100b: a look changes the film, not the photo's light: the LIGHT tab is carried over
+    fun pickLook(id: String, look: Recipe) {
+        val base = filmLook(context, recipe, lookId, ownRecipe != null)
+        lookId = id
+        recipe = com.celestial.latent.develop.SceneLight.keepLight(recipe, base, look)
+    }
 
     /** What a full-size develop will include (it used to sit in the bottom bar, before 75a). */
     fun developSummary(): String {
@@ -684,7 +690,9 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                 modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(LatentColors.Surface)
                     .combinedClickable(onClick = {
                         Haptics.tick(context)
-                        val fresh = filmLook(context, recipe, lookId, ownRecipe != null)
+                        // 100b: the film's own look again, but your LIGHT tab stays (Reset light clears it)
+                        val look = filmLook(context, recipe, lookId, ownRecipe != null)
+                        val fresh = com.celestial.latent.develop.SceneLight.keepLight(recipe, look, look)
                         if (fresh != recipe) { beforeReset = recipe; resetTo = fresh; recipe = fresh }
                     }).padding(horizontal = 12.dp, vertical = 7.dp))
             Text("Clear effects", color = LatentColors.Text, fontSize = 11.sp,
@@ -1112,7 +1120,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                                 // 87a-2: in Clay each film has its own pastel card, as in the approved proof
                                 Modifier.floating(RoundedCornerShape(6.dp), 3.dp).clip(RoundedCornerShape(6.dp)).accentFill(on, LatentColors.card(n))
                                     .combinedClickable(
-                                        onClick = { Haptics.tick(context); lookId = "stock:" + name; recipe = saved },
+                                        onClick = { Haptics.tick(context); pickLook("stock:" + name, saved) },
                                         onLongClick = { Haptics.click(context); managing = name; manageName = name; deleteAsk = false },
                                     )
                                     .padding(horizontal = 11.dp, vertical = 6.dp),
@@ -1125,7 +1133,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                             val on = lookId == "stock:" + name
                             Column(
                                 Modifier.floating(RoundedCornerShape(6.dp), 3.dp).clip(RoundedCornerShape(6.dp)).accentFill(on, LatentColors.card(savedRecipes.size + n))
-                                    .combinedClickable(onClick = { Haptics.tick(context); lookId = "stock:" + name; recipe = saved })
+                                    .combinedClickable(onClick = { Haptics.tick(context); pickLook("stock:" + name, saved) })
                                     .padding(horizontal = 11.dp, vertical = 6.dp),
                             ) {
                                 Text(name.uppercase(), color = if (on) LatentColors.AmberInk else LatentColors.TextBright, fontSize = 10.sp, letterSpacing = 1.sp)
@@ -1136,7 +1144,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                             val on = preset.id == lookId
                             Column(
                                 Modifier.floating(RoundedCornerShape(6.dp), 3.dp).clip(RoundedCornerShape(6.dp)).accentFill(on, LatentColors.card(savedRecipes.size + ourStocks.size + n))
-                                    .combinedClickable(onClick = { Haptics.tick(context); lookId = preset.id; recipe = preset.recipe })
+                                    .combinedClickable(onClick = { Haptics.tick(context); pickLook(preset.id, preset.recipe) })
                                     .padding(horizontal = 11.dp, vertical = 6.dp),
                             ) {
                                 Text(preset.name.substringBefore(" — ").uppercase(), color = if (on) LatentColors.AmberInk else LatentColors.TextBright, fontSize = 10.sp, letterSpacing = 1.sp)

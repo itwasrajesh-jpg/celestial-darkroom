@@ -41,9 +41,28 @@ object SceneLight {
      * rest follow it, so after brightening, more of the picture counts as highlights (as in the proof).
      */
     fun exposureStops(r: Recipe): Float {
-        val onPrintRoute = !r.scanFilm && !Develop.isSlideFilm(r.film)
-        return if (onPrintRoute) log2(1f / r.printExposure.coerceAtLeast(0.01f)) + (if (r.printExposureCompensation) 0f else r.exposureEv)
+        return if (onPrintRoute(r)) log2(1f / r.printExposure.coerceAtLeast(0.01f)) + (if (r.printExposureCompensation) 0f else r.exposureEv)
         else r.exposureEv
+    }
+
+    private fun onPrintRoute(r: Recipe) = !r.scanFilm && !Develop.isSlideFilm(r.film)
+
+    /**
+     * 100b: the LIGHT tab belongs to the photo, not to the film, so it survives a change of look.
+     * [to] (a look just tapped, or the film's own look on Reset to film) gets [from]'s four tones,
+     * and its exposure moved by as much as [from] had moved from [base], the look it started from —
+     * so a look that sets its own print exposure keeps it, plus your change. Across print film ↔
+     * slide film the exposure means a different thing (enlarger time vs film exposure): there the
+     * new look keeps its own.
+     */
+    fun keepLight(from: Recipe, base: Recipe, to: Recipe): Recipe {
+        val toned = to.copy(lightHighlights = from.lightHighlights, lightShadows = from.lightShadows,
+            lightWhites = from.lightWhites, lightBlacks = from.lightBlacks)
+        val print = onPrintRoute(from)
+        if (print != onPrintRoute(to) || print != onPrintRoute(base)) return toned
+        return if (print) toned.copy(printExposure = (to.printExposure * from.printExposure / base.printExposure.coerceAtLeast(0.01f))
+            .coerceIn(PRINT_EXPOSURE_MIN, PRINT_EXPOSURE_MAX))
+        else toned.copy(exposureEv = (to.exposureEv + from.exposureEv - base.exposureEv).coerceIn(-3f, 3f))
     }
 
     /** What the preparation reads from the recipe; "-" when the tab is untouched (and the exposure then never re-prepares). */
