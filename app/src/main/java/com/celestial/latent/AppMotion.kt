@@ -1,6 +1,7 @@
 package com.celestial.latent
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
@@ -18,7 +19,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
@@ -28,9 +28,9 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.clipPath
-import androidx.compose.ui.graphics.layer.drawLayer
-import androidx.compose.ui.graphics.rememberGraphicsLayer
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
 import com.celestial.latent.ui.AppTheme
 import com.celestial.latent.ui.LatentColors
@@ -51,7 +51,8 @@ internal object ThemeReveal {
     /** Changes to [theme], spreading from [at]; at once when animations are off or no place is known. */
     fun start(ctx: Context, at: Offset?, theme: AppTheme) {
         if (theme == LatentColors.theme) return
-        if (at == null || !motionOn()) LatentColors.set(ctx, theme) else pending = at to theme
+        // a tap while one is still spreading just changes the colours
+        if (at == null || !motionOn() || pending != null) LatentColors.set(ctx, theme) else pending = at to theme
     }
     internal fun taken() { pending = null }
 }
@@ -59,30 +60,38 @@ internal object ThemeReveal {
 private const val REVEAL_MS = 650
 
 /**
- * Around the whole app: when a theme change is asked for, the screen as it is is caught in one frame;
+ * Around the whole app: when a theme change is asked for, the screen as it is is caught in a picture;
  * then the new colours come in under it, through a circle growing from the chip, with a faint lit rim.
+ *
+ * 102d: the first version caught the screen from a graphics layer and cleared the request before the
+ * circle had grown — clearing it restarted (so cancelled) the very effect drawing the circle, and the
+ * colours just switched. Now the window draws itself into a bitmap, and the request is cleared only
+ * once the circle is done.
  */
 @Composable
 internal fun ThemeRevealHost(content: @Composable () -> Unit) {
     val ctx = LocalContext.current
-    val layer = rememberGraphicsLayer()
+    val view = LocalView.current
     var old by remember { mutableStateOf<ImageBitmap?>(null) }
     var centre by remember { mutableStateOf(Offset.Zero) }
     val r = remember { Animatable(0f) }
     val ask = ThemeReveal.pending
     LaunchedEffect(ask) {
         if (ask == null) return@LaunchedEffect
-        withFrameNanos { }                      // the frame that recorded the old colours has been drawn
-        old = runCatching { layer.toImageBitmap() }.getOrNull()
-        centre = ask.first
-        LatentColors.set(ctx, ask.second); ThemeReveal.taken()
-        if (old != null) { r.snapTo(0f); r.animateTo(1f, tween(REVEAL_MS, easing = FastOutSlowInEasing)) }
-        old = null
+        try {
+            val shot = runCatching {
+                Bitmap.createBitmap(view.width, view.height, Bitmap.Config.ARGB_8888).also { view.draw(android.graphics.Canvas(it)) }.asImageBitmap()
+            }.onFailure { android.util.Log.w("Latent", "theme reveal: could not catch the screen", it) }.getOrNull()
+            centre = ask.first; r.snapTo(0f); old = shot
+            LatentColors.set(ctx, ask.second)
+            android.util.Log.i("Latent", "theme reveal: ${ask.second} from ${ask.first} · ${if (shot != null) "${shot.width}x${shot.height}" else "no picture"}")
+            if (shot != null) r.animateTo(1f, tween(REVEAL_MS, easing = FastOutSlowInEasing))
+        } finally {
+            old = null; ThemeReveal.taken()
+        }
     }
     Box(Modifier.fillMaxSize().drawWithContent {
-        // the old colours are only recorded for the one frame they are needed in
-        if (ThemeReveal.pending != null && old == null) { layer.record { this@drawWithContent.drawContent() }; drawLayer(layer) }
-        else drawContent()
+        drawContent()
         val img = old ?: return@drawWithContent
         val far = max(max(hypot(centre.x, centre.y), hypot(size.width - centre.x, centre.y)),
             max(hypot(centre.x, size.height - centre.y), hypot(size.width - centre.x, size.height - centre.y)))
