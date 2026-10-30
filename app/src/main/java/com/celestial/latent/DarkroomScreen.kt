@@ -1210,8 +1210,9 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                                     .combinedClickable(onClick = { Haptics.tick(context); tab = id }).widthIn(min = 52.dp).padding(horizontal = 7.dp, vertical = 5.dp),
                                 horizontalAlignment = Alignment.CenterHorizontally,
                             ) {
+                                // 101a: the glyph moves once as its tab is chosen (the whole chip is the button)
                                 GlyphIcon(TAB_GLYPHS[id] ?: Glyph.FILM, if (on) LatentColors.AmberInk else LatentColors.TextBright, size = 18.dp,
-                                    accent = if (on) LatentColors.AmberInk else LatentColors.Amber)
+                                    accent = if (on) LatentColors.AmberInk else LatentColors.Amber, tap = false, play = if (on) id else null)
                                 Text(label, color = ink, fontSize = 8.sp, letterSpacing = 0.6.sp, modifier = Modifier.padding(top = 3.dp))
                             }
                         }
