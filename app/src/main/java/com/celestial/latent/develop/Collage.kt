@@ -38,17 +38,29 @@ import kotlin.math.sqrt
  *
  * The pages hold any number of photos from 2 up to [MAX_PHOTOS]: each layout grows or shrinks its pattern to fit
  * (a grid adds rows, the honeycomb grows its cells, the film strip its frames), and a few cap how many they use.
+ *
+ * 103a adds ten more, from the approved pages in calendar/designs-2 (Celestial's own Google references): Heart,
+ * Diamonds, Circles, Side column, Slices, Mosaic, Number, Letter, Paint splash and Photo dump. The ones made of many
+ * small tiles (Heart, Mosaic, Number, Letter) fill every tile, repeating photos when there are fewer than tiles,
+ * as the approved pages do.
  */
 object Collage {
     const val W = 1240
     const val MAX_PHOTOS = 13
-    val LAYOUTS = listOf("grid", "hexagon", "strip", "scrapbook", "polaroid", "cutout")
+    val LAYOUTS = listOf("grid", "hexagon", "strip", "scrapbook", "polaroid", "cutout",
+        "heart", "diamond", "circles", "side", "slices", "mosaic", "number", "letter", "splash", "dump")
     val LABELS = mapOf("grid" to "Grid", "hexagon" to "Hexagon", "strip" to "Film strip", "scrapbook" to "Scrapbook",
-        "polaroid" to "Polaroid", "cutout" to "Cut-out")
-    /** How many photos a layout uses at most (the hero included). */
-    val CAP = mapOf("grid" to 13, "hexagon" to 13, "strip" to 7, "scrapbook" to 5, "polaroid" to 12, "cutout" to 10)
+        "polaroid" to "Polaroid", "cutout" to "Cut-out", "heart" to "Heart", "diamond" to "Diamonds", "circles" to "Circles",
+        "side" to "Side column", "slices" to "Slices", "mosaic" to "Mosaic", "number" to "Number", "letter" to "Letter",
+        "splash" to "Paint splash", "dump" to "Photo dump")
+    /** How many photos a layout uses at most (the hero included). Slices cuts the hero alone into strips, as approved. */
+    val CAP = mapOf("grid" to 13, "hexagon" to 13, "strip" to 7, "scrapbook" to 5, "polaroid" to 12, "cutout" to 10,
+        "heart" to 13, "diamond" to 11, "circles" to 13, "side" to 6, "slices" to 1, "mosaic" to 13, "number" to 13,
+        "letter" to 13, "splash" to 4, "dump" to 6)
     /** The layouts with a caption under each print. */
-    val CAPTIONED = setOf("scrapbook", "polaroid")
+    val CAPTIONED = setOf("scrapbook", "polaroid", "circles")
+    /** The layouts drawn round a big number or letter, typed by tapping it ([Words.big]). */
+    val BIG = setOf("number", "letter")
     /** On a calendar page: the scrapbook's notebook holds the month, and its fifth print would lie under the pen note. */
     val CALENDAR_CAP = CAP + ("scrapbook" to 4)
 
@@ -62,8 +74,11 @@ object Collage {
         Typeface.createFromAsset(context.assets, "collage/playfair.ttf"),
     ).also { fontCache = it }
 
-    /** The words on the page: a title, a line under it, a caption per photo (in the photos' order) and a note. */
-    data class Words(val title: String, val sub: String, val captions: List<String>, val note: String = "")
+    /**
+     * The words on the page: a title, a line under it, a caption per photo (in the photos' order) and a note. [big] is
+     * the number or letter that Number and Letter build out of photos (blank: "1", and the title's first letter).
+     */
+    data class Words(val title: String, val sub: String, val captions: List<String>, val note: String = "", val big: String = "")
 
     /** Where a piece of text sits on the page (in page units), so a tap there can edit it: "title", "sub", "note", "cap:<i>". */
     class TextSpot(val id: String, val box: RectF)
@@ -119,6 +134,15 @@ object Collage {
             "scrapbook" -> d.scrapbook(c, h)
             "polaroid" -> d.polaroid(c, h)
             "cutout" -> d.cutout(c, h, cut)
+            "heart" -> d.heart(c, h)
+            "diamond" -> d.diamonds(c, h)
+            "circles" -> d.circles(c, h)
+            "side" -> d.side(c, h)
+            "slices" -> d.slices(c, h)
+            "mosaic" -> d.mosaic(c, h)
+            "number", "letter" -> d.big(c, h, layout == "number")
+            "splash" -> d.splash(c, h)
+            "dump" -> d.dump(c, h)
             else -> d.grid(c, h)
         }
         return Page(bmp, bw, bh, d.spots)
@@ -138,6 +162,7 @@ object Collage {
             // calendar pages: A4 (1754) as the proofs, except where the page grows with its photos
             "grid" -> gridPlan().let { it.bottom + 50 + 536 }
             "polaroid" -> { val rows = ceil(used.size / 3.0).toInt(); 260 + (rows - 1) * 370 + 355 + 414 }
+            "mosaic" -> mosaicPlan().bottom + 12 + 480
             else -> 1754
         } else when (layout) {
             "grid" -> gridPlan().let { it.bottom + 50 + 290 }
@@ -146,6 +171,14 @@ object Collage {
             "scrapbook" -> 1620
             "polaroid" -> { val rows = ceil(used.size / 3.0).toInt(); 260 + (rows - 1) * 370 + 205 + 270 }
             "cutout" -> 1310
+            "heart", "side" -> 1754
+            "diamond", "splash" -> 1360
+            "circles" -> 1310
+            "slices" -> 1420
+            "mosaic" -> mosaicPlan().bottom + 210
+            "number" -> 1230
+            "letter" -> 1310
+            "dump" -> 1420
             else -> 1600
         }
 
@@ -434,14 +467,412 @@ object Collage {
             if (month != null) monthBlock(c, RectF(330f, 1300f, W - 330f, h - 60f), rgb(40, 34, 30), rgb(190, 60, 50), noteX = 315f, noteSize = 38f, num = f.serif)
         }
 
+        // ---- 103a: the ten pages of calendar/designs-2 --------------------------------------------------------------
+
+        /** The other photos, tile [i] of many: they repeat in turn when there are more tiles than photos. */
+        fun tile(i: Int): Bitmap = if (others.isEmpty()) hero else photos[others[i % others.size]]
+
+        /** How much of [r] (page units) lies inside [path]: drawn once into a small mask, a quarter of the page's size. */
+        inner class Cover(path: Path, w: Int, h: Int) {
+            private val mw = max(1, w / 4); private val mh = max(1, h / 4)
+            private val px = IntArray(mw * mh)
+            init {
+                val b = Bitmap.createBitmap(mw, mh, Bitmap.Config.ARGB_8888)
+                Canvas(b).apply { scale(0.25f, 0.25f); drawPath(path, fill(rgb(255, 255, 255))) }
+                b.getPixels(px, 0, mw, 0, 0, mw, mh); b.recycle()
+            }
+            fun of(r: RectF): Float {
+                val x0 = (r.left / 4).toInt().coerceIn(0, mw - 1); val x1 = (r.right / 4).toInt().coerceIn(x0 + 1, mw)
+                val y0 = (r.top / 4).toInt().coerceIn(0, mh - 1); val y1 = (r.bottom / 4).toInt().coerceIn(y0 + 1, mh)
+                var n = 0
+                for (y in y0 until y1) for (x in x0 until x1) if ((px[y * mw + x] ushr 24) > 128) n++
+                return n.toFloat() / ((x1 - x0) * (y1 - y0))
+            }
+        }
+
+        /** A photo in a white-edged window of [path]: the edge [border] wide, a soft shadow under it all. */
+        fun windowed(c: Canvas, path: Path, edge: Path?, b: Bitmap, box: RectF, op: Float, blur: Float, dx: Float, dy: Float, fx: Float = 0.5f, fy: Float = 0.5f) {
+            shadow(c, edge ?: path, blur, dx, dy, op)
+            if (edge != null) c.drawPath(edge, fill(rgb(255, 255, 255)))
+            c.save(); c.clipPath(path); photo(c, b, box, fx, fy); c.restore()
+        }
+
+        /** A print with a white border [b] round a [w] × [h] photo, laid at (cx, cy) turned [angle] degrees clockwise. */
+        fun print(c: Canvas, b: Bitmap, cx: Float, cy: Float, w: Float, h: Float, border: Float, angle: Float, op: Float, blur: Float, dx: Float, dy: Float,
+                  col: Int = rgb(252, 250, 246), paint: Paint? = null) {
+            val pw = w + 2 * border; val ph = h + 2 * border
+            put(c, cx, cy, pw, ph, angle, op, blur, dx, dy, Path().apply { addRect(0f, 0f, pw, ph, Path.Direction.CW) }) { p ->
+                p.drawRect(0f, 0f, pw, ph, fill(col)); photo(p, b, RectF(border, border, border + w, border + h), paint = paint)
+            }
+        }
+
+        // ---- 1) HEART: a grid of photos in a black frame, the hero in a big heart window, wishes in script --------
+        fun heart(c: Canvas, h: Int) {
+            paper(c, W, h, rgb(252, 250, 246), 0.02f, 21)
+            val m = 46f; val gx0 = m + 40; val gy0 = m + 40
+            val cols = 5; val rows = 6; val gap = 12f
+            val tw = (W - 2 * gx0 - gap * (cols - 1)) / cols
+            val gy1 = gy0 + rows * tw + (rows - 1) * gap
+            // the heart over the middle 3 × 4 tiles; a tile mostly under it is left out, one it cuts keeps its part outside
+            val hw = 3 * tw + 2 * gap + 40; val hh = 4 * tw + 3 * gap - 40
+            val hx = gx0 + tw + gap - 20; val hy = gy0 + tw + gap + 30
+            val hole = heartPath(hx - 20, hy - 20, hw + 40, hh + 40)
+            val cover = Cover(hole, W, h)
+            var k = 0
+            for (r in 0 until rows) for (col in 0 until cols) {
+                val x = gx0 + col * (tw + gap); val y = gy0 + r * (tw + gap)
+                val cell = RectF(x, y, x + tw, y + tw)
+                if (cover.of(cell) > 0.55f) continue
+                c.save(); c.clipOutPath(hole); photo(c, tile(k++), cell); c.restore()
+            }
+            windowed(c, heartPath(hx, hy, hw, hh), heartPath(hx - 10, hy - 10, hw + 20, hh + 20), hero, RectF(hx, hy, hx + hw, hy + hh), 0.45f, 16f, 5f, 10f, fx = 0.42f)
+            // the bottom: the month to the left with a heart on its day, the wishes to the right (centred without a month)
+            val by = gy1 + 40; val ink = rgb(60, 50, 50); val red = rgb(190, 40, 60)
+            val mo = month
+            val rx = if (mo != null) W - m - 60 else W / 2f
+            val a = if (mo != null) Anchor.RM else Anchor.MM
+            text(c, "sub", words.sub, rx, by + 20, f.script, 60f, ink, a, maxW = 600f)
+            text(c, "title", words.title, rx, by + 115, f.script, 150f, red, a, maxW = 600f)
+            text(c, "note", words.note, rx, by + 220, f.hand, 36f, rgb(110, 96, 90), a, maxW = 600f)
+            if (mo != null) {
+                text(c, null, "${monthName(mo.month).uppercase()} ${mo.year}", gx0 + 4, by - 34, f.sans, 26f, ink, Anchor.LA)
+                monthBlock(c, RectF(gx0, by, gx0 + 470, h - m - 50), ink, red, noteX = gx0 + 490, noteSize = 34f, heart = rgb(200, 30, 55), noteRight = true)
+            }
+            // the frame
+            val black = fill(rgb(18, 16, 16))
+            c.drawRect(0f, 0f, W.toFloat(), m, black); c.drawRect(0f, h - m, W.toFloat(), h.toFloat(), black)
+            c.drawRect(0f, 0f, m, h.toFloat(), black); c.drawRect(W - m, 0f, W.toFloat(), h.toFloat(), black)
+        }
+
+        // ---- 2) DIAMONDS: the hero a big diamond in the middle of a diamond lattice, two plain ones as accents -------
+        fun diamonds(c: Canvas, h: Int) {
+            paper(c, W, h, rgb(246, 246, 244), 0.015f, 51)
+            val cx = W / 2f; val cy = 640f; val s = 285f
+            windowed(c, diamondPath(cx, cy, 2 * s - 10), diamondPath(cx, cy, 2 * s + 6), hero, RectF(cx - s, cy - s, cx + s, cy + s), 0.35f, 14f, 5f, 9f, fx = 0.4f)
+            // the ring of 12 round the hero's 2 × 2: the top and bottom ones plain, the rest photos, nearest first
+            val ring = ArrayList<Pair<Float, Float>>()
+            for (i in listOf(-1.5f, -0.5f, 0.5f, 1.5f)) for (j in listOf(-1.5f, -0.5f, 0.5f, 1.5f)) if (max(kotlin.math.abs(i), kotlin.math.abs(j)) == 1.5f) ring += i to j
+            val plain = mapOf((-1.5f to 1.5f) to rgb(120, 140, 110), (1.5f to -1.5f) to rgb(60, 60, 62))
+            for ((ij, col) in plain) {
+                val x = cx + (ij.first + ij.second) * s / 2; val y = cy + (ij.second - ij.first) * s / 2
+                val p = diamondPath(x, y, s - 40); shadow(c, p, 8f, 3f, 6f, 0.2f); c.drawPath(p, fill(col))
+            }
+            val slots = ring.filter { it !in plain }.sortedBy { kotlin.math.abs(it.first) + kotlin.math.abs(it.second) }
+            others.take(slots.size).forEachIndexed { n, k ->
+                val (i, j) = slots[n]; val x = cx + (i + j) * s / 2; val y = cy + (j - i) * s / 2
+                windowed(c, diamondPath(x, y, s - 16), diamondPath(x, y, s - 2), photos[k], RectF(x - s / 2, y - s / 2, x + s / 2, y + s / 2), 0.3f, 10f, 4f, 7f)
+            }
+            val sage = rgb(120, 140, 110)
+            text(c, "title", words.title, W / 2f, 1235f, f.serifItalic, 86f, rgb(50, 56, 50), Anchor.MM, maxW = W - 200f)
+            text(c, "sub", words.sub.uppercase(), W / 2f, 1300f, f.sans, 22f, sage, Anchor.MM, spacing = 0.08f)
+            if (month != null) monthBlock(c, RectF(300f, 1330f, W - 300f, h - 60f), rgb(60, 60, 62), sage, noteX = 285f, noteSize = 38f)
+        }
+
+        // ---- 3) CIRCLES: a round hero inside a ring of round photos, each captioned ---------------------------------
+        fun circles(c: Canvas, h: Int) {
+            paper(c, W, h, rgb(250, 236, 232), 0.02f, 52)
+            val cx = W / 2f; val cy = 600f; val r = 400f
+            c.drawCircle(cx, cy, r, stroke(rgb(214, 170, 160), 3f))
+            windowed(c, Path().apply { addCircle(cx, cy, 260f, Path.Direction.CW) }, Path().apply { addCircle(cx, cy, 272f, Path.Direction.CW) },
+                hero, RectF(cx - 260, cy - 260, cx + 260, cy + 260), 0.3f, 16f, 5f, 10f)
+            val n = others.size
+            // twelve fit round the ring at 150; fewer are bigger, up to 200
+            val d = min(200f, (2 * PI * r / max(1, n)).toFloat() * 0.62f)
+            others.forEachIndexed { i, k ->
+                val a = Math.toRadians(i * 360.0 / n - 90); val x = cx + (r * cos(a)).toFloat(); val y = cy + (r * sin(a)).toFloat()
+                windowed(c, Path().apply { addCircle(x, y, d / 2, Path.Direction.CW) }, Path().apply { addCircle(x, y, d / 2 + 7, Path.Direction.CW) },
+                    photos[k], RectF(x - d / 2, y - d / 2, x + d / 2, y + d / 2), 0.3f, 8f, 3f, 6f)
+                val lr = r + d / 2 + 37
+                text(c, "cap:$k", words.captions.getOrElse(k) { "" }, cx + (lr * cos(a)).toFloat(), cy + (lr * sin(a)).toFloat(), f.hand, 34f, rgb(170, 90, 90), Anchor.MM, maxW = 180f)
+            }
+            text(c, "title", words.title, W / 2f, 1200f, f.script, 96f, rgb(160, 60, 70), Anchor.MM, maxW = W - 160f)
+            text(c, "sub", words.sub.uppercase(), W / 2f, 1262f, f.sans, 22f, rgb(176, 126, 120), Anchor.MM, spacing = 0.08f)
+            if (month != null) monthBlock(c, RectF(300f, 1290f, W - 300f, h - 60f), rgb(90, 60, 60), rgb(200, 70, 80), noteX = 285f, noteSize = 38f)
+        }
+
+        // ---- 4) SIDE COLUMN: the hero fills a black frame, small tilted prints down its side, words over the dark foot
+        fun side(c: Canvas, h: Int) {
+            c.drawRect(0f, 0f, W.toFloat(), h.toFloat(), fill(rgb(16, 16, 18)))
+            val m = 46f; val inner = RectF(m, m, W - m, h - m)
+            photo(c, hero, inner, fx = 0.45f, fy = 0.4f)
+            c.drawRect(inner, Paint().apply {
+                shader = LinearGradient(0f, m + inner.height() * 0.55f, 0f, h - m, 0x00000000, argb(191, 0, 0, 0), Shader.TileMode.CLAMP) })
+            others.take(5).forEachIndexed { i, k ->
+                val x = W - m - 190 + (if (i % 2 == 1) 18f else -10f); val y = m + 150 + i * 250f
+                print(c, photos[k], x, y, 220f, 165f, 9f, if (i % 2 == 1) 5f else -6f, 0.6f, 10f, 5f, 8f)
+            }
+            val gold = rgb(226, 190, 120)
+            val mo = month
+            val ty = if (mo != null) h - m - 470 else h - m - 260
+            text(c, "sub", words.sub.uppercase(), m + 70, ty, f.sans, 30f, gold, Anchor.LM, maxW = 700f)
+            text(c, "title", words.title, m + 60, ty + 90, f.script, 150f, rgb(255, 250, 240), Anchor.LM, maxW = 760f)
+            text(c, "note", words.note, W - m - 70, h - m - 60, f.hand, 44f, gold, Anchor.RM, maxW = 500f)
+            if (mo != null) monthBlock(c, RectF(m + 70, h - m - 300, m + 560, h - m - 90), rgb(240, 236, 228), gold, noteX = m + 580, noteSize = 38f, heart = rgb(210, 40, 60), noteRight = true)
+            c.drawRect(RectF(m - 1.5f, m - 1.5f, W - m + 1.5f, h - m + 1.5f), stroke(rgb(60, 54, 44), 3f))
+        }
+
+        // ---- 5) SLICES: the hero cut into slanted strips that step a little up and down ----------------------------
+        fun slices(c: Canvas, h: Int) {
+            paper(c, W, h, rgb(240, 238, 232), 0.015f, 55)
+            val x0 = 80f; val y0 = 80f; val x1 = W - 80f; val y1 = 1200f; val n = 5; val gap = 14f; val sk = 160f
+            for (i in 0 until n) {
+                val a = x0 + (x1 - x0 + sk) * i / n - sk; val b = x0 + (x1 - x0 + sk) * (i + 1) / n - sk
+                val off = (i - 2) * 22f
+                // the strip, cut square at the page's margins
+                val pts = clipX(listOf(a + sk + gap / 2 to y0, b + sk - gap / 2 to y0, b - gap / 2 to y1, a + gap / 2 to y1), x0, x1)
+                val p = Path().apply { pts.forEachIndexed { j, (x, y) -> if (j == 0) moveTo(x, y + off) else lineTo(x, y + off) }; close() }
+                shadow(c, p, 10f, 4f, 8f, 0.3f)
+                c.save(); c.clipPath(p); photo(c, hero, RectF(x0 - sk, y0 + off, x1 + sk, y1 + off)); c.restore()
+            }
+            text(c, "title", words.title, 80f, 1290f, f.serifItalic, 100f, rgb(50, 40, 34), Anchor.LM, maxW = if (month != null) 540f else W - 160f)
+            text(c, "sub", words.sub.uppercase(), 86f, 1365f, f.sans, 24f, rgb(170, 100, 50), Anchor.LM, spacing = 0.06f, maxW = if (month != null) 530f else W - 170f)
+            if (month != null) monthBlock(c, RectF(640f, 1240f, W - 80f, h - 60f), rgb(60, 52, 46), rgb(190, 110, 50), noteX = 625f, noteSize = 36f)
+        }
+
+        /** The convex polygon [pts] with what lies left of [lo] or right of [hi] cut away. */
+        fun clipX(pts: List<Pair<Float, Float>>, lo: Float, hi: Float): List<Pair<Float, Float>> {
+            fun cut(ps: List<Pair<Float, Float>>, inside: (Float) -> Boolean, at: Float): List<Pair<Float, Float>> {
+                val out = ArrayList<Pair<Float, Float>>()
+                for (i in ps.indices) {
+                    val p = ps[i]; val q = ps[(i + 1) % ps.size]
+                    if (inside(p.first)) out += p
+                    if (inside(p.first) != inside(q.first)) { val t = (at - p.first) / (q.first - p.first); out += at to p.second + t * (q.second - p.second) }
+                }
+                return out
+            }
+            return cut(cut(pts, { it >= lo }, lo), { it <= hi }, hi)
+        }
+
+        // ---- 6) MOSAIC: a few big photos with small ones packed round them, on white ------------------------------
+        class Placed(val r: Int, val c: Int, val s: Int)
+        class MosaicPlan(val u: Float, val tiles: List<Placed>, val rows: Int, val bottom: Int)
+        fun mosaicPlan(): MosaicPlan {
+            val m = 50f; val g = 8f; val cols = 6; val u = (W - 2 * m + g) / cols
+            val n = used.size
+            val sizes = used.indices.map { when (it) { 0 -> 3; 1, 2 -> 2; else -> 1 } }
+            val rows = max(3, ceil(sizes.sumOf { it * it } / cols.toDouble()).toInt())
+            val taken = Array(rows) { BooleanArray(cols) }
+            val tiles = ArrayList<Placed>()
+            fun fits(r: Int, c: Int, s: Int) = r + s <= rows && c + s <= cols && (r until r + s).all { rr -> (c until c + s).none { taken[rr][it] } }
+            fun take(r: Int, c: Int, s: Int) { for (rr in r until r + s) for (cc in c until c + s) taken[rr][cc] = true; tiles += Placed(r, c, s) }
+            // the hero top middle, the next two big ones lower down either side, the rest packed in reading order
+            if (fits(0, 2, 3)) take(0, 2, 3)
+            for ((i, s) in sizes.withIndex()) if (i > 0) {
+                val want = if (i == 1) 3 to 0 else if (i == 2) 3 to 4 else -1 to -1
+                if (want.first >= 0 && fits(want.first, want.second, s)) { take(want.first, want.second, s); continue }
+                var done = false
+                for (r in 0 until rows) { for (cc in 0 until cols) if (!done && fits(r, cc, s)) { take(r, cc, s); done = true }; if (done) break }
+                if (!done) for (r in 0 until rows) for (cc in 0 until cols) if (!done && fits(r, cc, 1)) { take(r, cc, 1); done = true }
+            }
+            // the rest of the grid filled with the photos again
+            for (r in 0 until rows) for (cc in 0 until cols) if (!taken[r][cc]) take(r, cc, 1)
+            if (n == 0) return MosaicPlan(u, tiles, rows, (m + rows * u).roundToInt())
+            return MosaicPlan(u, tiles, rows, (m + rows * u - g).roundToInt())
+        }
+        fun mosaic(c: Canvas, h: Int) {
+            c.drawRect(0f, 0f, W.toFloat(), h.toFloat(), fill(rgb(255, 255, 255)))
+            val m = 50f; val g = 8f
+            val p = mosaicPlan()
+            p.tiles.forEachIndexed { i, t ->
+                val x = m + t.c * p.u; val y = m + t.r * p.u; val w = t.s * p.u - g
+                photo(c, photos[used[i % used.size]], RectF(x, y, x + w, y + w))
+            }
+            val top = p.bottom + 12f
+            text(c, "title", words.title, m, top + 60, f.script, 110f, rgb(30, 30, 30), Anchor.LM, maxW = if (month != null) 560f else W - 2 * m)
+            text(c, "sub", words.sub.uppercase(), m + 6, top + 140, f.sans, 24f, rgb(140, 140, 140), Anchor.LM, maxW = if (month != null) 550f else W - 2 * m)
+            if (month != null) monthBlock(c, RectF(640f, top, W - m, h - 40f), rgb(40, 40, 40), rgb(200, 60, 60), noteX = 625f, noteSize = 34f)
+        }
+
+        // ---- 7) NUMBER and LETTER: an age or an initial made of small square photos --------------------------------
+        fun big(c: Canvas, h: Int, number: Boolean) {
+            val glyph = words.big.trim().ifEmpty { if (number) "1" else words.title.firstOrNull { it.isLetterOrDigit() }?.uppercase() ?: "A" }.take(if (number) 3 else 2)
+            if (number) paper(c, W, h, rgb(236, 230, 222), 0.03f, 31) else paper(c, W, h, rgb(24, 26, 34), 0.12f, 32)
+            // the figure: as big as fits a box round its place on the approved pages
+            val tf = if (number) Typeface.create("sans-serif", Typeface.BOLD) else f.serif
+            val box = if (number) RectF(160f, 190f, 1040f, 1110f) else RectF(230f, 260f, W - 230f, 1000f)
+            val tp = Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = tf; textSize = 1000f }
+            val raw = Path(); tp.getTextPath(glyph, 0, glyph.length, 0f, 0f, raw)
+            val b = RectF(); raw.computeBounds(b, true)
+            val k = min(box.width() / max(1f, b.width()), box.height() / max(1f, b.height()))
+            tp.textSize = 1000f * k
+            val path = Path(); tp.getTextPath(glyph, 0, glyph.length, 0f, 0f, path)
+            path.computeBounds(b, true)
+            path.offset(box.centerX() - b.centerX(), box.centerY() - b.centerY()); path.computeBounds(b, true)
+            // under the tiles the figure is white, so the gaps between them and an edge round it read as one shape
+            shadow(c, path, if (number) 18f else 20f, 8f, 14f, if (number) 0.35f else 0.6f)
+            c.drawPath(path, stroke(rgb(255, 255, 255), 8f)); c.drawPath(path, fill(rgb(255, 255, 255)))
+            val t = if (number) 64f else 52f; val gap = if (number) 6f else 5f
+            val cover = Cover(path, W, h)
+            c.save(); c.clipPath(path)
+            var n = 0
+            var y = b.top - 10
+            while (y < b.bottom) {
+                var x = b.left - 10
+                while (x < b.right) {
+                    val cell = RectF(x, y, x + t, y + t)
+                    if (cover.of(cell) >= 0.08f) {
+                        val pick = used[(n * 7 + rng.nextInt(3)) % used.size]; n++
+                        photo(c, photos[pick], cell, 0.3f + rng.nextFloat() * 0.4f, 0.3f + rng.nextFloat() * 0.4f)
+                    }
+                    x += t + gap
+                }
+                y += t + gap
+            }
+            c.restore()
+            spots += TextSpot("big", onPage(RectF(b)))
+            val mo = month
+            if (number) {
+                text(c, "title", words.title, W - 110f, 230f, f.script, 130f, rgb(120, 60, 50), Anchor.RM, maxW = 520f)
+                text(c, "sub", words.sub.uppercase(), W - 116f, 330f, f.sans, 30f, rgb(150, 120, 100), Anchor.RM, maxW = 520f)
+                if (mo != null) {
+                    if (words.title != monthName(mo.month)) text(c, null, monthName(mo.month), W / 2f, 1255f, f.serifItalic, 70f, rgb(80, 60, 50), Anchor.MM)
+                    monthBlock(c, RectF(300f, 1290f, W - 300f, h - 60f), rgb(80, 64, 56), rgb(170, 70, 60), noteX = W - 282f, noteSize = 40f, noteRight = true)
+                }
+            } else {
+                text(c, "title", words.title, W / 2f, 1180f, f.hand, 56f, rgb(236, 210, 150), Anchor.MM, maxW = W - 200f)
+                if (mo != null) {
+                    text(c, null, "${monthName(mo.month)} ${mo.year}".uppercase(), W / 2f, 1255f, f.sans, 24f, rgb(180, 170, 150), Anchor.MM, spacing = 0.3f)
+                    monthBlock(c, RectF(300f, 1290f, W - 300f, h - 60f), rgb(230, 224, 210), rgb(236, 190, 100), noteX = W - 282f, noteSize = 40f, noteRight = true)
+                } else text(c, "sub", words.sub.uppercase(), W / 2f, 1255f, f.sans, 24f, rgb(180, 170, 150), Anchor.MM, spacing = 0.3f, maxW = W - 200f)
+            }
+        }
+
+        // ---- 9) PAINT SPLASH: the hero painted on in a brush splash, prints laid over its edge ---------------------
+        fun splash(c: Canvas, h: Int) {
+            paper(c, W, h, rgb(243, 236, 224), 0.03f, 41)
+            val sw = 1120f; val sh = 900f; val sx = (W - sw) / 2 + 30; val sy = 150f
+            val mask = splashMask(560, 450, 7)
+            val dst = RectF(sx, sy, sx + sw, sy + sh)
+            val alpha = mask.extractAlpha()
+            c.drawBitmap(alpha, null, RectF(dst.left + 4, dst.top + 6, dst.right + 4, dst.bottom + 6),
+                Paint(Paint.FILTER_BITMAP_FLAG).apply { color = argb(56, 0, 0, 0); maskFilter = BlurMaskFilter(10f * 1.7f * scale, BlurMaskFilter.Blur.NORMAL) })
+            alpha.recycle()
+            c.saveLayer(dst, null)
+            photo(c, hero, dst, fy = 0.55f)
+            c.drawBitmap(mask, null, dst, Paint(Paint.FILTER_BITMAP_FLAG).apply { xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_IN) })
+            c.restore()
+            mask.recycle()
+            val spots3 = listOf(Triple(250f, 330f, -8f), Triple(300f, 900f, 6f), Triple(960f, 1000f, -5f))
+            others.take(3).forEachIndexed { i, k -> val (x, y, a) = spots3[i]; print(c, photos[k], x, y, 300f, 240f, 14f, a, 0.45f, 12f, 6f, 10f) }
+            val red = rgb(190, 60, 60)
+            text(c, "title", words.title, W - 110f, 1170f, f.script, 96f, red, Anchor.RM, maxW = 760f)
+            text(c, "sub", words.sub.uppercase(), W - 110f, 1290f, f.serif, 76f, rgb(40, 34, 30), Anchor.RM, maxW = 900f)
+            val mo = month ?: return
+            text(c, null, "${monthName(mo.month)} ${mo.year}".uppercase(), 110f, 1395f, f.sans, 24f, rgb(120, 104, 92), Anchor.LM)
+            monthBlock(c, RectF(110f, 1420f, 600f, h - 80f), rgb(60, 52, 46), red, noteX = 620f, noteSize = 44f, noteRight = true)
+        }
+
+        /**
+         * The splash's shape, [w] × [h], white where the paint is: a soft blob with a wavy edge, dry-brush strokes
+         * reaching out with bristly ends, and drops flung off (calendar/designs-2/scripts/designs.py, at half size).
+         */
+        fun splashMask(w: Int, h: Int, seed: Long): Bitmap {
+            val r = Random(seed)
+            val cx = w / 2f; val cy = h / 2f
+            val ks = (2 until 30).map { k -> Triple(k, (r.nextGaussian() * 0.14 / k.toDouble().pow(0.55)).toFloat(), (r.nextFloat() * 6.3f)) }
+            val px = IntArray(w * h)
+            for (y in 0 until h) for (x in 0 until w) {
+                val dx = x - cx; val dy = y - cy
+                val ang = kotlin.math.atan2(dy, dx); val rad = sqrt((dx / (w * 0.36f)).pow(2) + (dy / (h * 0.34f)).pow(2))
+                var e = 0f; for ((k, amp, ph) in ks) e += amp * cos(k * ang + ph)
+                if (rad < 1 + e) px[y * w + x] = -1
+            }
+            val out = Bitmap.createBitmap(px, w, h, Bitmap.Config.ARGB_8888).copy(Bitmap.Config.ARGB_8888, true)
+            val c = Canvas(out); val white = fill(rgb(255, 255, 255))
+            repeat(11) {
+                // a stroke: rows of bristles, each starting and stopping at its own place, a few dry ones missing
+                val len = (0.55f + 0.40f * r.nextFloat()) * w; val rows = (20 + 35 * r.nextFloat()).toInt()
+                val a = (r.nextGaussian() * 14).toFloat()
+                val ox = cx + (r.nextGaussian() * w * 0.05).toFloat(); val oy = cy + (r.nextGaussian() * h * 0.10).toFloat()
+                val raw = FloatArray(rows) { r.nextFloat() }
+                c.save(); c.translate(ox, oy); c.rotate(a); c.translate(-len / 2, -rows / 2f)
+                for (i in 0 until rows) {
+                    val sm = (raw[max(0, i - 1)] + raw[i] + raw[min(rows - 1, i + 1)]) / 3
+                    val st = (0.08f + 0.10f * r.nextFloat()) * len; val en = (0.70f + 0.30f * sm) * len
+                    if (r.nextFloat() > 0.12f) c.drawRect(st, i.toFloat(), en, i + 1f, white)
+                }
+                c.restore()
+            }
+            repeat(7) {
+                // flung drops: a line of shrinking round drops
+                val a = r.nextFloat() * 2 * PI.toFloat(); val r0 = 0.95f + 0.2f * r.nextFloat()
+                for (j in 0 until 3 + r.nextInt(4)) {
+                    val rr = r0 + j * 0.09f; val s = max(1f, (14 - j * 2.5f) * (0.6f + 0.6f * r.nextFloat()) / 2)
+                    c.drawCircle(cx + cos(a) * w * 0.33f * rr + (r.nextGaussian() * 2).toFloat(), cy + sin(a) * h * 0.33f * rr + (r.nextGaussian() * 2).toFloat(), s, white)
+                }
+            }
+            repeat(70) {
+                val a = r.nextFloat() * 2 * PI.toFloat(); val rr = 1f + 0.45f * r.nextFloat(); val s = (1.2f + 3.8f * r.nextFloat()) / 2
+                c.drawCircle(cx + cos(a) * w * 0.36f * rr, cy + sin(a) * h * 0.36f * rr, s, white)
+            }
+            return out
+        }
+
+        // ---- 8) PHOTO DUMP: black and white torn prints on a dark board, tape and chalk doodles -------------------
+        fun dump(c: Canvas, h: Int) {
+            paper(c, W, h, rgb(28, 28, 30), 0.25f, 58)
+            val grey = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG).apply { colorFilter = ColorMatrixColorFilter(ColorMatrix().apply { setSaturation(0f) }) }
+            val slots = listOf(Triple(330f, 260f, 5f), Triple(880f, 300f, -6f), Triple(420f, 620f, -4f), Triple(900f, 680f, 7f), Triple(300f, 980f, 3f), Triple(860f, 1030f, -5f))
+            used.take(slots.size).forEachIndexed { i, k ->
+                val (x, y, a) = slots[i]
+                val w = if (i % 2 == 0) 470f else 400f; val hh = if (i % 2 == 0) 340f else 300f
+                val pw = w + 28; val ph = hh + 28
+                val outline = torn(pw, ph, 18f, i * 3L + 1, "tblr")
+                put(c, x, y, pw, ph, a, 0.7f, 14f, 6f, 10f, outline) { p ->
+                    p.save(); p.clipPath(outline)
+                    p.drawRect(0f, 0f, pw, ph, fill(rgb(240, 238, 232)))
+                    photo(p, photos[k], RectF(14f, 14f, 14 + w, 14 + hh), paint = grey)
+                    p.drawPath(outline, stroke(rgb(238, 234, 224), 10f))
+                    p.restore()
+                }
+                if (i == 0 || i == 3 || i == 4) tape(c, x - 60 + (i * 37) % 120 + 75, y - hh / 2 - 8, 150f, 44f, (rng.nextFloat() - 0.5f) * 60f, rgb(232, 220, 186), 170, i * 5L)
+            }
+            // chalk: a heart and a few stars, in white pen
+            val chalk = stroke(rgb(235, 232, 225), 4f)
+            c.drawPath(heartPath(1030f - 48, 430f, 96f, 88f), chalk)
+            for ((sx, sy) in listOf(150f to 470f, 620f to 860f, 1100f to 870f)) for (a in 0 until 360 step 72) {
+                val t = Math.toRadians(a.toDouble()); c.drawLine(sx, sy, sx + 22 * cos(t).toFloat(), sy + 22 * sin(t).toFloat(), stroke(rgb(235, 232, 225), 3f))
+            }
+            put(c, 900f, 1250f, 620f, 170f, -8f, 0f, 0f, 0f, 0f, Path()) { p ->
+                text(p, "title", words.title, 310f, 85f, f.script, 110f, rgb(245, 242, 235), Anchor.MM, maxW = 600f)
+            }
+            val mo = month
+            if (mo == null) { text(c, "note", words.note, 900f, 1350f, f.hand, 48f, rgb(230, 228, 220), Anchor.MM, maxW = 640f); return }
+            text(c, null, "${monthName(mo.month).take(3)} ${mo.year}".uppercase(), 80f, 1260f, f.sans, 26f, rgb(170, 168, 160), Anchor.LM)
+            monthBlock(c, RectF(80f, 1300f, 600f, h - 60f), rgb(230, 228, 220), rgb(240, 200, 110), noteX = 620f, noteSize = 40f, noteRight = true)
+            if (mo.note.isBlank() || mo.circle == null) text(c, "note", words.note, 900f, 1590f, f.hand, 48f, rgb(230, 228, 220), Anchor.MM, maxW = 560f)
+        }
+
+        /** A heart filling the box (x, y, w, h), its point at the bottom. */
+        fun heartPath(x: Float, y: Float, w: Float, h: Float): Path {
+            val n = 120
+            val xs = FloatArray(n); val ys = FloatArray(n)
+            for (i in 0 until n) {
+                val t = 2 * PI * i / n
+                xs[i] = (16 * sin(t).pow(3)).toFloat(); ys[i] = (-(13 * cos(t) - 5 * cos(2 * t) - 2 * cos(3 * t) - cos(4 * t))).toFloat()
+            }
+            val x0 = xs.min(); val x1 = xs.max(); val y0 = ys.min(); val y1 = ys.max()
+            return Path().apply {
+                for (i in 0 until n) { val px = x + (xs[i] - x0) / (x1 - x0) * w; val py = y + (ys[i] - y0) / (y1 - y0) * h; if (i == 0) moveTo(px, py) else lineTo(px, py) }
+                close()
+            }
+        }
+
+        /** A diamond (a square on its point) centred at (cx, cy), [diag] corner to corner. */
+        fun diamondPath(cx: Float, cy: Float, diag: Float) = Path().apply {
+            moveTo(cx, cy - diag / 2); lineTo(cx + diag / 2, cy); lineTo(cx, cy + diag / 2); lineTo(cx - diag / 2, cy); close()
+        }
+
         /**
          * The month in [box]: the weekday letters in [accent], then the days in [ink], a dot under each day with
          * photos, a loose pen ring round the circled day and its note written to the left of the block on the same
          * row, its right end at [noteX] ([dated] puts the day in front: "12th: …"). [num] is the face of the numbers
-         * and letters; [headSize] the letters' size when it isn't 0.8 of the numbers'.
+         * and letters; [headSize] the letters' size when it isn't 0.8 of the numbers'. [heart]: the circled day sits in a
+         * filled heart of that colour instead of the ring (103a, Heart and Side column); [noteRight]: the note is written to the right of
+         * the block instead, from [noteX].
          */
         fun monthBlock(c: Canvas, box: RectF, ink: Int, accent: Int, noteX: Float, noteSize: Float, dated: Boolean = false,
-                       num: Typeface = f.sans, headSize: Float = 0f) {
+                       num: Typeface = f.sans, headSize: Float = 0f, heart: Int? = null, noteRight: Boolean = false) {
             val m = month ?: return
             val rows = weeks(m.year, m.month)
             val cw = box.width() / 7; val rh = box.height() / (rows.size + 1)
@@ -454,6 +885,14 @@ object Collage {
                 wk.forEachIndexed { col, d ->
                     if (d == 0) return@forEachIndexed
                     val cx = box.left + cw * (col + 0.5f); val cy = box.top + rh * (r + 1.5f)
+                    if (heart != null && d == m.circle) {
+                        val s = min(cw, rh) * 0.95f
+                        c.drawPath(heartPath(cx - s / 2, cy + 1 - s / 2, s, s * 0.92f), fill(heart))
+                        text(c, null, "$d", cx, cy + 1, num, min(cw, rh) * 0.42f, rgb(255, 255, 255), Anchor.MM)
+                        circled = cx to cy
+                        spots += TextSpot("day:$d", onPage(RectF(cx - cw / 2, cy - rh / 2, cx + cw / 2, cy + rh / 2)))
+                        return@forEachIndexed
+                    }
                     text(c, null, "$d", cx, cy, num, fs, ink, Anchor.MM)
                     if (d in m.marks) c.drawCircle(cx, cy + fs * 0.62f, 3.5f, fill(accent))
                     if (d == m.circle) {
@@ -471,7 +910,8 @@ object Collage {
             val at = circled
             if (at != null && m.note.isNotBlank()) {
                 val s = if (dated) "${ordinal(m.circle!!)}: ${m.note}" else m.note
-                text(c, "day:${m.circle}", s, noteX, at.second, f.hand, noteSize, accent, Anchor.RM, maxW = noteX - 40f)
+                if (noteRight) text(c, "day:${m.circle}", s, noteX, at.second, f.hand, noteSize, accent, Anchor.LM, maxW = W - 40f - noteX)
+                else text(c, "day:${m.circle}", s, noteX, at.second, f.hand, noteSize, accent, Anchor.RM, maxW = noteX - 40f)
             }
         }
 
@@ -609,8 +1049,8 @@ object Collage {
             if (maxW > 0 && wide > maxW) p.textSize = size * maxW / wide
             val fm = p.fontMetrics
             val w = p.measureText(s)
-            val left = when (anchor) { Anchor.LA -> x; Anchor.RS, Anchor.RM -> x - w; Anchor.MS, Anchor.MM -> x - w / 2 }
-            val base = when (anchor) { Anchor.LA -> y - fm.ascent; Anchor.RS, Anchor.MS -> y; Anchor.MM, Anchor.RM -> y - (fm.ascent + fm.descent) / 2 }
+            val left = when (anchor) { Anchor.LA, Anchor.LM -> x; Anchor.RS, Anchor.RM -> x - w; Anchor.MS, Anchor.MM -> x - w / 2 }
+            val base = when (anchor) { Anchor.LA -> y - fm.ascent; Anchor.RS, Anchor.MS -> y; Anchor.MM, Anchor.RM, Anchor.LM -> y - (fm.ascent + fm.descent) / 2 }
             if (s.isNotEmpty()) c.drawText(s, left, base, p)
             if (id != null) {
                 // an empty caption still has a place to tap
@@ -647,7 +1087,7 @@ object Collage {
         }
     }
 
-    private enum class Anchor { LA, RS, MS, MM, RM }
+    private enum class Anchor { LA, RS, MS, MM, RM, LM }
 
     private fun rgb(r: Int, g: Int, b: Int) = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
     private fun argb(a: Int, r: Int, g: Int, b: Int) = (a shl 24) or (r shl 16) or (g shl 8) or b
