@@ -80,7 +80,7 @@ object HelpText {
                 )),
                 Section("STARTING OVER AND SAVING", items = listOf(
                     Item("Reset to film", "",
-                        "Puts the film's own look back: its grain, glow and colour as the look was made, without anything you changed. Your painting and framing stay. Undo appears right after.",
+                        "Puts the film's own look back: its grain, glow and colour as the look was made, without anything you changed. Your painting, framing and LIGHT tab stay (Reset light clears that). Undo appears right after.",
                         use = "When slider changes have drifted too far and you want a clean start on the same film."),
                     Item("Clear effects", "asks first",
                         "Removes the fog, lights, rays, wet ground, rain, lith, dodge and burn and painted saturation from this photo. The depth split and the framing stay. Undo appears right after.",
@@ -92,7 +92,7 @@ object HelpText {
             )),
 
         Topic("light", "LIGHT", "DARKROOM TABS", "Exposure, highlights, shadows, whites, blacks",
-            "The LIGHT tab shapes the scene's own light before the film sees it — as if the light had been different when you pressed the shutter. Because the film still draws the result, bright skies roll off and shadows open the way they would on a real negative, instead of looking edited.",
+            "The LIGHT tab shapes the scene's own light before the film sees it — as if the light had been different when you pressed the shutter. Because the film still draws the result, bright skies roll off and shadows open the way they would on a real negative, instead of looking edited. It belongs to the photo, not the film: it stays when you tap another look.",
             listOf(
                 Section("EXPOSURE", items = listOf(
                     Item("Exposure", "−1.5 to +1.5 EV",
