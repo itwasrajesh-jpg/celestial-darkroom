@@ -43,22 +43,28 @@ import kotlin.math.sqrt
  * Diamonds, Circles, Side column, Slices, Mosaic, Number, Letter, Paint splash and Photo dump. The ones made of many
  * small tiles (Heart, Mosaic, Number, Letter) fill every tile, repeating photos when there are fewer than tiles,
  * as the approved pages do.
+ *
+ * 103b: a calendar month carries its occasions ([Month.occasions]): each one's photo sits in its own date (a circle
+ * split down the middle when two share a day) with the date on a small tag, a row of round portraits names them above
+ * the month, and two more pages, Hearts and Portraits, are built round the occasions themselves (calendar/103b).
  */
 object Collage {
     const val W = 1240
     const val MAX_PHOTOS = 13
     val LAYOUTS = listOf("grid", "hexagon", "strip", "scrapbook", "polaroid", "cutout",
-        "heart", "diamond", "circles", "side", "slices", "mosaic", "number", "letter", "splash", "dump")
+        "heart", "diamond", "circles", "side", "slices", "mosaic", "number", "letter", "splash", "dump", "hearts", "portraits")
     val LABELS = mapOf("grid" to "Grid", "hexagon" to "Hexagon", "strip" to "Film strip", "scrapbook" to "Scrapbook",
         "polaroid" to "Polaroid", "cutout" to "Cut-out", "heart" to "Heart", "diamond" to "Diamonds", "circles" to "Circles",
         "side" to "Side column", "slices" to "Slices", "mosaic" to "Mosaic", "number" to "Number", "letter" to "Letter",
-        "splash" to "Paint splash", "dump" to "Photo dump")
+        "splash" to "Paint splash", "dump" to "Photo dump", "hearts" to "Hearts", "portraits" to "Portraits")
     /** How many photos a layout uses at most (the hero included). Slices cuts the hero alone into strips, as approved. */
     val CAP = mapOf("grid" to 13, "hexagon" to 13, "strip" to 7, "scrapbook" to 5, "polaroid" to 12, "cutout" to 10,
         "heart" to 13, "diamond" to 11, "circles" to 13, "side" to 6, "slices" to 1, "mosaic" to 13, "number" to 13,
-        "letter" to 13, "splash" to 4, "dump" to 6)
+        "letter" to 13, "splash" to 4, "dump" to 6, "hearts" to 3, "portraits" to 4)
     /** The layouts with a caption under each print. */
     val CAPTIONED = setOf("scrapbook", "polaroid", "circles")
+    /** The pages built round a month's occasions (103b); without any, round the photos, their captions as names. */
+    val OCCASION = setOf("hearts", "portraits")
     /** The layouts drawn round a big number or letter, typed by tapping it ([Words.big]). */
     val BIG = setOf("number", "letter")
     /** On a calendar page: the scrapbook's notebook holds the month, and its fifth print would lie under the pen note. */
@@ -90,7 +96,11 @@ object Collage {
      * roll has photos from (a dot under the number); [circle] is the day ringed in pen, and [note] what is written
      * beside it. Each day's place is kept as a [TextSpot] "day:<n>", so a tap on it can circle it.
      */
-    data class Month(val year: Int, val month: Int, val marks: Set<Int> = emptySet(), val circle: Int? = null, val note: String = "")
+    data class Month(val year: Int, val month: Int, val marks: Set<Int> = emptySet(), val circle: Int? = null, val note: String = "",
+                     val occasions: List<Occ> = emptyList())
+
+    /** An occasion as the page shows it: who, on which day of the month, and its face (null while it loads). */
+    class Occ(val name: String, val day: Int, val kind: String, val face: Bitmap?)
 
     /** The month's name, "October". */
     fun monthName(month: Int): String = java.time.Month.of(month).getDisplayName(java.time.format.TextStyle.FULL, java.util.Locale.ENGLISH)
@@ -143,6 +153,8 @@ object Collage {
             "number", "letter" -> d.big(c, h, layout == "number")
             "splash" -> d.splash(c, h)
             "dump" -> d.dump(c, h)
+            "hearts" -> d.hearts(c, h)
+            "portraits" -> d.portraits(c, h)
             else -> d.grid(c, h)
         }
         return Page(bmp, bw, bh, d.spots)
@@ -179,6 +191,8 @@ object Collage {
             "number" -> 1230
             "letter" -> 1310
             "dump" -> 1420
+            "hearts" -> 1110
+            "portraits" -> 1180
             else -> 1600
         }
 
@@ -864,6 +878,108 @@ object Collage {
         }
 
         /**
+         * A day with occasions: their faces in a round photo a little bigger than the day's cell, ringed in [accent], split
+         * into upright slices when several share the day, the date on a small tag at its foot.
+         */
+        fun dayPhotos(c: Canvas, cx: Float, cy: Float, s: Float, day: Int, here: List<Occ>, accent: Int, tagInk: Int) {
+            val r = s * 0.625f
+            shadow(c, Path().apply { addCircle(cx, cy, r + 4, Path.Direction.CW) }, 4f, 2f, 3f, 0.3f)
+            c.drawCircle(cx, cy, r + 4, fill(accent))
+            val n = here.size
+            here.forEachIndexed { i, o ->
+                val x0 = cx - r + 2 * r * i / n + (if (i > 0) 2f else 0f); val x1 = cx - r + 2 * r * (i + 1) / n - (if (i < n - 1) 2f else 0f)
+                c.save(); c.clipPath(Path().apply { addCircle(cx, cy, r, Path.Direction.CW) }); c.clipRect(x0, cy - r, x1, cy + r)
+                val face = o.face
+                // each face fills its own slice, centred in it
+                if (face != null) photo(c, face, RectF(x0, cy - r, x1, cy + r))
+                else {
+                    c.drawRect(x0, cy - r, x1, cy + r, fill(rgb(120, 110, 104)))
+                    text(c, null, o.name.take(1).uppercase(), (x0 + x1) / 2, cy, f.sans, r * 0.7f, rgb(255, 255, 255), Anchor.MM)
+                }
+                c.restore()
+            }
+            val tw = s * 0.32f; val th = s * 0.18f; val by = cy + r - 2
+            c.drawRoundRect(RectF(cx - tw, by - th, cx + tw, by + th), th, th, fill(accent))
+            text(c, null, "$day", cx, by, f.sans, s * 0.28f, tagInk, Anchor.MM)
+        }
+
+        /** The month's occasions in a row across [rb]: a round portrait each, the name in script and the day beside it. */
+        fun portraitRow(c: Canvas, rb: RectF, m: Month, ink: Int, accent: Int) {
+            val list = m.occasions.take(4); val n = list.size
+            val cw = rb.width() / n; val d = min(rb.height() * 0.8f, 120f)
+            val mon = monthName(m.month).uppercase()
+            list.forEachIndexed { i, o ->
+                val x = rb.left + cw * i + d / 2 + 6; val y = rb.centerY()
+                val ring = Path().apply { addCircle(x, y, d / 2 + 6, Path.Direction.CW) }
+                shadow(c, ring, 6f, 3f, 5f, 0.3f); c.drawPath(ring, fill(rgb(255, 255, 255)))
+                c.save(); c.clipPath(Path().apply { addCircle(x, y, d / 2, Path.Direction.CW) })
+                val face = o.face
+                if (face != null) photo(c, face, RectF(x - d / 2, y - d / 2, x + d / 2, y + d / 2)) else c.drawRect(x - d / 2, y - d / 2, x + d / 2, y + d / 2, fill(accent))
+                c.restore()
+                val tx = x + d / 2 + 18; val room = cw - d - 30
+                text(c, null, o.name, tx, y - d * 0.17f, f.script, d * 0.42f, ink, Anchor.LM, maxW = room)
+                text(c, null, "$mon ${o.day}", tx + 2, y + d * 0.23f, f.sans, d * 0.17f, accent, Anchor.LM, maxW = room)
+            }
+        }
+
+        /**
+         * The heroes of Hearts and Portraits: the month's occasions with a face, else the photos with their captions as
+         * names (so the pages work as plain collages and in months with none), at most [max]. [Occ.day] 0 = a photo.
+         */
+        fun people(max: Int): List<Occ> {
+            val occ = month?.occasions.orEmpty().filter { it.face != null }
+            if (occ.isNotEmpty()) return occ.take(max)
+            return used.take(max).map { k -> Occ(words.captions.getOrElse(k) { "" }, 0, "", photos[k]) }
+        }
+
+        // ---- 103b HEARTS: one heart per occasion, names under them, the month with each face in its date ---------
+        fun hearts(c: Canvas, h: Int) {
+            paper(c, W, h, rgb(250, 240, 236), 0.025f, 61)
+            val red = rgb(190, 50, 70)
+            text(c, "title", words.title, W / 2f, 110f, f.script, 110f, rgb(150, 62, 70), Anchor.MM, maxW = W - 160f)
+            text(c, "sub", words.sub.uppercase(), W / 2f, 190f, f.sans, 22f, rgb(176, 126, 120), Anchor.MM, spacing = 0.08f, maxW = W - 160f)
+            val ps = people(3)
+            // where the hearts sit: three overlapping (the lower middle one drawn first), two side by side, or one big one
+            val xs: List<Float>; val ys: List<Float>; val hw: Float
+            when (ps.size) {
+                1 -> { xs = listOf(W / 2f); ys = listOf(560f); hw = 640f }
+                2 -> { xs = listOf(W / 2f - 260, W / 2f + 260); ys = listOf(560f, 560f); hw = 500f }
+                else -> { xs = listOf(W / 2f - 330, W / 2f + 330, W / 2f); ys = listOf(520f, 520f, 610f); hw = 430f }
+            }
+            val hh = hw * 0.92f
+            for (i in ps.indices.sortedByDescending { ys[it] }) {
+                val x = xs[i] - hw / 2; val y = ys[i] - hh / 2
+                windowed(c, heartPath(x, y, hw, hh), heartPath(x - 9, y - 9, hw + 18, hh + 18), ps[i].face!!, RectF(x, y, x + hw, y + hh), 0.35f, 14f, 5f, 9f)
+            }
+            ps.forEachIndexed { i, o ->
+                val label = if (o.day > 0) "${o.name} · ${o.day}" else o.name
+                text(c, if (o.day > 0) null else "cap:${used[i]}", label, xs[i], ys[i] + hh / 2 + 25, f.hand, 50f, red, Anchor.MM, maxW = hw)
+            }
+            if (month != null) monthBlock(c, RectF(260f, 1120f, W - 260f, h - 60f), rgb(90, 60, 60), red, noteX = 245f, noteSize = 38f,
+                rowBox = RectF(100f, 940f, W - 100f, 1060f))
+        }
+
+        // ---- 103b PORTRAITS: the occasions as tall portraits side by side on a dark page, the month below ---------
+        fun portraits(c: Canvas, h: Int) {
+            c.drawRect(0f, 0f, W.toFloat(), h.toFloat(), fill(rgb(20, 20, 24)))
+            val gold = rgb(226, 190, 120)
+            val ps = people(4); val n = max(1, ps.size)
+            val gap = 30f; val pw = (W - 140f - (n - 1) * gap) / n; val top = 90f; val ph = 900f
+            val mo = month
+            ps.forEachIndexed { i, o ->
+                val x = 70 + i * (pw + gap)
+                photo(c, o.face!!, RectF(x, top, x + pw, top + ph))
+                c.drawRect(x, top, x + pw, top + ph, Paint().apply {
+                    shader = LinearGradient(0f, top + ph * 0.6f, 0f, top + ph, 0x00000000, argb(204, 0, 0, 0), Shader.TileMode.CLAMP) })
+                text(c, if (o.day > 0) null else "cap:${used[i]}", o.name, x + pw / 2, top + ph - 60, f.script, 70f, rgb(255, 250, 240), Anchor.MM, maxW = pw - 20)
+                if (o.day > 0 && mo != null) text(c, null, "${monthName(mo.month).uppercase()} ${o.day}", x + pw / 2, top + ph - 5, f.sans, 22f, gold, Anchor.MM)
+            }
+            text(c, "title", words.title, W / 2f, 1090f, f.serifItalic, 80f, rgb(240, 234, 222), Anchor.MM, maxW = W - 200f)
+            if (mo != null) monthBlock(c, RectF(260f, 1150f, W - 260f, h - 60f), rgb(236, 230, 220), gold, noteX = 245f, noteSize = 38f,
+                rowBox = RectF(), tagInk = rgb(30, 24, 20))
+        }
+
+        /**
          * The month in [box]: the weekday letters in [accent], then the days in [ink], a dot under each day with
          * photos, a loose pen ring round the circled day and its note written to the left of the block on the same
          * row, its right end at [noteX] ([dated] puts the day in front: "12th: …"). [num] is the face of the numbers
@@ -872,8 +988,16 @@ object Collage {
          * the block instead, from [noteX].
          */
         fun monthBlock(c: Canvas, box: RectF, ink: Int, accent: Int, noteX: Float, noteSize: Float, dated: Boolean = false,
-                       num: Typeface = f.sans, headSize: Float = 0f, heart: Int? = null, noteRight: Boolean = false) {
+                       num: Typeface = f.sans, headSize: Float = 0f, heart: Int? = null, noteRight: Boolean = false,
+                       rowBox: RectF? = null, tagInk: Int = rgb(255, 255, 255)) {
             val m = month ?: return
+            // the month's occasions: their portraits in a row above (in [rowBox] when the page gives one; an empty box
+            // leaves the row out), the month itself below it
+            var box = box
+            if (m.occasions.isNotEmpty() && (rowBox == null || rowBox.height() > 0)) {
+                val rb = rowBox ?: RectF(box.left, box.top, box.right, box.top + min(150f, box.height() * 0.2f)).also { box = RectF(box.left, it.bottom + 6, box.right, box.bottom) }
+                portraitRow(c, rb, m, ink, accent)
+            }
             val rows = weeks(m.year, m.month)
             val cw = box.width() / 7; val rh = box.height() / (rows.size + 1)
             val fs = (min(cw, rh) * 0.42f).toInt().toFloat()
@@ -885,6 +1009,13 @@ object Collage {
                 wk.forEachIndexed { col, d ->
                     if (d == 0) return@forEachIndexed
                     val cx = box.left + cw * (col + 0.5f); val cy = box.top + rh * (r + 1.5f)
+                    val here = m.occasions.filter { it.day == d }
+                    if (here.isNotEmpty()) {
+                        dayPhotos(c, cx, cy, min(cw, rh), d, here, accent, tagInk)
+                        if (d == m.circle) circled = cx to cy
+                        spots += TextSpot("day:$d", onPage(RectF(cx - cw / 2, cy - rh / 2, cx + cw / 2, cy + rh / 2)))
+                        return@forEachIndexed
+                    }
                     if (heart != null && d == m.circle) {
                         val s = min(cw, rh) * 0.95f
                         c.drawPath(heartPath(cx - s / 2, cy + 1 - s / 2, s, s * 0.92f), fill(heart))
