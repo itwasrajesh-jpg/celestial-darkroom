@@ -127,6 +127,8 @@ fun CollageScreen(picks: List<CollagePick>, resume: CalendarResume? = null, onBa
         val f = java.text.SimpleDateFormat("d MMMM", java.util.Locale.getDefault())
         mutableStateOf(if (ds.isEmpty()) "" else if (f.format(ds.min()) == f.format(ds.max())) f.format(ds.min()) else f.format(ds.min()) + " – " + f.format(ds.max()))
     }
+    // Number and Letter: the figure made of photos (blank: "1", and the title's first letter)
+    var big by remember { mutableStateOf("") }
     // the calendar: its month (from the photos, or the one Next asked for), the days with photos, the circled day
     val start = remember(picks) { java.time.Instant.ofEpochMilli(month.time).atZone(java.time.ZoneId.systemDefault()) }
     var calYear by remember { mutableStateOf(resume?.year ?: start.year) }
@@ -166,8 +168,8 @@ fun CollageScreen(picks: List<CollagePick>, resume: CalendarResume? = null, onBa
     // the page's photos: the hero first, then the others as picked
     val order = listOf(hero).filter { it in smalls } + usable.filter { it != hero }
 
-    fun words() = if (calendar) Collage.Words(calTitle ?: Collage.monthName(calMonth), calSub ?: "$calYear", order.map { captions.getOrElse(it) { "" } }, note)
-        else Collage.Words(title, sub, order.map { captions.getOrElse(it) { "" } }, note)
+    fun words() = if (calendar) Collage.Words(calTitle ?: Collage.monthName(calMonth), calSub ?: "$calYear", order.map { captions.getOrElse(it) { "" } }, note, big)
+        else Collage.Words(title, sub, order.map { captions.getOrElse(it) { "" } }, note, big)
     fun monthOf() = if (calendar) Collage.Month(calYear, calMonth, marks, circle, dayNote) else null
 
     LaunchedEffect(calYear, calMonth) { marks = withContext(Dispatchers.IO) { CollageSources.shotDays(context, calYear, calMonth) } }
@@ -196,7 +198,7 @@ fun CollageScreen(picks: List<CollagePick>, resume: CalendarResume? = null, onBa
     }
 
     // the preview, drawn again whenever anything on it changes (a newer change cancels an older drawing)
-    LaunchedEffect(smalls, hero, layout, seed, fadeSet, wearSet, title, sub, captions, note, answer, tab, calYear, calMonth, marks, circle, dayNote, calTitle, calSub) {
+    LaunchedEffect(smalls, hero, layout, seed, fadeSet, wearSet, title, sub, captions, note, big, answer, tab, calYear, calMonth, marks, circle, dayNote, calTitle, calSub) {
         if (smalls.isEmpty() || order.size < 2) return@LaunchedEffect
         delay(80)
         rendering = true
@@ -282,18 +284,20 @@ fun CollageScreen(picks: List<CollagePick>, resume: CalendarResume? = null, onBa
         val ed = editing
         if (ed != null) {
             val label = when { ed == "title" -> "TITLE"; ed == "sub" -> "LINE UNDER THE TITLE"; ed == "note" -> "NOTE"
+                ed == "big" -> if (layout == "number") "NUMBER" else "LETTER"
                 ed == "day" -> "${circle ?: ""} ${Collage.monthName(calMonth).take(3).uppercase()} NOTE"; else -> "CAPTION" }
             val capIdx = ed.removePrefix("cap:").toIntOrNull()?.let { order.getOrNull(it) }
             val value = when {
                 ed == "title" -> if (calendar) calTitle ?: Collage.monthName(calMonth) else title
                 ed == "sub" -> if (calendar) calSub ?: "$calYear" else sub
-                ed == "note" -> note; ed == "day" -> dayNote; capIdx != null -> captions.getOrElse(capIdx) { "" }; else -> "" }
+                ed == "note" -> note; ed == "big" -> big; ed == "day" -> dayNote; capIdx != null -> captions.getOrElse(capIdx) { "" }; else -> "" }
             Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text(label, color = LatentColors.TextDim, fontSize = 9.sp, letterSpacing = 1.sp, modifier = Modifier.width(70.dp))
                 BasicTextField(value, onValueChange = { v ->
                     val t = v.take(60)
                     when { ed == "title" -> if (calendar) calTitle = t else title = t; ed == "sub" -> if (calendar) calSub = t else sub = t
                         ed == "note" -> note = v.take(160); ed == "day" -> dayNote = v.take(40)
+                        ed == "big" -> big = v.trim().take(if (layout == "number") 3 else 2)
                         capIdx != null -> captions = captions.toMutableList().also { it[capIdx] = t } }
                     savedMonth = null
                 }, singleLine = ed != "note", textStyle = TextStyle(color = LatentColors.TextBright, fontSize = 13.sp), cursorBrush = SolidColor(LatentColors.Amber),
@@ -356,6 +360,7 @@ fun CollageScreen(picks: List<CollagePick>, resume: CalendarResume? = null, onBa
             layout == "cutout" && !modelsReady -> downloading?.let { "downloading the tap-to-select models… ${(it * 100).roundToInt()}%" } ?: "Cut-out uses the tap-to-select models (25 MB)"
             layout == "cutout" -> "Cut-out · tap the hero again to change who"
             usable.size > cap -> "${Collage.LABELS[layout]} · uses $cap of your ${usable.size} photos"
+            layout in Collage.BIG -> "${Collage.LABELS[layout]} · tap the ${if (layout == "number") "number" else "letter"} to change it"
             layout in Collage.CAPTIONED -> "${Collage.LABELS[layout]} · tap a caption to type"
             else -> "${Collage.LABELS[layout]} · tap the title to type"
         }
