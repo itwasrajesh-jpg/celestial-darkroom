@@ -31,6 +31,8 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -60,12 +62,15 @@ fun SettingsScreen(settings: AppSettings, onChange: (AppSettings) -> Unit, onOpe
         // 87a: the app's colours. Changes at once; photos and the darkroom's photo mat are never tinted.
         val uiContext = LocalContext.current
         Section("Look")
+        // 102c: where each theme's chip is, so the new colours spread out from the one tapped
+        val themeChips = remember { HashMap<AppTheme, androidx.compose.ui.geometry.Offset>() }
         OptionRow(
             title = "Theme",
             subtitle = "Darkroom: warm black with amber, as always. Midnight: layered navy with soft shadows and lit edges. Clay: pale blue and white, soft and raised. Photos always sit on a dark mat.",
             options = AppTheme.entries.map { it.label to it },
             selected = LatentColors.theme,
-        ) { LatentColors.set(uiContext, it) }
+            places = themeChips,
+        ) { ThemeReveal.start(uiContext, themeChips[it], it) }
 
         Section("Exposure")
         OptionRow(
@@ -304,7 +309,8 @@ private fun ToggleRow(title: String, subtitle: String, value: Boolean, onChange:
 }
 
 @Composable
-private fun <T> OptionRow(title: String, subtitle: String, options: List<Pair<String, T>>, selected: T, onSelect: (T) -> Unit) {
+private fun <T> OptionRow(title: String, subtitle: String, options: List<Pair<String, T>>, selected: T,
+                          places: MutableMap<T, androidx.compose.ui.geometry.Offset>? = null, onSelect: (T) -> Unit) {
     Column(Modifier.fillMaxWidth().padding(vertical = 10.dp)) {
         Text(title, color = LatentColors.TextBright, fontSize = 15.sp)
         Text(subtitle, color = LatentColors.TextDim, fontSize = 12.sp)
@@ -317,6 +323,7 @@ private fun <T> OptionRow(title: String, subtitle: String, options: List<Pair<St
                     color = if (on) LatentColors.AmberInk else LatentColors.Text,
                     fontSize = 13.sp,
                     modifier = Modifier
+                        .then(if (places != null) Modifier.onGloballyPositioned { places[v] = it.boundsInRoot().center } else Modifier)
                         .raised(RoundedCornerShape(999.dp), 3.dp)
                         .clip(RoundedCornerShape(999.dp))
                         .accentFill(on, LatentColors.Surface)
