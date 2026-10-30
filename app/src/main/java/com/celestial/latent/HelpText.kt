@@ -101,7 +101,7 @@ object HelpText {
                         "A lighter, airier print. Shadows open, highlights move towards paper white.",
                         "Every photo. Tap Auto level first for the film's own suggestion, then fine-tune by eye. Reset light goes back to the brightness it was taken at and sets the four sliders below to 0."),
                 )),
-                Section("TONES", "Each slider lifts or lowers one part of the picture by its local brightness, so a whole sky or a whole shadow moves together and edges keep no halo. 0 leaves the photo untouched.", listOf(
+                Section("TONES", "Each slider lifts or lowers one part of the picture by its local brightness, so a whole sky or a whole shadow moves together and edges keep no halo. 0 leaves the photo untouched. While you drag one, the photo glows where it acts and the rest dims back; near 0 the slider clicks onto 0.", listOf(
                     Item("Highlights", "−100 to +100",
                         "The bright parts — sky, lamps, sunlit walls — by up to 1.6 stops.",
                         "Holds a bright sky: colour and clouds come back, the sun keeps its round glow.",
