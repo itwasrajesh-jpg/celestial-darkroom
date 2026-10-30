@@ -72,9 +72,15 @@ object SceneLight {
     fun apply(src: Develop.Source, r: Recipe, log: (String) -> Unit = {}) {
         if (!wanted(r)) return
         log("light")
-        applyTo(src.image.data.order(ByteOrder.nativeOrder()).asFloatBuffer(), src.width, src.height,
-            r.lightHighlights, r.lightShadows, r.lightWhites, r.lightBlacks, exposureStops(r))
+        val f = src.image.data.order(ByteOrder.nativeOrder()).asFloatBuffer()
+        val m = smoothed(f, src.width, src.height)
+        // 102a: the map the tones read, kept for the glow over the photo ([reachOf])
+        lastReach = Kept(src.image.data, src.width, src.height, Reach(m.gw, m.gh, m.base.copyOf()))
+        gains(m, f, src.width, src.height, r.lightHighlights, r.lightShadows, r.lightWhites, r.lightBlacks, exposureStops(r))
     }
+
+    private class Kept(val buffer: java.nio.ByteBuffer, val w: Int, val h: Int, val reach: Reach)
+    @Volatile private var lastReach: Kept? = null
 
     private fun log2(x: Float) = ln(x) / LN2
     private fun smooth(a: Float, b: Float, x: Float): Float { val t = ((x - a) / (b - a)).coerceIn(0f, 1f); return t * t * (3 - 2 * t) }
@@ -86,8 +92,10 @@ object SceneLight {
             whites * 1.0f * smooth(1.5f, 4f, e) +
             blacks * 1.0f * (1 - smooth(-7f, -4f, e))
 
-    /** In place on interleaved linear RGB. [shift] = [exposureStops]. */
-    fun applyTo(f: FloatBuffer, w: Int, h: Int, highlights: Float, shadows: Float, whites: Float, blacks: Float, shift: Float) {
+    /** The smoothed brightness map: the grid's cells, each in stops from mid-grey ([ev]), and [base], the same after the edge-kept smoothing. */
+    private class Smoothed(val step: Int, val gw: Int, val gh: Int, val ev: FloatArray, val base: FloatArray, val inC: Float)
+
+    private fun smoothed(f: FloatBuffer, w: Int, h: Int): Smoothed {
         val step = max(1, (max(w, h) + GRID_EDGE - 1) / GRID_EDGE)
         val gw = (w + step - 1) / step; val gh = (h + step - 1) / step
         // 1. the grid: each cell's mean brightness, in stops from mid-grey
@@ -123,6 +131,42 @@ object SceneLight {
             }
             base[gy * gw + gx] = num / den
         }
+        return Smoothed(step, gw, gh, ev, base, inC)
+    }
+
+    /**
+     * 102a: where each LIGHT slider acts, for the glow over the photo while one is dragged — the
+     * smoothed brightness the tones read, [gw] × [gh] cells over the picture, in stops from mid-grey
+     * before the four tones (the exposure not included: [reach] adds it).
+     */
+    class Reach(val gw: Int, val gh: Int, val local: FloatArray)
+
+    /**
+     * For a prepared picture: the very map its tones were worked out from when it was prepared with
+     * [r]'s tones (kept by [apply]), or, untouched, read from the picture itself — the same thing.
+     */
+    fun reachOf(src: Develop.Source, r: Recipe): Reach {
+        val kept = lastReach
+        if (wanted(r) && kept != null && kept.buffer === src.image.data && kept.w == src.width && kept.h == src.height) return kept.reach
+        val m = smoothed(src.image.data.order(ByteOrder.nativeOrder()).asFloatBuffer(), src.width, src.height)
+        return Reach(m.gw, m.gh, m.base)
+    }
+
+    /** How much the slider [which] ("highlights", "shadows", "whites" or "blacks") acts at local brightness [e] (stops, the exposure included), 0 … 1. */
+    fun reach(which: String, e: Float): Float = when (which) {
+        "highlights" -> smooth(0f, 2.5f, e)
+        "shadows" -> (1 - smooth(-3.5f, 0f, e)) * smooth(-7f, -4.5f, e)
+        "whites" -> smooth(1.5f, 4f, e)
+        "blacks" -> 1 - smooth(-7f, -4f, e)
+        else -> 0f
+    }
+
+    /** In place on interleaved linear RGB. [shift] = [exposureStops]. */
+    fun applyTo(f: FloatBuffer, w: Int, h: Int, highlights: Float, shadows: Float, whites: Float, blacks: Float, shift: Float) =
+        gains(smoothed(f, w, h), f, w, h, highlights, shadows, whites, blacks, shift)
+
+    private fun gains(m: Smoothed, f: FloatBuffer, w: Int, h: Int, highlights: Float, shadows: Float, whites: Float, blacks: Float, shift: Float) {
+        val step = m.step; val gw = m.gw; val gh = m.gh; val ev = m.ev; val base = m.base; val inC = m.inC
         // 3. back to full size, each pixel from the grid neighbours as bright as it, then its gain
         for (y in 0 until h) {
             val fy = ((y + 0.5f) / step - 0.5f).coerceIn(0f, (gh - 1).toFloat())

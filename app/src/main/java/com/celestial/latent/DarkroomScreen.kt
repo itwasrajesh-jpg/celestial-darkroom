@@ -197,6 +197,12 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
     var comparing by remember { mutableStateOf(false) }
     var status by remember { mutableStateOf("") }
     var rendering by remember { mutableStateOf(false) }
+    // 102a: a full preview (not the quick pass under a moving finger) is developing: the safelight's cue
+    var renderingFine by remember { mutableStateOf(false) }
+    // 102a: the LIGHT tone a finger is on, and where the tones act on this photo (read again at each new hold)
+    var lightHold by remember { mutableStateOf<String?>(null) }
+    var reach by remember { mutableStateOf<com.celestial.latent.develop.SceneLight.Reach?>(null) }
+    var reachStale by remember { mutableStateOf(true) }
     var pendingAt by remember { mutableStateOf(0L) }
     // 96a: a parked request remembers whether any caller wanted the full preview, not only the quick pass
     var pendingFine by remember { mutableStateOf(false) }
@@ -240,7 +246,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
     fun render(fast: Boolean) {
         if (fullRunning) return                      // never compete with a full-size develop
         if (rendering) { pendingAt = System.currentTimeMillis(); if (!fast) pendingFine = true; return }
-        rendering = true
+        rendering = true; renderingFine = !fast
         // While a control moves: smaller, centred, and without the costly spatial stages —
         // except the one being edited, which has to stay visible.
         val base = recipe.copy(previewMaxSize = if (fast) COARSE_EDGE else FINE_EDGE)
@@ -262,6 +268,8 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                 src = Develop.openCached(context, source, isRaw, decodeEdge(DECODE_EDGE, framing), r, iso, softenMask = softenMap, pairFirst = pairFirst, framing = framing,
                     fogMask = fogMap, fogLook = fogLook, raysMask = raysMap, raysLook = raysLook, extraLights = extraLights, depthSplit = depthSplit,
                     wetMask = wetMap, wetLook = wetLook, rainMask = rainMap) { m -> status = m }
+                // 102a: where the held LIGHT tone acts, read once per hold from the whole prepared picture
+                if (reachStale && lightHold != null) { reach = com.celestial.latent.develop.SceneLight.reachOf(src!!, r); reachStale = false }
                 // Middle of the frame first on the quick pass: it appears sooner and reads the same.
                 val target = if (cropFraction < 1f) Develop.centreCrop(src!!, cropFraction).also { cropped = it } else src!!
                 val t0 = System.nanoTime()
@@ -287,7 +295,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                 if (cropped !== null && cropped !== src) cropped?.close()
                 if (holdsLane) q.engineLane.release()
             }
-            rendering = false
+            rendering = false; renderingFine = false
             // 96a: replaying the running pass's own mode lost the full preview whenever the quick pass
             // outlasted the 450 ms wait (Night Clean's first pass takes seconds): the picture stayed on
             // the quick pass and the bar never ended. The parked request runs as what was asked for.
@@ -954,6 +962,12 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                                 }
                             })
                     }
+                    // 102a: where the held LIGHT tone acts, and the safelight while a print develops
+                    if (!zoom.zoomed && !frameOpen && !comparingNow) preview?.let { pb ->
+                        val aspect = pb.width.toFloat() / pb.height
+                        ReachGlow(reach, lightHold, com.celestial.latent.develop.SceneLight.exposureStops(recipe), aspect)
+                        Safelight(renderingFine || fullRunning, aspect)
+                    }
                     // film-still bars, shown around the picture as they will be printed
                     if (framing.letterbox && !zoom.zoomed && !frameOpen && !comparing && preview != null) {
                         val pb = preview!!
@@ -1236,11 +1250,11 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                                     // darkroom. So the slider shows brightness in stops and inverts it,
                                     // or dragging right would make the picture darker.
                                     val ev = (Math.log(1.0 / recipe.printExposure.coerceAtLeast(0.01f)) / Math.log(2.0)).toFloat()
-                                    S("Exposure", ev, -1.5f, 1.5f, "%+.1f EV") {
+                                    S("Exposure", ev, -1.5f, 1.5f, "%+.1f EV", snap = true) {
                                         set { copy(printExposure = Math.pow(2.0, -it.toDouble()).toFloat().coerceIn(com.celestial.latent.develop.PRINT_EXPOSURE_MIN, com.celestial.latent.develop.PRINT_EXPOSURE_MAX)) }
                                     }
                                 } else {
-                                    S("Exposure", recipe.exposureEv, -3f, 3f, "%+.1f EV") { set { copy(exposureEv = it) } }
+                                    S("Exposure", recipe.exposureEv, -3f, 3f, "%+.1f EV", snap = true) { set { copy(exposureEv = it) } }
                                 }
                                 Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                     // The photo opens at the brightness it was shot at. This asks the film
@@ -1279,10 +1293,14 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                                 }
                                 // the four tones, on the scene's light before the film ([SceneLight]): −1 … 1 shown as −100 … +100
                                 fun tone(v: Float) = (if (Math.round(v * 100) > 0) "+" else "") + Math.round(v * 100)
-                                S("Highlights", recipe.lightHighlights, -1f, 1f, tone(recipe.lightHighlights)) { set { copy(lightHighlights = Math.round(it * 100) / 100f) } }
-                                S("Shadows", recipe.lightShadows, -1f, 1f, tone(recipe.lightShadows)) { set { copy(lightShadows = Math.round(it * 100) / 100f) } }
-                                S("Whites", recipe.lightWhites, -1f, 1f, tone(recipe.lightWhites)) { set { copy(lightWhites = Math.round(it * 100) / 100f) } }
-                                S("Blacks", recipe.lightBlacks, -1f, 1f, tone(recipe.lightBlacks)) { set { copy(lightBlacks = Math.round(it * 100) / 100f) } }
+                                // 102a: while one is held, the photo glows where it acts ([ReachGlow])
+                                fun hold(which: String): (Boolean) -> Unit = { on ->
+                                    if (on) { if (lightHold != which) { lightHold = which; reachStale = true } } else if (lightHold == which) lightHold = null
+                                }
+                                S("Highlights", recipe.lightHighlights, -1f, 1f, tone(recipe.lightHighlights), snap = true, onHold = hold("highlights")) { set { copy(lightHighlights = Math.round(it * 100) / 100f) } }
+                                S("Shadows", recipe.lightShadows, -1f, 1f, tone(recipe.lightShadows), snap = true, onHold = hold("shadows")) { set { copy(lightShadows = Math.round(it * 100) / 100f) } }
+                                S("Whites", recipe.lightWhites, -1f, 1f, tone(recipe.lightWhites), snap = true, onHold = hold("whites")) { set { copy(lightWhites = Math.round(it * 100) / 100f) } }
+                                S("Blacks", recipe.lightBlacks, -1f, 1f, tone(recipe.lightBlacks), snap = true, onHold = hold("blacks")) { set { copy(lightBlacks = Math.round(it * 100) / 100f) } }
                                 Note(if (onPrintRoute)
                                     "Exposure sets how long the print is exposed under the enlarger — the darkroom's own way of controlling brightness. Highlights, Shadows, Whites and Blacks change the scene's light before the film, so the film still draws the result."
                                 else
@@ -1525,23 +1543,59 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
     }
 }
 
+/** 102a: how close to 0 a [S] with snap pulls the value onto 0, as a share of its range. */
+private const val SNAP_ZONE = 0.025f
+
+/**
+ * A slider with its name and value. [snap] (102a, the LIGHT tab): near 0 the value clicks onto 0 with
+ * a tick, and a small mark shows where 0 is; [onHold] hears true while the finger moves it, false when
+ * it lifts. The value rolls like a film counter as it changes.
+ */
 @Composable
-private fun S(label: String, value: Float, min: Float, max: Float, fmt: String, enabled: Boolean = true, onChange: (Float) -> Unit) {
+private fun S(label: String, value: Float, min: Float, max: Float, fmt: String, enabled: Boolean = true,
+              snap: Boolean = false, onHold: ((Boolean) -> Unit)? = null, onChange: (Float) -> Unit) {
     val context = LocalContext.current
     var last by remember { mutableStateOf(value) }
+    val snaps = snap && min < 0f && max > 0f
+    var snapped by remember { mutableStateOf(false) }
+    val snapGlow = remember { androidx.compose.animation.core.Animatable(0f) }
+    val scope = rememberCoroutineScope()
     Column(Modifier.padding(vertical = 6.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Text(label, color = if (enabled) LatentColors.Text else LatentColors.Line, fontSize = 11.sp)
-            Text(String.format(fmt, value), color = if (enabled) LatentColors.TextBright else LatentColors.Line, fontSize = 11.sp)
+            RollingText(String.format(fmt, value), color = if (enabled) LatentColors.TextBright else LatentColors.Line, fontSize = 11.sp)
         }
-        Slider(
-            value = value.coerceIn(min, max), onValueChange = { v ->
-                if (Math.abs(v - last) > (max - min) / 40f) { Haptics.tick(context); last = v }
-                onChange(v)
-            },
-            valueRange = min..max, enabled = enabled,
-            colors = SliderDefaults.colors(thumbColor = LatentColors.Amber, activeTrackColor = LatentColors.SliderFill, inactiveTrackColor = LatentColors.SliderTrack),
-        )
+        Box {
+            Slider(
+                value = value.coerceIn(min, max), onValueChange = { raw ->
+                    var v = raw
+                    if (snaps) {
+                        if (Math.abs(v) < (max - min) * SNAP_ZONE) {
+                            v = 0f
+                            if (!snapped) {
+                                snapped = true; Haptics.tick(context); last = 0f
+                                if (motionOn()) scope.launch { snapGlow.snapTo(1f); snapGlow.animateTo(0f, tween(450)) }
+                            }
+                        } else snapped = false
+                    }
+                    if (Math.abs(v - last) > (max - min) / 40f) { Haptics.tick(context); last = v }
+                    onHold?.invoke(true)
+                    onChange(v)
+                },
+                onValueChangeFinished = { onHold?.invoke(false) },
+                valueRange = min..max, enabled = enabled,
+                colors = SliderDefaults.colors(thumbColor = LatentColors.Amber, activeTrackColor = LatentColors.SliderFill, inactiveTrackColor = LatentColors.SliderTrack),
+            )
+            // where 0 is, as a small dot on the track, lit for a moment as the value clicks onto it
+            if (snaps) androidx.compose.foundation.Canvas(Modifier.matchParentSize()) {
+                val inset = 2.dp.toPx()
+                val x = inset + (-min / (max - min)) * (size.width - 2 * inset)
+                val c = androidx.compose.ui.geometry.Offset(x, size.height / 2f)
+                val g = snapGlow.value
+                if (g > 0f) drawCircle(LatentColors.Amber.copy(alpha = 0.35f * g), radius = 6.dp.toPx() + 6.dp.toPx() * (1f - g), center = c)
+                if (Math.abs(value) > 1e-4f) drawCircle(LatentColors.TextBright.copy(alpha = 0.7f), radius = 2.dp.toPx(), center = c)
+            }
+        }
     }
 }
 
