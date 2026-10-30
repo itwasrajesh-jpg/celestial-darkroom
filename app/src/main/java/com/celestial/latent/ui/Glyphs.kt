@@ -3,9 +3,21 @@
 // 20 dp) and, where it has one, a single accent detail (the dial's dot, the lens glint) in the theme accent.
 package com.celestial.latent.ui
 
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -17,6 +29,10 @@ import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
+import com.celestial.latent.motionOn
+import kotlinx.coroutines.launch
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import kotlin.math.PI
@@ -32,9 +48,26 @@ enum class Glyph(val label: String) {
     ENLARGER("enlarger"), SCANNER("scanner"), GLARE("glare"), COLOUR("colour"), ENGINE("engine"), UNFOLD("unfold"), NEXT("next"),
 }
 
+/**
+ * A glyph. 101a: it plays its short motion ([drawGlyphMoving]) when tapped anywhere in [modifier]'s area
+ * ([tap], watched without taking the tap from the button), and whenever [play] changes to a new non-null
+ * value (a darkroom tab as it is chosen). Nothing moves when the phone's "remove animations" is on.
+ */
 @Composable
-fun GlyphIcon(g: Glyph, tint: Color, modifier: Modifier = Modifier, size: Dp = 20.dp, accent: Color = LatentColors.Amber) {
-    Canvas(modifier.size(size)) { drawGlyph(g, tint, accent) }
+fun GlyphIcon(g: Glyph, tint: Color, modifier: Modifier = Modifier, size: Dp = 20.dp, accent: Color = LatentColors.Amber,
+              tap: Boolean = true, play: Any? = null) {
+    val t = remember { Animatable(0f) }
+    val scope = rememberCoroutineScope()
+    fun go() { if (motionOn()) scope.launch { t.snapTo(0f); t.animateTo(1f, tween(GLYPH_MOTION_MS, easing = LinearEasing)); t.snapTo(0f) } }
+    var last by remember { mutableStateOf(play) }
+    LaunchedEffect(play) { if (play != null && play != last) go(); last = play }
+    val watch = if (!tap) Modifier else Modifier.pointerInput(Unit) {
+        awaitEachGesture {
+            awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+            if (waitForUpOrCancellation(PointerEventPass.Initial) != null) go()
+        }
+    }
+    Canvas(watch.then(modifier).size(size)) { drawGlyphMoving(g, tint, accent, t.value) }
 }
 
 /** Draws [g] filling this scope (square). */
