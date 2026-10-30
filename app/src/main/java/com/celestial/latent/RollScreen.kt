@@ -31,6 +31,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.ui.zIndex
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.shape.CircleShape
@@ -109,6 +110,8 @@ fun RollScreen(
     var scanned by remember { mutableStateOf(false) }
     // 89a: the frame under the contact sheet's loupe
     var loupeFrame by remember { mutableStateOf<Frame?>(null) }
+    // 102b: photos new to the roll (or just developed), which land in the grid like prints
+    var landing by remember { mutableStateOf<Set<String>>(emptySet()) }
     val scope = rememberCoroutineScope()
 
     fun scan() {
@@ -148,6 +151,7 @@ fun RollScreen(
         // Burst rolls (68a) live outside the gallery, one tile per burst, in date order with the rest.
         com.celestial.latent.camera.BurstRollFiles.list(context).forEach { b -> raws += Frame(b.uri, b.name, isRaw = true, developed = false, date = b.dateAdded, isBurst = true) }
         raws.sortByDescending { it.date }
+        landing = RollLanding.arrivals(raws.filter { it.folder == null }.map { it.uri.toString() to it.developed })
         frames = raws
     }
 
@@ -426,7 +430,12 @@ fun RollScreen(
             else -> LazyVerticalGrid(columns = GridCells.Fixed(3), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.weight(1f), state = grid) {
                 items(shown, key = { it.uri.toString() }) { frame ->
                     val picked = frame.uri in selected
-                    Box(Modifier.aspectRatio(3f / 4f).clip(RoundedCornerShape(4.dp)).background(LatentColors.Surface)
+                    val k = frame.uri.toString()
+                    // 102b: the others make room smoothly; a new print falls into its place
+                    val lands = k in landing
+                    Box(Modifier.animateItem().then(if (lands) Modifier.zIndex(1f) else Modifier)
+                        .landing(lands, shown.indexOfFirst { it.uri.toString() == k }.coerceAtLeast(0)) { landing = landing - k }
+                        .aspectRatio(3f / 4f).clip(RoundedCornerShape(4.dp)).background(LatentColors.Surface)
                         .then(if (picked) Modifier.border(2.dp, LatentColors.Amber, RoundedCornerShape(4.dp)) else Modifier)
                         .combinedClickable(onClick = { open(frame) }, onLongClick = { Haptics.click(context); toggle(frame) })) {
                         FrameFace(frame, big = false)
