@@ -127,8 +127,8 @@ object Develop {
      * source and cap; evicted oldest-first, and every evicted buffer is freed.
      */
     object Cache {
-        // Two photos' worth: each keeps a pristine decode and its working copy.
-        private const val MAX = 4
+        // Two photos' worth: each keeps a pristine decode, its working copy and, with Night Clean, its cleaned copy.
+        private const val MAX = 6
         private val entries = LinkedHashMap<String, Source>()
 
         @Synchronized fun get(key: String): Source? = entries[key]
@@ -390,9 +390,28 @@ object Develop {
         // the depth comes from the framed picture as it was, before fog or light touch it
         val sunIn = sunInput(context, source, framing, working, listOf(raysLook) + extraLights, log, glowing, wet)
         // the sensor's noise is cleaned first, so fog and light never work with it
-        nightCleanSource(context, working, recipe, log)
-        denoiseSource(working, recipe, isoUsed, log)
-        sensorNoiseSource(working, recipe, isoUsed, log)
+        if (recipe.nightClean) {
+            // Night Clean takes seconds, and only the photo, its framing and the noise settings change what
+            // it gives: the cleaned picture is kept on its own, so the quick and full passes, the LIGHT tab
+            // and the filters all start from it instead of cleaning again (both passes used to clean anew)
+            val cleanFor = listOf(framing.key(), isoUsed, recipe.chromaDenoise, recipe.lumaDenoise,
+                recipe.nightCleanStrength, recipe.nightCleanFollow, fw, fh).joinToString("|")
+            val cleanKey = "$key|clean"
+            val clean = Cache.get(cleanKey)?.takeIf { it.width == fw && it.height == fh }
+                ?: pristine.blankSized(fw, fh).also { Cache.put(cleanKey, it) }
+            if (clean.preparedFor != cleanFor) {
+                clean.frameFrom(pristine, framing)
+                nightCleanSource(context, clean, recipe, log)
+                denoiseSource(clean, recipe, isoUsed, log)
+                sensorNoiseSource(clean, recipe, isoUsed, log)
+                clean.preparedFor = cleanFor
+            }
+            working.refillFrom(clean)
+            working.denoised = true
+        } else {
+            denoiseSource(working, recipe, isoUsed, log)
+            sensorNoiseSource(working, recipe, isoUsed, log)
+        }
         // 100a: the LIGHT tab, on the photo's own light — the lights placed after it are as you set them
         SceneLight.apply(working, recipe, log)
         // what lies under the lights: while it is unchanged, the noise-free copy they land on is reused
