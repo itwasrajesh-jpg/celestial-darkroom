@@ -524,6 +524,8 @@ fun CameraScreen(
                     drawLine(c, Offset(0f, h / 3), Offset(w, h / 3), 1f); drawLine(c, Offset(0f, 2 * h / 3), Offset(w, 2 * h / 3), 1f)
                 }
             }
+            // 105a: near level, a thin horizon line; gold for a moment when exact
+            LevelLine()
             FocusEvOverlay(
                 point = focusTap, evIndex = controls.evIndex,
                 evRange = (if (controller.hasCharacteristics) controller.evRange.lower..controller.evRange.upper else -24..24),
@@ -850,12 +852,15 @@ fun CameraScreen(
             val pressed by press.collectIsPressedAsState()
             val sink by androidx.compose.animation.core.animateFloatAsState(if (pressed && motionOn()) 0.92f else 1f,
                 androidx.compose.animation.core.spring(dampingRatio = 0.5f, stiffness = 900f), label = "sink")
+            // 105a: in manual, when the meter says the exposure is right, the shutter wakes, glows and breathes
+            val aura = rememberAura(if (controls.manualExposure) LightMeter.stops else null)
             Box(
-                Modifier.size(78.dp).graphicsLayer { scaleX = sink; scaleY = sink }.shutterRing(CircleShape)
+                Modifier.size(78.dp).graphicsLayer { val k = sink * aura.swell; scaleX = k; scaleY = k }.auraAround(aura, LatentColors.TextBright)
+                    .shutterRing(CircleShape)
                     .combinedClickable(interactionSource = press, indication = androidx.compose.foundation.LocalIndication.current,
-                        onClick = { shoot(single = !multi) }, onLongClick = { shoot(single = multi) }),
+                        onClick = { aura.fire(); shoot(single = !multi) }, onLongClick = { aura.fire(); shoot(single = multi) }),
                 contentAlignment = Alignment.Center,
-            ) { Box(Modifier.size(62.dp).clip(CircleShape).accentFill(multi, shutterFace())) }
+            ) { Box(Modifier.size(62.dp).clip(CircleShape).accentFill(multi, shutterFace()).auraFace(aura)) }
             // Tap cycles: off → 16 (burst) → FS (focus stack, 69a) → HDR (bracket, 86b) → off.
             // Hold: HDR with its bracket card open (86b).
             Box(Modifier.size(46.dp).then(if (LatentColors.palette.depth) Modifier.floating(CircleShape, 5.dp).background(LatentColors.Surface, CircleShape) else Modifier)
