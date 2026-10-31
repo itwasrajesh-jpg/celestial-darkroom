@@ -59,6 +59,18 @@ class FilmPreviewView(context: Context) : GLSurfaceView(context) {
         requestRender()
     }
 
+    /**
+     * 106a: horizon lock. The picture is turned clockwise by [deg] and enlarged by [zoom] (≥ 1) about the
+     * middle, so it stays level with no corner showing; null = as it comes.
+     */
+    fun setLevel(deg: Float?, zoom: Float = 1f) {
+        if (deg == null) { renderer.level = floatArrayOf(1f, 0f) } else {
+            val r = Math.toRadians(deg.toDouble()); val k = 1f / zoom.coerceAtLeast(1f)
+            renderer.level = floatArrayOf((kotlin.math.cos(r) * k).toFloat(), (kotlin.math.sin(r) * k).toFloat())
+        }
+        requestRender()
+    }
+
     fun setExposureGain(gain: Float) {
         val current = renderer.exposureGain
         renderer.exposureGain = if (current <= 0f) gain else current + (gain - current) * 0.4f
@@ -106,6 +118,8 @@ class FilmPreviewView(context: Context) : GLSurfaceView(context) {
         @Volatile var pendingLut: FloatArray? = null
         @Volatile var pendingLutSize = 33
         @Volatile var exposureGain = 1f
+        /** 106a: (cos, sin) of the horizon-lock turn, each times the crop (1, 0 = none). */
+        @Volatile var level = floatArrayOf(1f, 0f)
         @Volatile var tint = floatArrayOf(1f, 1f, 1f)
         @Volatile var grabSize = 0
         @Volatile var onGrab: ((FloatArray, Int, Int) -> Unit)? = null
@@ -213,6 +227,8 @@ class FilmPreviewView(context: Context) : GLSurfaceView(context) {
             GLES20.glVertexAttribPointer(uv, 2, GLES20.GL_FLOAT, false, 0, UV)
 
             GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(program, "uTransform"), 1, false, transform, 0)
+            val lv = level
+            GLES20.glUniform3f(GLES20.glGetUniformLocation(program, "uLevel"), lv[0], lv[1], if (viewH > 0) viewW.toFloat() / viewH else 0.75f)
             GLES20.glUniform1f(GLES20.glGetUniformLocation(program, "uGain"), exposureGain)
             val t = tint
             GLES20.glUniform3f(GLES20.glGetUniformLocation(program, "uTint"), t[0], t[1], t[2])
@@ -246,6 +262,8 @@ class FilmPreviewView(context: Context) : GLSurfaceView(context) {
                     GLES20.glViewport(0, 0, g, g)
                     GLES20.glUseProgram(program)
                     GLES20.glUniform1f(GLES20.glGetUniformLocation(program, "uGain"), 1f)
+                    // the meter sees the whole camera frame, not the levelled crop
+                    GLES20.glUniform3f(GLES20.glGetUniformLocation(program, "uLevel"), 1f, 0f, 1f)
                     GLES20.glUniform1i(GLES20.glGetUniformLocation(program, "uHasLut"), 0)
                     GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
                     GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, texture)
@@ -391,10 +409,17 @@ class FilmPreviewView(context: Context) : GLSurfaceView(context) {
             attribute vec4 aPos;
             attribute vec4 aUv;
             uniform mat4 uTransform;
+            uniform vec3 uLevel;
             varying vec2 vUv;
             void main() {
                 gl_Position = aPos;
-                vUv = (uTransform * aUv).xy;
+                // 106a: the screen point's source, turned back by the horizon lock (x = cos·k, y = sin·k,
+                // z = the view's width ÷ height, so the turn is round, not squashed)
+                vec2 p = aUv.xy - 0.5;
+                p.x *= uLevel.z;
+                p = vec2(uLevel.x * p.x - uLevel.y * p.y, uLevel.y * p.x + uLevel.x * p.y);
+                p.x /= uLevel.z;
+                vUv = (uTransform * vec4(p + 0.5, aUv.z, aUv.w)).xy;
             }
         """
 

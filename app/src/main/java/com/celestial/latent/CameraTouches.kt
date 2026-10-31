@@ -245,7 +245,7 @@ internal fun Modifier.auraFace(a: Aura): Modifier = drawWithContent {
 
 /** The phone's roll from the gravity sensor, smoothed; null while it lies flat (looking down or up). */
 @Composable
-private fun rememberHorizon(): Offset? {
+internal fun rememberHorizon(): Offset? {
     val ctx = LocalContext.current
     var h by remember { mutableStateOf<Offset?>(null) }
     DisposableEffect(Unit) {
