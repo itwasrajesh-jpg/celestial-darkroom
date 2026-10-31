@@ -1,6 +1,7 @@
 package com.celestial.latent.ui
 
 import android.content.Context
+import android.graphics.Bitmap
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -21,6 +22,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
@@ -129,18 +131,31 @@ object LatentColors {
         private set
     val palette: Palette get() = paletteOf(theme)
 
-    val Background get() = palette.background
-    val Surface get() = palette.surface
+    /**
+     * 105b: the darkroom's ambient light (approved proof visual-6/glow-and-shutter-v2.mp4): the photo's own colour,
+     * washed into the background, panels and mat while the darkroom is open, as if light spilled off the print.
+     * Its alpha is how strongly (it fades in and between photos); null everywhere else.
+     */
+    var ambient by mutableStateOf<Color?>(null)
+
+    /** [c] lit by the ambient light by [amount] (as in the proof); half as much in a light theme, whose pale panels show it more. */
+    private fun lit(c: Color, amount: Float): Color {
+        val a = ambient ?: return c
+        return lerp(c, a.copy(alpha = 1f), amount * a.alpha * (if (palette.light) 0.4f else 1f))
+    }
+
+    val Background get() = lit(palette.background, 0.20f)
+    val Surface get() = lit(palette.surface, 0.16f)
     val Line get() = palette.line
     val TextDim get() = palette.textDim
     val Text get() = palette.text
     val TextBright get() = palette.textBright
     val Amber get() = palette.amber
     val AmberInk get() = palette.amberInk
-    val Bar get() = palette.bar
+    val Bar get() = lit(palette.bar, 0.20f)
     val Dock get() = palette.dock
-    val Panel get() = palette.panel
-    val Mat get() = palette.mat
+    val Panel get() = lit(palette.panel, 0.20f)
+    val Mat get() = lit(palette.mat, 0.32f)
     val Frost get() = palette.frost
     val Light get() = palette.light
     val SliderFill get() = palette.sliderFill
@@ -150,6 +165,26 @@ object LatentColors {
 
     /** 87a-2: the colour of the [i]th darkroom film card: Clay's pastels in turn, as in the proof, else [Surface]. */
     fun card(i: Int): Color = palette.cardTints.let { if (it.isEmpty()) palette.surface else it[Math.floorMod(i, it.size)] }
+
+    /**
+     * 105b: a photo's main colour, for [ambient]: the average of a tiny copy, where coloured pixels count more
+     * than grey ones, pushed a little toward saturation (the proof's sub.py ambient()).
+     */
+    fun ambientOf(b: Bitmap): Color {
+        val small = Bitmap.createScaledBitmap(b, 24, 18, true)
+        val px = IntArray(24 * 18); small.getPixels(px, 0, 24, 0, 0, 24, 18)
+        if (small !== b) small.recycle()
+        var r = 0.0; var g = 0.0; var bl = 0.0; var w = 0.0
+        for (c in px) {
+            val cr = (c shr 16) and 255; val cg = (c shr 8) and 255; val cb = c and 255
+            val wt = (maxOf(cr, cg, cb) - minOf(cr, cg, cb) + 8).toDouble()
+            r += cr * wt; g += cg * wt; bl += cb * wt; w += wt
+        }
+        r /= w; g /= w; bl /= w
+        val m = (r + g + bl) / 3
+        fun ch(v: Double) = ((m + (v - m) * 1.6) / 255.0).coerceIn(0.0, 1.0).toFloat()
+        return Color(ch(r), ch(g), ch(bl))
+    }
 
     private const val PREFS = "latent_ui_theme"
 

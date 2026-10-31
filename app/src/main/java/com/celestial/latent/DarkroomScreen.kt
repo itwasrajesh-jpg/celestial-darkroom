@@ -44,6 +44,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.graphicsLayer
 import kotlinx.coroutines.launch
 import androidx.compose.runtime.rememberCoroutineScope
@@ -218,6 +219,16 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
     var previewIsPartial by remember { mutableStateOf(false) }
     // 75b: the last whole-frame preview, under the quick pass's centre so the picture never jumps in size
     var lastFull by remember { mutableStateOf<Bitmap?>(null) }
+    // 105b: the photo's own colour, washed into the darkroom around it; it fades in, follows each new photo, and is gone on leaving
+    var ambientTarget by remember { mutableStateOf<Color?>(null) }
+    LaunchedEffect(lastFull) {
+        val b = lastFull ?: return@LaunchedEffect
+        ambientTarget = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) { runCatching { LatentColors.ambientOf(b) }.getOrNull() }
+    }
+    val ambientShown by androidx.compose.animation.animateColorAsState(ambientTarget ?: Color.Transparent,
+        if (motionOn()) tween(700) else androidx.compose.animation.core.snap(), label = "ambient")
+    androidx.compose.runtime.SideEffect { LatentColors.ambient = ambientShown.takeIf { it.alpha > 0.003f } }
+    DisposableEffect(Unit) { onDispose { LatentColors.ambient = null } }
     var gpuTest by remember { mutableStateOf("") }
     var lookId by remember { mutableStateOf("") }
     var levelling by remember { mutableStateOf(false) }
@@ -911,6 +922,9 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                 val photoWeight = if (frameOpen) maxOf(photoShare, com.celestial.latent.develop.DarkroomPrefs.PHOTO_SHARE_DEFAULT) else photoShare
                 // 87a: the photo always sits on a dark mat (in Darkroom, the grey it always had)
                 Box(Modifier.fillMaxWidth().weight(photoWeight).background(LatentColors.Mat)
+                    // 105b: the print's light on the mat around it
+                    .drawBehind { LatentColors.ambient?.let { a -> drawRect(androidx.compose.ui.graphics.Brush.radialGradient(
+                        listOf(a.copy(alpha = 0.5f * a.alpha), a.copy(alpha = 0f)), center = center, radius = size.maxDimension.coerceAtLeast(1f) * 0.62f)) } }
                     .onSizeChanged { viewSize = it }
                     .onGloballyPositioned { PhotoFlight.room(source, it.boundsInRoot()) }
                     // Two fingers zoom and move; one finger slides the picture when zoomed in.
@@ -1095,6 +1109,9 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                     frameNumber = { com.celestial.latent.develop.FilmEdge.frameNumber(context, source) },
                 ) else Column(
                     Modifier.fillMaxWidth().weight(1f - photoWeight).liftedTop(rim = false).clip(RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)).background(LatentColors.Panel)
+                        // 105b: and falling on the top of the sheet
+                        .drawBehind { LatentColors.ambient?.let { a -> drawRect(androidx.compose.ui.graphics.Brush.verticalGradient(
+                            0f to a.copy(alpha = 0.38f * a.alpha), 0.35f to a.copy(alpha = 0.13f * a.alpha), 1f to a.copy(alpha = 0f), startY = 0f, endY = 110.dp.toPx())) } }
                         .litEdge(RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp))
                 ) {
                     // the handle (75b): the panel follows the finger; a double tap puts the usual height back
