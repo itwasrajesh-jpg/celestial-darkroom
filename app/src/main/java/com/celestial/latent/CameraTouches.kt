@@ -32,6 +32,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.celestial.latent.ui.AppTheme
+import com.celestial.latent.ui.LatentColors
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.atan2
@@ -54,9 +56,29 @@ import kotlin.math.sqrt
  *    level, it turns gold with a small pulse for a moment, then rests faint.
  */
 
-private val GOLD = Color(0xFFFFCD78)
-private val HEART = Color(0xFFFFF7E4)
-private val SPARK = Color(0xFFFFECBE)
+/**
+ * 105c: the shutter's light in each theme. [glow] is the bloom, [heart]→[edge] the lit face, [ring] the
+ * ring and the waking pulse, [sparks] the three circling lights, [level] the level line once level.
+ * Clay's background is pale, where light vanishes like a torch in daylight, so its lights are deeper and
+ * its trails stronger (approved proof: visual-6/themed/shutter-three-themes.mp4).
+ */
+internal class AuraLook(
+    val glow: Color, val heart: Color, val edge: Color, val ring: Color, val sparks: List<Color>, val level: Color,
+    val glowAlpha: Float = 1f, val trace: Float = 0.15f, val halo: Float = 0.55f, val backDim: Float = 0.45f,
+    val faceMid: Float = 0.3f, val light: Boolean = false,
+)
+private val LOOK_DARKROOM = AuraLook(Color(0xFFFFCD78), Color(0xFFFFF7E4), Color(0xFFFFCD78), Color(0xFFFFD58C),
+    List(3) { Color(0xFFFFECBE) }, Color(0xFFFFCD78))
+// moonlight: a pale ice face fading to silver blue, three small silver moons
+private val LOOK_MIDNIGHT = AuraLook(Color(0xFFA9BEE6), Color(0xFFF7F9FD), Color(0xFF9DB1D6), Color(0xFFDCE3EF),
+    List(3) { Color(0xFFE8EEF9) }, Color(0xFFA9BEE6), glowAlpha = 1.1f, faceMid = 0.25f)
+// Clay: a periwinkle face to match its ring, and peach, mint and lilac lights
+private val LOOK_CLAY = AuraLook(Color(0xFF7E97F2), Color(0xFFF1F3FF), Color(0xFF6F8BEF), Color(0xFF8EA6F7),
+    listOf(Color(0xFFEC8F78), Color(0xFF5FC09F), Color(0xFFC07FDB)), Color(0xFF8EA6F7),
+    glowAlpha = 0.85f, trace = 0.32f, halo = 0.45f, backDim = 0.6f, faceMid = 0.45f, light = true)
+internal fun auraLook(): AuraLook = when (LatentColors.theme) {
+    AppTheme.DARKROOM -> LOOK_DARKROOM; AppTheme.MIDNIGHT -> LOOK_MIDNIGHT; AppTheme.CLAY -> LOOK_CLAY
+}
 
 private fun ease(t: Float): Float { val x = t.coerceIn(0f, 1f); return x * x * (3 - 2 * x) }
 private fun eout(t: Float): Float { val x = t.coerceIn(0f, 1f); return 1 - (1 - x).pow(3) }
@@ -153,12 +175,13 @@ private class Orbit(val tiltDeg: Float, val secondsPerTurn: Float, val start: Fl
 private val ORBITS = listOf(Orbit(0f, 2.6f, 0f), Orbit(60f, 3.1f, 0.33f), Orbit(-60f, 3.6f, 0.66f))
 
 /** The circling lights, on the side of the button asked for ([back] = behind it). */
-private fun DrawScope.orbits(a: Aura, back: Boolean) {
+private fun DrawScope.orbits(a: Aura, back: Boolean, L: AuraLook) {
     if (a.on <= 0.01f) return
     // the button's swell is its graphics layer's scale, which this is drawn under
     val c = center; val k = a.reach
     val ax = 69.dp.toPx() * k; val bx = 19.5.dp.toPx() * k
-    for (o in ORBITS) {
+    for ((oi, o) in ORBITS.withIndex()) {
+        val spark = L.sparks[oi]
         val tr = Math.toRadians(o.tiltDeg.toDouble()); val ct = cos(tr).toFloat(); val st = sin(tr).toFloat()
         fun at(th: Float): Triple<Float, Float, Float> {
             val x = ax * cos(th); val y = bx * sin(th)
@@ -169,7 +192,7 @@ private fun DrawScope.orbits(a: Aura, back: Boolean) {
         var prev = at(th)
         for (i in 1..120) {
             val p = at(th - 2f * PI.toFloat() * i / 120f)
-            if ((prev.third < 0f) == back) drawLine(GOLD.copy(alpha = 0.15f * a.on), Offset(prev.first, prev.second), Offset(p.first, p.second), 0.6.dp.toPx())
+            if ((prev.third < 0f) == back) drawLine(spark.copy(alpha = L.trace * a.on), Offset(prev.first, prev.second), Offset(p.first, p.second), 0.6.dp.toPx())
             prev = p
         }
         // the light and its tail
@@ -177,10 +200,10 @@ private fun DrawScope.orbits(a: Aura, back: Boolean) {
             val (x, y, z) = at(th - i * 0.045f)
             if ((z < 0f) != back) continue
             val f = 1f - i / 26f
-            val alpha = a.on * f.pow(1.6f) * (if (back) 0.45f else 1f)
+            val alpha = a.on * f.pow(1.6f) * (if (back) L.backDim else 1f)
             val r = (1.1f + 2f * f * f).dp.toPx()
-            softDisc(Offset(x, y), r + 1.dp.toPx(), 3.5.dp.toPx(), SPARK, 0.55f * alpha)
-            drawCircle(SPARK.copy(alpha = alpha), r, Offset(x, y))
+            softDisc(Offset(x, y), r + 1.dp.toPx(), 3.5.dp.toPx(), spark, L.halo * alpha)
+            drawCircle(spark.copy(alpha = alpha), r, Offset(x, y))
         }
     }
 }
@@ -192,19 +215,21 @@ private fun DrawScope.orbits(a: Aura, back: Boolean) {
 internal fun Modifier.auraAround(a: Aura, ring: Color): Modifier = drawWithContent {
     val on = a.on
     val rr = size.minDimension / 2f
+    val L = auraLook()
     if (on > 0.01f) {
         val glow = on * (0.35f + 0.65f * a.breath)
-        softDisc(center, rr + 6.dp.toPx(), 9.dp.toPx(), GOLD, 0.65f * glow)
-        softDisc(center, rr, 4.dp.toPx(), GOLD, 0.35f * glow)
-        orbits(a, back = true)
+        softDisc(center, rr + 6.dp.toPx(), 9.dp.toPx(), L.glow, 0.65f * glow * L.glowAlpha)
+        softDisc(center, rr, 4.dp.toPx(), L.glow, 0.35f * glow * L.glowAlpha)
+        orbits(a, back = true, L)
     }
     drawContent()
     if (on > 0.01f) {
         val u = a.pulse
-        if (u < 1f) drawCircle(Color(0xFFFFD58C).copy(alpha = 0.78f * (1f - u) * on), rr + 40.dp.toPx() * eout(u), center,
+        if (u < 1f) drawCircle(L.ring.copy(alpha = 0.78f * (1f - u) * on), rr + 40.dp.toPx() * eout(u), center,
             style = Stroke((0.5f + 1.5f * (1f - u)).dp.toPx()))
-        drawCircle(lerp(ring, GOLD, on), rr - 1.dp.toPx(), center, style = Stroke((2f + 1.5f * on).dp.toPx()))
-        orbits(a, back = false)
+        // Clay already has a thick blue ring: its lit ring starts from that blue, never from the dark ring colour
+        drawCircle(lerp(if (L.light) L.ring else ring, L.ring, on), rr - 1.dp.toPx(), center, style = Stroke((2f + 1.5f * on).dp.toPx()))
+        orbits(a, back = false, L)
     }
 }
 
@@ -212,8 +237,9 @@ internal fun Modifier.auraAround(a: Aura, ring: Color): Modifier = drawWithConte
 internal fun Modifier.auraFace(a: Aura): Modifier = drawWithContent {
     drawContent()
     val li = a.on * (0.55f + 0.45f * a.breath)
+    val L = auraLook()
     if (li > 0.01f) drawCircle(Brush.radialGradient(
-        0f to HEART.copy(alpha = li), 0.55f to lerp(HEART, GOLD, 0.3f).copy(alpha = li), 1f to GOLD.copy(alpha = li),
+        0f to L.heart.copy(alpha = li), 0.55f to lerp(L.heart, L.edge, L.faceMid).copy(alpha = li), 1f to L.edge.copy(alpha = li),
         center = center, radius = size.minDimension / 2f), radius = size.minDimension / 2f)
 }
 
@@ -272,10 +298,11 @@ internal fun LevelLine(modifier: Modifier = Modifier) {
     val alpha = near * (if (level) 0.85f - 0.45f * seg(since, 1f, 2f) else 0.85f)
     val measurer = rememberTextMeasurer()
     Canvas(modifier.fillMaxSize()) {
+        val mark = auraLook().level   // 105c: the theme's own "level" colour (gold in Darkroom)
         val c = center
         val n = hypot(up.x, up.y).coerceAtLeast(0.1f)
         val hx = up.y / n; val hy = up.x / n                    // along the horizon, in drawing terms
-        val col = (if (gold) GOLD else Color(0xFFF4F7FC)).copy(alpha = alpha)
+        val col = (if (gold) mark else Color(0xFFF4F7FC)).copy(alpha = alpha)
         val w = (if (gold) 1.1f else 0.8f).dp.toPx()
         for (s in listOf(-1f, 1f)) {
             drawLine(col, Offset(c.x + s * 30.dp.toPx() * hx, c.y + s * 30.dp.toPx() * hy), Offset(c.x + s * 125.dp.toPx() * hx, c.y + s * 125.dp.toPx() * hy), w)
@@ -288,8 +315,8 @@ internal fun LevelLine(modifier: Modifier = Modifier) {
             drawLine(col, a, b, 1.2.dp.toPx())
         }
         if (level) {
-            if (moving && since < 0.5f) drawCircle(GOLD.copy(alpha = 0.86f * (1f - since / 0.5f)), (3f + 15f * since / 0.5f).dp.toPx(), c, style = Stroke(1.dp.toPx()))
-            if (gold) drawCircle(GOLD.copy(alpha = alpha), 1.75.dp.toPx(), c)
+            if (moving && since < 0.5f) drawCircle(mark.copy(alpha = 0.86f * (1f - since / 0.5f)), (3f + 15f * since / 0.5f).dp.toPx(), c, style = Stroke(1.dp.toPx()))
+            if (gold) drawCircle(mark.copy(alpha = alpha), 1.75.dp.toPx(), c)
         } else {
             val t = if (abs(err) >= 1f) "${abs(err).roundToInt()}°" else String.format(java.util.Locale.US, "%.1f°", abs(err))
             val l = measurer.measure(t, TextStyle(color = Color(0xFFF4F7FC).copy(alpha = alpha * 0.8f), fontSize = 9.sp, fontWeight = FontWeight.Medium))

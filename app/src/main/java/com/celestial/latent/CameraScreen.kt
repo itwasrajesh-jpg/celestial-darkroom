@@ -852,8 +852,8 @@ fun CameraScreen(
             val pressed by press.collectIsPressedAsState()
             val sink by androidx.compose.animation.core.animateFloatAsState(if (pressed && motionOn()) 0.92f else 1f,
                 androidx.compose.animation.core.spring(dampingRatio = 0.5f, stiffness = 900f), label = "sink")
-            // 105a: in manual, when the meter says the exposure is right, the shutter wakes, glows and breathes
-            val aura = rememberAura(if (controls.manualExposure) LightMeter.stops else null)
+            // 105a: in manual, when the meter says the exposure is right, the shutter wakes, glows and breathes (105c: unless turned off in Settings)
+            val aura = rememberAura(if (settings.breathingShutter && controls.manualExposure) LightMeter.stops else null)
             Box(
                 Modifier.size(78.dp).graphicsLayer { val k = sink * aura.swell; scaleX = k; scaleY = k }.auraAround(aura, LatentColors.TextBright)
                     .shutterRing(CircleShape)
