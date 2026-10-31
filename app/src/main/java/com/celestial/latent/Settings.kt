@@ -45,6 +45,8 @@ data class AppSettings(
     val bracketBrightIso: Int = 0,
     val bracketFrames: Int = 5,
     val haptics: Boolean = true,
+    // 105c: the shutter wakes and breathes when the meter reads 0 in manual; on unless turned off
+    val breathingShutter: Boolean = true,
     // 91a: camera sounds, all off until turned on; which camera they come from
     val soundShutter: Boolean = false,
     val soundWind: Boolean = false,
@@ -125,6 +127,7 @@ data class AppSettings(
                 bracketBrightIso = p.getInt("bracketBrightIso", 0),
                 bracketFrames = p.getInt("bracketFrames", 5),
                 haptics = p.getBoolean("haptics", true),
+                breathingShutter = p.getBoolean("breathingShutter", true),
                 soundShutter = p.getBoolean("soundShutter", false),
                 soundWind = p.getBoolean("soundWind", false),
                 soundDial = p.getBoolean("soundDial", false),
@@ -175,6 +178,7 @@ data class AppSettings(
                 .putInt("bracketBrightIso", s.bracketBrightIso)
                 .putInt("bracketFrames", s.bracketFrames)
                 .putBoolean("haptics", s.haptics)
+                .putBoolean("breathingShutter", s.breathingShutter)
                 .putBoolean("soundShutter", s.soundShutter)
                 .putBoolean("soundWind", s.soundWind)
                 .putBoolean("soundDial", s.soundDial)

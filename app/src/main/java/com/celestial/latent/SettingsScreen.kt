@@ -71,6 +71,8 @@ fun SettingsScreen(settings: AppSettings, onChange: (AppSettings) -> Unit, onOpe
             selected = LatentColors.theme,
             places = themeChips,
         ) { ThemeReveal.start(uiContext, themeChips[it], it) }
+        // 105c
+        ToggleRow("Breathing shutter", "In manual, when the meter reads 0 the shutter wakes, glows in the theme's colours and breathes, with small lights circling it. Turn off for a plain shutter.", settings.breathingShutter) { onChange(settings.copy(breathingShutter = it)) }
 
         Section("Exposure")
         OptionRow(
