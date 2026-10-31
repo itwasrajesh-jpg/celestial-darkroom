@@ -187,9 +187,11 @@ fun CameraScreen(
                 // 79a: a fast shot's crop (35 mm from the 23 mm main...) goes into its framing the same way
                 val fast = FastShot.savedCrops.remove(uri.toString())
                 val lensCrop = if (single) fast?.first ?: 1f else 1f
-                if (single && (turnNow != 0 || cine || lensCrop > 1.001f)) {
+                // 106a: horizon lock's tilt at the shutter, as the photo's Straighten
+                val level = if (single) HorizonLock.takeShot(turnNow) else null
+                if (single && (turnNow != 0 || cine || lensCrop > 1.001f || level != null)) {
                     com.celestial.latent.develop.Framings.save(context, uri, com.celestial.latent.develop.Framing(
-                        turns = turnNow, aspect = if (cine) liveSettings.cinemaAspect else 0f, bars = cine && liveSettings.cinemaBars,
+                        turns = turnNow, straighten = level ?: 0f, aspect = if (cine) liveSettings.cinemaAspect else 0f, bars = cine && liveSettings.cinemaBars,
                         zoom = lensCrop))
                 }
                 if (single && fast != null && fast.first > 1.001f) com.celestial.latent.develop.Framings.saveShotCrop(context, uri, fast.first, fast.second)
@@ -273,11 +275,11 @@ fun CameraScreen(
     fun shoot(single: Boolean) {
         if (!single && settings.hdrStack && bracketPlan(settings) == null) { Haptics.tick(context); bracketOpen = true; return }
         Haptics.heavy(context)
-        val fire = { iris.fire(motionScope); if (single) { shotSound(); controller.captureSingle() } else fireMulti() }
+        val fire = { iris.fire(motionScope); if (single) { shotSound(); HorizonLock.mark(if (liveSettings.horizonLock) HorizonLock.gravity else null); controller.captureSingle() } else fireMulti() }
         if (settings.timerSeconds > 0) countdown = settings.timerSeconds else fire()
     }
     LaunchedEffect(countdown) {
-        if (countdown > 0) { delay(1000); countdown -= 1; if (countdown == 0) { iris.fire(motionScope); if (settings.focusStack || settings.hdrStack || settings.burstMode) fireMulti() else { shotSound(); controller.captureSingle() } } }
+        if (countdown > 0) { delay(1000); countdown -= 1; if (countdown == 0) { iris.fire(motionScope); if (settings.focusStack || settings.hdrStack || settings.burstMode) fireMulti() else { shotSound(); HorizonLock.mark(if (liveSettings.horizonLock) HorizonLock.gravity else null); controller.captureSingle() } } }
     }
 
     DisposableEffect(Unit) {
@@ -524,8 +526,8 @@ fun CameraScreen(
                     drawLine(c, Offset(0f, h / 3), Offset(w, h / 3), 1f); drawLine(c, Offset(0f, 2 * h / 3), Offset(w, 2 * h / 3), 1f)
                 }
             }
-            // 105a: near level, a thin horizon line; gold for a moment when exact
-            LevelLine()
+            // 105a: near level, a thin horizon line; gold for a moment when exact (106a: not needed while the lock keeps it level)
+            if (!settings.horizonLock) LevelLine()
             FocusEvOverlay(
                 point = focusTap, evIndex = controls.evIndex,
                 evRange = (if (controller.hasCharacteristics) controller.evRange.lower..controller.evRange.upper else -24..24),
@@ -615,6 +617,8 @@ fun CameraScreen(
                     color = if (lookReady) OnPhoto.Text else OnPhoto.TextDim,
                     fontSize = 9.sp, letterSpacing = 1.5.sp, modifier = Modifier.onPicture(),
                 )
+                // 106a
+                if (settings.horizonLock) HorizonLockChip(glPreview, plainPreview)
             }
             val modes = listOfNotNull(
                 if (settings.fastShot) "FAST SHOT" else null,

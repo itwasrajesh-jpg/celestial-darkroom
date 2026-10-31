@@ -84,6 +84,8 @@ fun SettingsScreen(settings: AppSettings, onChange: (AppSettings) -> Unit, onOpe
 
         Section("Viewfinder")
         ToggleRow("Gridlines", "Rule-of-thirds lines over the preview", settings.gridlines) { onChange(settings.copy(gridlines = it)) }
+        // 106a
+        ToggleRow("Horizon lock", "Keeps the viewfinder level however the phone is tilted, and each photo comes out level. Straightening crops the edges a little (5° keeps about 81%). Up to 15°; past that, or pointing at the sky or floor, photos are kept as shot. The RAW is never changed: undo it with Straighten in FRAME.", settings.horizonLock) { onChange(settings.copy(horizonLock = it)) }
 
         Section("Files")
         OptionRow(

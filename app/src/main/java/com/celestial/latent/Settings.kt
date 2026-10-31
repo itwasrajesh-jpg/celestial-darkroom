@@ -22,6 +22,8 @@ data class VendorTag(val name: String, val scope: String, val type: String, val 
 data class AppSettings(
     val antibanding: Int = ANTIBANDING_AUTO,   // Camera2 CONTROL_AE_ANTIBANDING_MODE values
     val gridlines: Boolean = true,
+    // 106a: keep the viewfinder and each single shot level, whatever the phone's tilt (up to 15°)
+    val horizonLock: Boolean = false,
     val volumeShutter: Boolean = true,
     val defaultLensId: String = Lenses.DEFAULT.physicalId,
     val rememberLens: Boolean = true,
@@ -105,6 +107,7 @@ data class AppSettings(
             return AppSettings(
                 antibanding = p.getInt("antibanding", ANTIBANDING_AUTO),
                 gridlines = p.getBoolean("gridlines", true),
+                horizonLock = p.getBoolean("horizonLock", false),
                 volumeShutter = p.getBoolean("volumeShutter", true),
                 defaultLensId = p.getString("defaultLensId", Lenses.DEFAULT.physicalId) ?: Lenses.DEFAULT.physicalId,
                 rememberLens = p.getBoolean("rememberLens", true),
@@ -156,6 +159,7 @@ data class AppSettings(
             ctx.getSharedPreferences(FILE, Context.MODE_PRIVATE).edit()
                 .putInt("antibanding", s.antibanding)
                 .putBoolean("gridlines", s.gridlines)
+                .putBoolean("horizonLock", s.horizonLock)
                 .putBoolean("volumeShutter", s.volumeShutter)
                 .putString("defaultLensId", s.defaultLensId)
                 .putBoolean("rememberLens", s.rememberLens)
