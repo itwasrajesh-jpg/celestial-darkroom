@@ -423,30 +423,65 @@ private const val TILE_EDGE = 320
 private const val FILTER_LIMIT = 20f
 
 /**
- * Every print the panel develops, remembered by what was printed: exposure and both filters. A
- * print is never developed twice — moving between steps, or tapping a ring-around tile whose
- * neighbours were already made, costs nothing for what already exists. Kept small; least recently
- * used goes first. Synchronised: a cancelled step can still be finishing a render while the next
- * step starts.
+ * Every print the panel develops, remembered by what was printed: the recipe (exposure and both
+ * filters rounded, so tiny float differences still match) and everything painted on it — the masks,
+ * the fog, every light, the depth split. A print is never developed twice: moving between steps,
+ * tapping a ring-around tile whose neighbours were already made, or going to SIMPLE and back
+ * (107a) costs nothing for what already exists. Least recently used goes first, by size, so the
+ * kept prints stay under [BUDGET] bytes whatever their size. Synchronised: a cancelled step can
+ * still be finishing a render while the next step starts.
  */
-private class PrintCache {
-    // Exposure and filters, rounded so tiny float differences still match — plus everything else in
-    // the recipe, so a print can never be served for a recipe that differs in any other way.
-    private data class Key(val e: Int, val y: Int, val m: Int, val rest: Int)
-    private fun key(r: Recipe) = Key(
+internal class PrintCache {
+    private data class Key(val e: Int, val y: Int, val m: Int, val rest: Int, val painted: String)
+    private fun key(r: Recipe, painted: String) = Key(
         Math.round(r.printExposure * 1000), Math.round(r.yFilterShift * 10), Math.round(r.mFilterShift * 10),
         r.copy(printExposure = 0f, yFilterShift = 0f, mFilterShift = 0f, previewMaxSize = 0).hashCode(),
+        painted,
     )
-    private val map = object : LinkedHashMap<Key, Bitmap>(32, 0.75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Key, Bitmap>?) = size > 40
-    }
+    private val map = LinkedHashMap<Key, Bitmap>(32, 0.75f, true)
+    private var bytes = 0L
     /** A print at least nearly as large as asked for, or null. */
-    @Synchronized fun peek(r: Recipe, edge: Int): Bitmap? =
-        map[key(r)]?.takeIf { maxOf(it.width, it.height) >= edge * 0.9f }
-    @Synchronized fun put(r: Recipe, b: Bitmap) {
-        val old = map[key(r)]
-        if (old == null || maxOf(b.width, b.height) > maxOf(old.width, old.height)) map[key(r)] = b
+    @Synchronized fun peek(r: Recipe, edge: Int, painted: String): Bitmap? =
+        map[key(r, painted)]?.takeIf { maxOf(it.width, it.height) >= edge * 0.9f }
+    @Synchronized fun put(r: Recipe, painted: String, b: Bitmap) {
+        val k = key(r, painted)
+        val old = map[k]
+        if (old != null && maxOf(b.width, b.height) <= maxOf(old.width, old.height)) return
+        if (old != null) bytes -= old.allocationByteCount
+        map[k] = b; bytes += b.allocationByteCount
+        val it = map.entries.iterator()
+        while (bytes > BUDGET && map.size > 1 && it.hasNext()) {
+            val e = it.next()
+            if (e.key == k) continue
+            bytes -= e.value.allocationByteCount; it.remove()
+        }
     }
+    companion object {
+        /** About 40 test strips, or 13 aged prints: a few percent of the app's memory. */
+        const val BUDGET = 40L * 1024 * 1024
+
+        private fun mapKey(m: ExposureMap?) = m?.let { "${it.width}x${it.height}:${it.stops.contentHashCode()}" } ?: "-"
+
+        /** Everything painted on a print, as text: two prints with the same text are the same print. */
+        fun painted(mk: Masks, fogLook: FogLook, raysLook: RaysLook, extraLights: List<RaysLook>, depthSplit: ExposureMap?, depthReady: Boolean) =
+            listOf(
+                mapKey(mk.dodge), mapKey(mk.soften), mapKey(mk.fog), mapKey(mk.rays), mk.raysOn, mapKey(mk.saturation),
+                mk.lith.hashCode(), mapKey(mk.wet), mk.wetLook.hashCode(), mapKey(mk.rain),
+                fogLook.hashCode(), raysLook.hashCode(), extraLights.hashCode(), mapKey(depthSplit), depthReady,
+            ).joinToString("|")
+    }
+}
+
+/**
+ * What PRINT keeps while a photo is open in the darkroom (107a): the prints already developed,
+ * the step it was on, the photo's depth and the picture as tap-to-select read it. It belongs to
+ * the darkroom, not to the PRINT panel, so going to SIMPLE and back does not throw it away.
+ */
+class PrintMemory {
+    internal val cache = PrintCache()
+    internal val step = mutableStateOf(0)
+    internal var depthRanks: DepthRanks? = null
+    internal val selectPicture = SelectPicture()
 }
 
 /**
@@ -454,13 +489,16 @@ private class PrintCache {
  * Test strip for how long, ring-around for what colour, dodge and burn for where the light
  * falls, and soften for where the diffusion glows.
  *
- * @param renderAt develops a preview of a recipe at a given size. It blocks and queues for the
- *   engine itself, so it is only ever called off the main thread.
+ * @param renderWithMasks develops a preview of a recipe, with what is painted on it, at a given
+ *   size, and says exactly what was painted on it (as [paintedKey] puts it). It blocks and queues
+ *   for the engine itself, so it is only ever called off the main thread.
+ * @param memory what PRINT keeps while the photo is open (107a): kept by the darkroom, so going to
+ *   SIMPLE and back finds every print already made.
  */
 @Composable
 fun PrintPanel(
     recipe: Recipe,
-    renderAt: (Recipe, Int) -> Bitmap?,
+    memory: PrintMemory,
     onExposure: (Float) -> Unit,
     onFilters: (Float, Float) -> Unit,
     /** The film's grain from the test strip (60c): on or off, and its particle size — FULL → GRAIN's own settings. */
@@ -509,7 +547,9 @@ fun PrintPanel(
     depthSplit: ExposureMap? = null, onDepthSplit: (ExposureMap?) -> Unit = {},
     depthFix: ExposureMap? = null, onDepthFix: (ExposureMap?) -> Unit = {},
     onExtraLights: (List<RaysLook>) -> Unit = {},
-    renderWithMasks: (Recipe, Int, Masks) -> Bitmap?,
+    renderWithMasks: (Recipe, Int, Masks) -> Pair<Bitmap, String>?,
+    /** 107a: everything painted on a print with these masks, as the darkroom would develop it now. */
+    paintedKey: (Masks) -> String,
     renderRegionWithMasks: ((Recipe, Int, Masks, Region) -> Bitmap?)? = null,
     /** The DEVELOP step (75b): the darkroom's own develop page, with the print shown above it. */
     developPage: (@Composable () -> Unit)? = null,
@@ -520,8 +560,8 @@ fun PrintPanel(
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
-    val cache = remember { PrintCache() }
-    var step by remember { mutableStateOf(0) }
+    val cache = memory.cache
+    var step by memory.step
     // the fog step's eyedropper: on, the next tap on the print takes the scene's light there
     var fogPicking by remember { mutableStateOf(false) }
     // the rays step's light: placing it, the next tap on the print sets where the light comes from
@@ -541,10 +581,11 @@ fun PrintPanel(
     // all four masks as they stand; each painting step swaps in its own, as it is being painted
     val all = Masks(exposureMap, softenMap, fogMap, raysMap, raysOn = true, saturation = saturationMap, lith = lithLook, wet = wetMap, wetLook = wetLook, rain = rainMap)
     // the photo's depth, for painting by distance in every step — worked out once, when first wanted
-    val depthRanks = remember { if (com.celestial.latent.develop.Depth.isReady(context)) DepthRanks() else null }
+    // (107a: kept with the photo, so it is worked out once while the photo is open, not once per visit)
+    val depthRanks = remember { memory.depthRanks ?: (if (com.celestial.latent.develop.Depth.isReady(context)) DepthRanks() else null).also { memory.depthRanks = it } }
     // tap to select: the picture read once by the model and shared by every painting step (59a);
     // the models' memory is given back when PRINT closes
-    val selectPicture = remember { SelectPicture() }
+    val selectPicture = memory.selectPicture
     androidx.compose.runtime.DisposableEffect(Unit) { onDispose { com.celestial.latent.develop.Select.release() } }
     // each painting step's side of the depth (0 all, 1 foreground, 2 background); LIGHT's is its light's own
     var sideDodge by remember { mutableStateOf(0) }
@@ -559,7 +600,17 @@ fun PrintPanel(
     val filmLight = remember(recipe.film) { com.celestial.latent.develop.StockAirs.loadLight(context, recipe.film) }
     val pickScope = rememberCoroutineScope()
     var note by remember { mutableStateOf("") }
-    val render: (Recipe, Int) -> Bitmap? = { r, e -> cache.peek(r, e) ?: renderAt(r, e)?.also { cache.put(r, it) } }
+    // Every print goes through the cache, keyed by everything painted on it (107a). The darkroom
+    // supplies the fog, lights and split the render uses, so it also writes the key: the print is
+    // filed under what it was really developed with, even if a light moved while it developed.
+    val renderMasked: (Recipe, Int, Masks) -> Bitmap? = { r, e, mk ->
+        cache.peek(r, e, paintedKey(mk)) ?: renderWithMasks(r, e, mk)?.let { (b, k) -> cache.put(r, k, b); b }
+    }
+    // The test strips, ring-around tiles: the print as it stands, with its fog, lights and wet ground
+    // (107a: they used to leave those out, so they never matched the print and every switch between a
+    // strip and a painting step prepared the photo again). Dodge, saturation and lith stay off, as before.
+    val stripMasks = all.copy(dodge = null, saturation = null, lith = com.celestial.latent.develop.LithLook())
+    val render: (Recipe, Int) -> Bitmap? = { r, e -> renderMasked(r, e, stripMasks) }
     LaunchedEffect(note) { if (note.isNotEmpty()) { delay(2600); note = "" } }
 
     Column(modifier.background(LatentColors.Background)) {
@@ -585,7 +636,7 @@ fun PrintPanel(
             when (s) {
                 0 -> TestStripStep(recipe, render, onExposure, Modifier.fillMaxSize(), onGrain = onGrain, onGrainAmount = onGrainAmount)
                 // 97a: the print aged, as kept on a fridge, in an album, a wallet or a shoebox
-                8 -> AgeStep(recipe, ageLook, onAgeLook, ageSeed, ageWords, render = { r, e -> renderWithMasks(r, e, all) }, modifier = Modifier.fillMaxSize())
+                8 -> AgeStep(recipe, ageLook, onAgeLook, ageSeed, ageWords, render = { r, e -> renderMasked(r, e, all) }, modifier = Modifier.fillMaxSize())
                 // 75b: finish the print without leaving PRINT
                 9 -> BoxWithConstraints(Modifier.fillMaxSize()) {
                     val split = LocalPanelSplit.current
@@ -608,14 +659,14 @@ fun PrintPanel(
                         }
                     }
                 }
-                1 -> RingAroundStep(recipe, render, { r, e -> cache.peek(r, e) }, onFilters, Modifier.fillMaxSize())
+                1 -> RingAroundStep(recipe, render, { r, e -> cache.peek(r, e, paintedKey(stripMasks)) }, onFilters, Modifier.fillMaxSize())
                 // each painting step shows the print with BOTH masks: it is one print
                 2 -> {
                     // the film's colour as the step began, for "hold: before" (the slider is part of this step)
                     val dirBefore = remember { recipe.dir to recipe.dirAmount }
                     PaintStep(DODGE_BURN_SPEC, recipe, exposureMap, onExposureMap, depthRanks = depthRanks, selectPicture = selectPicture,
                         depthSide = sideDodge, onDepthSide = { sideDodge = it }, depthSplit = depthSplit, onDepthSplit = onDepthSplit, depthFix = depthFix, onDepthFix = onDepthFix,
-                        renderWith = { r, e, m -> renderWithMasks(r, e, all.copy(dodge = m)) },
+                        renderWith = { r, e, m -> renderMasked(r, e, all.copy(dodge = m)) },
                         stepStartMap = { a -> ExposureMap.blank(a) },
                         modifier = Modifier.fillMaxSize(),
                         renderRegion = renderRegionWithMasks?.let { f -> { r, e, m, reg -> f(r, e, all.copy(dodge = m), reg) } },
@@ -624,18 +675,18 @@ fun PrintPanel(
                             chips = "LIGHT" to "SATURATION",
                             spec = SATURATION_SPEC, map = saturationMap, onMap = onSaturationMap,
                             startMap = { a -> ExposureMap.blank(a) },
-                            render = { r, e, m, sm -> renderWithMasks(r, e, all.copy(dodge = m, saturation = sm)) },
+                            render = { r, e, m, sm -> renderMasked(r, e, all.copy(dodge = m, saturation = sm)) },
                             renderRegion = renderRegionWithMasks?.let { f -> { r, e, m, sm, reg -> f(r, e, all.copy(dodge = m, saturation = sm), reg) } },
                             controls = @Composable { FilmColourRow(recipe, onDirAmount) },
                         ),
                         // the slider is in the step's history, and re-develops the print
                         lookState = recipe.dirAmount, onRestoreLook = { a -> onDirAmount(a as Float) },
                         refreshKey = recipe.dir to recipe.dirAmount,
-                        renderBefore = { r, e -> renderWithMasks(r.copy(dir = dirBefore.first, dirAmount = dirBefore.second), e, all.copy(dodge = null, saturation = null)) })
+                        renderBefore = { r, e -> renderMasked(r.copy(dir = dirBefore.first, dirAmount = dirBefore.second), e, all.copy(dodge = null, saturation = null)) })
                 }
                 3 -> PaintStep(SOFTEN_SPEC, recipe, softenMap, onSoftenMap, depthRanks = depthRanks, selectPicture = selectPicture,
                     depthSide = sideSoften, onDepthSide = { sideSoften = it }, depthSplit = depthSplit, onDepthSplit = onDepthSplit, depthFix = depthFix, onDepthFix = onDepthFix,
-                    renderWith = { r, e, m -> renderWithMasks(r, e, all.copy(soften = m)) },
+                    renderWith = { r, e, m -> renderMasked(r, e, all.copy(soften = m)) },
                     // begin from what is on screen: softened everywhere if diffusion is on, else sharp
                     stepStartMap = { a -> ExposureMap.blank(a).also { if (recipe.diffusion) it.stops.fill(1f) } },
                     modifier = Modifier.fillMaxSize(),
@@ -643,7 +694,7 @@ fun PrintPanel(
                     renderRegion = renderRegionWithMasks?.let { f -> { r, e, m, reg -> f(r, e, all.copy(soften = m), reg) } })
                 4 -> PaintStep(FOG_SPEC, recipe, fogMap, onFogMap, depthRanks = depthRanks, selectPicture = selectPicture,
                     depthSide = sideFog, onDepthSide = { sideFog = it }, depthSplit = depthSplit, onDepthSplit = onDepthSplit, depthFix = depthFix, onDepthFix = onDepthFix,
-                    renderWith = { r, e, m -> renderWithMasks(r, e, all.copy(fog = m)) },
+                    renderWith = { r, e, m -> renderMasked(r, e, all.copy(fog = m)) },
                     stepStartMap = { a -> ExposureMap.blank(a) },
                     modifier = Modifier.fillMaxSize(),
                     renderRegion = renderRegionWithMasks?.let { f -> { r, e, m, reg -> f(r, e, all.copy(fog = m), reg) } },
@@ -665,7 +716,7 @@ fun PrintPanel(
                 // wet ground (64a): painted like the fog, with its own shine; it needs the depth for the ground's shape
                 6 -> PaintStep(WET_SPEC, recipe, wetMap, onWetMap, depthRanks = depthRanks, selectPicture = selectPicture,
                     depthSide = sideWet, onDepthSide = { sideWet = it }, depthSplit = depthSplit, onDepthSplit = onDepthSplit, depthFix = depthFix, onDepthFix = onDepthFix,
-                    renderWith = { r, e, m -> renderWithMasks(r, e, all.copy(wet = m)) },
+                    renderWith = { r, e, m -> renderMasked(r, e, all.copy(wet = m)) },
                     stepStartMap = { a -> ExposureMap.blank(a) },
                     modifier = Modifier.fillMaxSize(),
                     renderRegion = renderRegionWithMasks?.let { f -> { r, e, m, reg -> f(r, e, all.copy(wet = m), reg) } },
@@ -677,19 +728,19 @@ fun PrintPanel(
                         chips = "GROUND" to "WINDOW",
                         spec = RAIN_SPEC, map = rainMap, onMap = onRainMap,
                         startMap = { a -> ExposureMap.blank(a) },
-                        render = { r, e, m, rm -> renderWithMasks(r, e, all.copy(wet = m, rain = rm)) },
+                        render = { r, e, m, rm -> renderMasked(r, e, all.copy(wet = m, rain = rm)) },
                         renderRegion = renderRegionWithMasks?.let { f -> { r, e, m, rm, reg -> f(r, e, all.copy(wet = m, rain = rm), reg) } },
                         controls = @Composable { WindowRainRow(wetLook.window) { w -> onWetLook(wetLook.copy(window = w)) } },
                         tabName = "RAIN",
                     ),
                     lookState = wetLook, onRestoreLook = { onWetLook(it as com.celestial.latent.develop.WetLook) },
-                    renderBefore = { r, e -> renderWithMasks(r, e, all.copy(wet = null, rain = null, wetLook = wetLook.copy(window = com.celestial.latent.develop.RainLook()))) },
+                    renderBefore = { r, e -> renderMasked(r, e, all.copy(wet = null, rain = null, wetLook = wetLook.copy(window = com.celestial.latent.develop.RainLook()))) },
                     refreshKey = wetLook)
-                7 -> LithStep(recipe, lithLook, onLithLook, render = { r, e, l -> renderWithMasks(r, e, all.copy(lith = l)) }, modifier = Modifier.fillMaxSize())
+                7 -> LithStep(recipe, lithLook, onLithLook, render = { r, e, l -> renderMasked(r, e, all.copy(lith = l)) }, modifier = Modifier.fillMaxSize())
                 else -> PaintStep(RAYS_SPEC, recipe, raysMap, onRaysMap, depthRanks = depthRanks, selectPicture = selectPicture,
                     // the light itself lands only on its chosen side; the bar sets the selected light's
                     depthSide = sel.side.roundToInt(), onDepthSide = { setSel(sel.copy(side = it.toFloat())) }, depthSplit = depthSplit, onDepthSplit = onDepthSplit, depthFix = depthFix, onDepthFix = onDepthFix,
-                    renderWith = { r, e, m -> renderWithMasks(r, e, all.copy(rays = m)) },
+                    renderWith = { r, e, m -> renderMasked(r, e, all.copy(rays = m)) },
                     // where rays may fall: unpainted is everywhere, so the first stroke starts from full
                     stepStartMap = { a -> ExposureMap.blank(a).also { it.stops.fill(1f) } },
                     modifier = Modifier.fillMaxSize(),
@@ -712,7 +763,7 @@ fun PrintPanel(
                         onRaysLook(ls.first()); onExtraLights(ls.drop(1))
                         selected = selected.coerceIn(0, ls.size - 1)
                     },
-                    renderBefore = { r, e -> renderWithMasks(r, e, all.copy(raysOn = false)) },
+                    renderBefore = { r, e -> renderMasked(r, e, all.copy(raysOn = false)) },
                     // a selected sun: the print a little smaller, so the sun can be dragged out past its edge (61b)
                     room = if (sel.type == "sun" && sel.placed) SUN_ROOM else 0f,
                     // while a handle is dragged only the outline moves; the print re-develops on release
@@ -2699,7 +2750,7 @@ private fun PaintStep(
  * every painting step: each mask cell's rank by distance, 0 the nearest … 1 the farthest. Ranks,
  * not raw depth, so "from 40% to 100%" means the same on any photo: its farthest 60%.
  */
-private class DepthRanks {
+internal class DepthRanks {
     @Volatile var raw: FloatArray? = null            // the model's answer, SIZE x SIZE, 1 = near
     @Volatile var busy = false
     @Volatile var failed = false
@@ -2830,7 +2881,7 @@ private fun AirRow(look: FogLook, ask: AirAsk, hasDepth: Boolean, filmAir: FogLo
  * thread, and shared by every painting step — like [DepthRanks]. Only a tap's outline is worked out
  * afterwards, which takes a fraction of a second.
  */
-private class SelectPicture {
+internal class SelectPicture {
     @Volatile var embedding: com.celestial.latent.develop.Select.Embedding? = null
     @Volatile var busy = false
     @Volatile var failed = false

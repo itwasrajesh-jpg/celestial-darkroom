@@ -212,6 +212,19 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
     // 96a: a parked request remembers whether any caller wanted the full preview, not only the quick pass
     var pendingFine by remember { mutableStateOf(false) }
     var src by remember { mutableStateOf<Develop.Source?>(null) }
+    // 107a: what PRINT keeps while this photo is open — its prints, its step, the depth, the picture
+    // as tap-to-select read it. Here and not in the panel, so going to SIMPLE and back keeps it all.
+    // A new framing is a different picture, so it starts afresh.
+    val printMemory = remember(framing.key()) { PrintMemory() }
+    // 107a: everything the whole preview was developed from, as text. Coming back from PRINT with
+    // nothing changed then shows the same picture instead of developing it again.
+    fun previewInputs(): String {
+        fun m(x: ExposureMap?) = x?.let { "${it.width}x${it.height}:${it.stops.contentHashCode()}" } ?: "-"
+        return listOf(recipe, framing.key(), m(softenMap), m(fogMap), fogLook, m(raysMap), raysLook, extraLights, m(depthSplit),
+            m(wetMap), wetLook, m(rainMap), m(exposureMap), m(saturationMap), lithLook, hdrView, fileFormat, hdrGlow,
+            com.celestial.latent.develop.Depth.isReady(context)).joinToString("|")
+    }
+    var previewFrom by remember { mutableStateOf<String?>(null) }
     var coarse by remember { mutableStateOf(false) }
     var fullRunning by remember { mutableStateOf(false) }
     // the living photo panel (66a)
@@ -267,6 +280,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
         val base = recipe.copy(previewMaxSize = if (fast) COARSE_EDGE else FINE_EDGE)
         val r = if (fast) Develop.withoutSpatial(base, keep = tab) else base
         val cropFraction = if (fast) 0.7f else 1f
+        val inputs = if (fast) null else previewInputs()
         Thread {
             val q = com.celestial.latent.develop.DevelopQueue
             val holdsLane = if (q.engineLane.tryAcquire()) true else {
@@ -305,6 +319,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                 preview = if (cropFraction < 1f) inPlace(got, lastFull ?: preview?.takeIf { !previewIsPartial }, cropFraction)
                     else got.also { lastFull = it }
                 previewIsPartial = cropFraction < 1f
+                if (inputs != null) previewFrom = inputs
             } catch (t: Throwable) { status = "failed: ${t.message}" }
             finally {
                 if (cropped !== null && cropped !== src) cropped?.close()
@@ -323,19 +338,35 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
      * the main thread; queues for the engine lane like every other render, so two engines never run
      * at once. Never called while the lane is already held.
      */
-    fun renderStill(r: Recipe, edge: Int, masks: Masks = Masks()): Bitmap? {
+    /**
+     * 107a: everything painted on a PRINT render, as text, for PRINT's memory of what it already made:
+     * the masks, plus the fog, lights and split, which the render takes from here.
+     */
+    fun paintedKey(masks: Masks, fl: com.celestial.latent.develop.FogLook = fogLook, rl: com.celestial.latent.develop.RaysLook = raysLook,
+                   el: List<com.celestial.latent.develop.RaysLook> = extraLights, ds: ExposureMap? = depthSplit) =
+        PrintCache.painted(masks, fl, rl, el, ds, com.celestial.latent.develop.Depth.isReady(context))
+
+    /**
+     * One preview at a given recipe, for the print panel. Blocks, so it is only called off the main
+     * thread; queues for the engine lane like every other render, so two engines never run at once.
+     * Never called while the lane is already held. Returns the print with [paintedKey] of exactly
+     * what it was developed with (107a: read once, so a light moved meanwhile is never mislabelled).
+     */
+    fun renderStill(r: Recipe, edge: Int, masks: Masks = Masks()): Pair<Bitmap, String>? {
         val q = com.celestial.latent.develop.DevelopQueue
         q.engineLane.acquire()
         return try {
+            val fl = fogLook; val rl = raysLook; val el = extraLights; val ds = depthSplit
+            val painted = paintedKey(masks, fl, rl, el, ds)
             val iso = Develop.isoOf(context, source)
             val s0 = Develop.openCached(context, source, isRaw, decodeEdge(DECODE_EDGE, framing), r, iso, softenMask = masks.soften, pairFirst = pairFirst, framing = framing,
-                fogMask = masks.fog, fogLook = fogLook,
-                raysMask = masks.rays, raysLook = if (masks.raysOn) raysLook else com.celestial.latent.develop.RaysLook(),
-                extraLights = if (masks.raysOn) extraLights else emptyList(), depthSplit = depthSplit,
+                fogMask = masks.fog, fogLook = fl,
+                raysMask = masks.rays, raysLook = if (masks.raysOn) rl else com.celestial.latent.develop.RaysLook(),
+                extraLights = if (masks.raysOn) el else emptyList(), depthSplit = ds,
                 wetMask = masks.wet, wetLook = masks.wetLook, rainMask = masks.rain) { }
             val (bytes, _) = Develop.render(context, s0, r.copy(previewMaxSize = edge), preview = true, exposureMap = masks.dodge, softenMask = masks.soften,
                 saturationMap = masks.saturation, lith = masks.lith)
-            BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.let { it to painted }
         } catch (t: Throwable) {
             android.util.Log.w("Latent", "print strip failed: ${t.message}"); null
         } finally { q.engineLane.release() }
@@ -549,8 +580,9 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { com.celestial.latent.develop.ExtraLights.save(context, source, l) }
         if (!printing && src != null) render(fast = false)
     }
-    // Back from PRINT: the strips may have changed the exposure while the preview slept.
-    LaunchedEffect(printing) { if (!printing && src != null) render(fast = false) }
+    // Back from PRINT: the strips may have changed the exposure while the preview slept — but when
+    // nothing changed, the picture already showing is the right one (107a).
+    LaunchedEffect(printing) { if (!printing && src != null && previewInputs() != previewFrom) render(fast = false) }
     // The decoded copy is kept by Develop.Cache so coming back is instant; nothing to free here.
 
     fun set(block: Recipe.() -> Recipe) { recipe = recipe.block() }
@@ -858,11 +890,11 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
             if (inPrint) androidx.compose.runtime.CompositionLocalProvider(LocalPanelSplit provides panelSplit) {
                 PrintPanel(
                     recipe = recipe,
+                    memory = printMemory,
                     developPage = developPage,
                     developPreview = if (comparingNow) (original ?: preview) else preview,
                     developComparing = comparingNow,
                     onDevelopHold = { holdForOriginal() },
-                    renderAt = { r, edge -> renderStill(r, edge) },
                     onExposure = { e -> set { copy(printExposure = e) } },
                     onFilters = { y, m -> set { copy(yFilterShift = y, mFilterShift = m) } },
                     onGrain = { on, size -> set { copy(grain = on, grainSizeUm2 = size) } },
@@ -913,6 +945,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                     depthSplit = depthSplit, onDepthSplit = { depthSplit = it },
                     depthFix = depthFix, onDepthFix = { depthFix = it },
                     renderWithMasks = { r, edge, mk -> renderStill(r, edge, mk) },
+                    paintedKey = { mk -> paintedKey(mk) },
                     renderRegionWithMasks = { r, edge, mk, reg -> renderDetail(r, reg, edge, mk) },
                     modifier = Modifier.fillMaxSize(),
                 )
