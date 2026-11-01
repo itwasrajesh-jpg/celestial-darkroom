@@ -118,9 +118,12 @@ private val DIFFUSION_FAMILIES = listOf("glimmerglass", "black_pro_mist", "pro_m
 fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged: (Recipe) -> Unit, onBack: () -> Unit) {
     val context = LocalContext.current
     // Opened at the brightness it was shot: the film does not re-level it here either.
-    // A photo with its own recipe (a cinema shot) opens with it, and keeps its edits to itself:
-    // they must not become the recipe every new shot from the camera develops with.
+    // A photo with its own recipe opens with it: a cinema shot's, or (107b) what it was last edited
+    // or developed with. A photo never edited opens with the camera's current film. Edits are kept
+    // with the photo and never become the recipe new shots from the camera develop with.
     val ownRecipe = remember { PhotoRecipes.load(context, source) }
+    // a cinema shot keeps its print, scan and format when a look is picked (filmLook)
+    val cinema = remember { PhotoRecipes.cinema(context, source) != null }
     var recipe by remember { mutableStateOf((ownRecipe ?: initial).copy(autoExposure = false)) }
     // An export choice, not part of the look — see DarkroomPrefs for why it lives apart.
     var printSize by remember { mutableStateOf(com.celestial.latent.develop.DarkroomPrefs.printSize(context)) }
@@ -225,6 +228,20 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
             com.celestial.latent.develop.Depth.isReady(context)).joinToString("|")
     }
     var previewFrom by remember { mutableStateOf<String?>(null) }
+    // 107b: everything the saved print is made from (DevelopedFrom), as the darkroom has it now
+    fun developedKey() = com.celestial.latent.develop.DevelopedFrom.keyOf(recipe, framing, exposureMap, softenMap, fogMap, fogLook,
+        raysMap, raysLook, extraLights, depthSplit, saturationMap, lithLook, wetMap, wetLook, rainMap)
+    // 107b: opened on its own saved print, which is the picture until something changes: nothing
+    // has been developed here yet, so a change develops even before the photo is prepared
+    var onPrint by remember { mutableStateOf(false) }
+    var opening by remember { mutableStateOf(true) }
+    var edited by remember { mutableStateOf(false) }
+    // 107b: painted, lit or framed but the film never touched still makes it the photo's own look:
+    // on leaving, anything changed since it opened keeps the recipe it was seen with
+    val openedAs = remember { mutableStateOf<String?>(null) }
+    androidx.compose.runtime.DisposableEffect(Unit) {
+        onDispose { if (openedAs.value != null && runCatching { developedKey() }.getOrNull() != openedAs.value) PhotoRecipes.saveEdited(context, source, recipe) }
+    }
     var coarse by remember { mutableStateOf(false) }
     var fullRunning by remember { mutableStateOf(false) }
     // the living photo panel (66a)
@@ -403,43 +420,86 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
         elapsed = 0
     }
 
-    // If this capture was already developed, show that straight away instead of a blank wait.
-    LaunchedEffect(source) {
-        if (preview == null) {
-            val existing = runCatching { Develop.developedFor(context, source) }.getOrNull()
-            if (existing != null) {
-                val b = runCatching { context.contentResolver.loadThumbnail(existing, android.util.Size(1200, 1200), null) }.getOrNull()
-                if (b != null && preview == null) { preview = b; status = "already developed · change anything to re-render" }
-            }
-        }
+    /**
+     * 107b: the photo's saved print, when it was developed from exactly what the darkroom has now
+     * (DevelopedFrom), at the size a finished develop is shown. Not with a film edge: the print has
+     * the edge drawn round it and the preview does not, so the two would not match.
+     */
+    fun printAsDeveloped(key: String): Bitmap? {
+        if (framing.edge || pairFirst != null) return null
+        if (com.celestial.latent.develop.DevelopedFrom.of(context, source) != key) return null
+        // the clean print, never the _AGED_ copy (isRaw true: look for the print, not the photo itself)
+        val made = runCatching { com.celestial.latent.develop.CollageSources.pictureOf(context, source, isRaw = true) }.getOrNull() ?: return null
+        return runCatching { context.contentResolver.loadThumbnail(made, android.util.Size(1600, 1600), null) }.getOrNull()
+    }
+
+    /**
+     * 107b: gets the photo ready to edit while its print is showing — decoded and prepared, nothing
+     * developed or shown — so the first change is as quick as before. Low priority, and only when the
+     * engine is free: anything asked for in the meantime simply does it instead.
+     */
+    fun prepareQuietly() {
+        val r = recipe.copy(previewMaxSize = FINE_EDGE)
+        Thread {
+            val q = com.celestial.latent.develop.DevelopQueue
+            if (!q.engineLane.tryAcquire()) return@Thread
+            try {
+                if (src == null) src = Develop.openCached(context, source, isRaw, decodeEdge(DECODE_EDGE, framing), r, Develop.isoOf(context, source),
+                    softenMask = softenMap, pairFirst = pairFirst, framing = framing,
+                    fogMask = fogMap, fogLook = fogLook, raysMask = raysMap, raysLook = raysLook, extraLights = extraLights, depthSplit = depthSplit,
+                    wetMask = wetMap, wetLook = wetLook, rainMask = rainMap) { }
+                android.util.Log.i("Latent", "darkroom: opened on its print; prepared quietly")
+            } catch (t: Throwable) { android.util.Log.w("Latent", "darkroom: quiet prepare failed: ${t.message}") }
+            finally { q.engineLane.release() }
+        }.apply { priority = Thread.MIN_PRIORITY }.start()
     }
 
     // A quick coarse pass while a control is moving, then a fine one when it settles.
     LaunchedEffect(recipe) {
+        if (opening) {
+            opening = false
+            // 107b: developed from exactly this? Then its print is the picture, and nothing is developed again.
+            val key = developedKey()
+            openedAs.value = key
+            val made = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { printAsDeveloped(key) }
+            if (made != null && key == developedKey()) {
+                preview = made; lastFull = made; previewIsPartial = false
+                previewFrom = previewInputs(); onPrint = true
+                status = "as developed · change anything to re-render"
+                android.util.Log.i("Latent", "darkroom: opened on its saved print, nothing developed")
+                prepareQuietly()
+                return@LaunchedEffect
+            }
+            // Developed, but not from this (or not known): show that print while this one develops.
+            if (preview == null) {
+                val b = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    runCatching { Develop.developedFor(context, source)?.let { context.contentResolver.loadThumbnail(it, android.util.Size(1200, 1200), null) } }.getOrNull()
+                }
+                if (b != null && preview == null) { preview = b; status = "already developed · change anything to re-render" }
+            }
+        } else edited = true
         coarse = true
         if (!printing) render(fast = true)
         delay(450)
         coarse = false
-        if (ownRecipe != null) PhotoRecipes.save(context, source, recipe)
-        else { onRecipeChanged(recipe); Recipes.setCurrent(context, recipe) }
+        // 107b: an edit is the photo's own, never the camera's (which new shots develop with);
+        // a photo only opened keeps following the camera's film until it is edited or developed
+        if (edited) PhotoRecipes.saveEdited(context, source, recipe)
         if (!printing) render(fast = false)
-        // The viewfinder's look is baked from the saved recipe: drop the cached one so the
-        // camera picks up these edits next time it is shown.
-        com.celestial.latent.develop.LookBaker.invalidate()
     }
     // Save the mask beside its photo (a moment after the last change), and show it in the preview.
     LaunchedEffect(exposureMap) {
         delay(400)
         val m = exposureMap
         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { ExposureMaps.save(context, source, m) }
-        if (!printing && src != null) render(fast = false)
+        if (!printing && (src != null || onPrint) && previewInputs() != previewFrom) render(fast = false)
     }
     // The same for the painted saturation (62a).
     LaunchedEffect(saturationMap) {
         delay(400)
         val m = saturationMap
         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { ExposureMaps.save(context, source, m, ExposureMaps.SATURATION) }
-        if (!printing && src != null) render(fast = false)
+        if (!printing && (src != null || onPrint) && previewInputs() != previewFrom) render(fast = false)
     }
     // The wet ground and how it shines (64a), kept with the photo; a change re-develops the preview.
     LaunchedEffect(wetMap, wetLook, rainMap) {
@@ -450,7 +510,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
             ExposureMaps.save(context, source, rm, ExposureMaps.RAIN)
             com.celestial.latent.develop.WetLooks.save(context, source, l)
         }
-        if (!printing && src != null) render(fast = false)
+        if (!printing && (src != null || onPrint) && previewInputs() != previewFrom) render(fast = false)
     }
     // The age (97a), kept with the photo. Only the AGE step and the full develop show it: nothing to re-develop.
     LaunchedEffect(ageLook) {
@@ -463,7 +523,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
         delay(400)
         val l = lithLook
         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { com.celestial.latent.develop.LithLooks.save(context, source, l) }
-        if (!printing && src != null) render(fast = false)
+        if (!printing && (src != null || onPrint) && previewInputs() != previewFrom) render(fast = false)
     }
     // The glow (78a), kept with the photo once moved, so a photo never touched keeps following Settings. The slider
     // retunes the glow on screen at once (its map's shape does not depend on the strength); a develop is only
@@ -472,17 +532,17 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
         delay(400)
         val g = hdrGlow
         if (hdrGlowTouched) kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { com.celestial.latent.develop.HdrGlows.save(context, source, g) }
-        if (hdrView && !printing && src != null && g >= 0.125f && !com.celestial.latent.develop.HdrGlow.has(preview)) render(fast = false)
+        if (hdrView && !printing && (src != null || onPrint) && g >= 0.125f && !com.celestial.latent.develop.HdrGlow.has(preview)) render(fast = false)
     }
     // 78b: another kind of file: remembered, and in HDR view the preview shows (or drops) the glow
     LaunchedEffect(fileFormat) {
         com.celestial.latent.develop.DarkroomPrefs.setFileFormat(context, fileFormat)
-        if (hdrView && !printing && src != null) render(fast = false)
+        if (hdrView && !printing && (src != null || onPrint)) render(fast = false)
     }
     // HDR view on or off: the window's mode, and a preview with (or without) its glow
     LaunchedEffect(hdrView) {
         com.celestial.latent.develop.HdrGlow.setWindowHdr(context, hdrView)
-        if (!printing && src != null) render(fast = false)
+        if (!printing && (src != null || onPrint) && previewInputs() != previewFrom) render(fast = false)
     }
     // leaving the darkroom always gives the app its ordinary window back
     DisposableEffect(Unit) { onDispose { com.celestial.latent.develop.HdrGlow.setWindowHdr(context, false) } }
@@ -493,7 +553,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
             ExposureMaps.save(context, source, m, ExposureMaps.SOFTEN, keepBlank = true)
         }
-        if (!printing && src != null) render(fast = false)
+        if (!printing && (src != null || onPrint) && previewInputs() != previewFrom) render(fast = false)
     }
     /**
      * A new framing: the masks are carried across so every mark stays over the same part of the
@@ -517,7 +577,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
         framing = next
         com.celestial.latent.develop.Framings.save(context, source, next)
     }
-    LaunchedEffect(framing) { zoom.reset(); detail = null; if (src != null) render(fast = false) }
+    LaunchedEffect(framing) { zoom.reset(); detail = null; if ((src != null || onPrint) && previewInputs() != previewFrom) render(fast = false) }
     LaunchedEffect(frameOpen) { if (frameOpen) { zoom.reset(); detail = null } }
     // 92c: a small copy of the print in its film edge, for the FRAME panel while the edge is on
     val edgeSample by androidx.compose.runtime.produceState<Bitmap?>(null, preview, recipe.film, framing.edgeFrame, frameOpen) {
@@ -551,7 +611,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
             ExposureMaps.save(context, source, m, ExposureMaps.FOG)
             com.celestial.latent.develop.FogLooks.save(context, source, l)
         }
-        if (!printing && src != null) render(fast = false)
+        if (!printing && (src != null || onPrint) && previewInputs() != previewFrom) render(fast = false)
     }
     // The foreground split and its fixes, kept with the photo; a change re-develops the preview.
     LaunchedEffect(depthSplit, depthFix) {
@@ -561,7 +621,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
             ExposureMaps.save(context, source, sp, ExposureMaps.DEPTH_SPLIT, keepBlank = true)
             ExposureMaps.save(context, source, fx, ExposureMaps.DEPTH_FIX)
         }
-        if (!printing && src != null) render(fast = false)
+        if (!printing && (src != null || onPrint) && previewInputs() != previewFrom) render(fast = false)
     }
     // The rays and where they may fall, kept with the photo. A blank coverage means "nowhere": kept.
     LaunchedEffect(raysMap, raysLook) {
@@ -571,24 +631,24 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
             ExposureMaps.save(context, source, m, ExposureMaps.RAYS, keepBlank = true)
             com.celestial.latent.develop.RaysLooks.save(context, source, l)
         }
-        if (!printing && src != null) render(fast = false)
+        if (!printing && (src != null || onPrint) && previewInputs() != previewFrom) render(fast = false)
     }
     // The extra lights, kept with the photo after a moment's pause, like light 1.
     LaunchedEffect(extraLights) {
         delay(400)
         val l = extraLights
         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { com.celestial.latent.develop.ExtraLights.save(context, source, l) }
-        if (!printing && src != null) render(fast = false)
+        if (!printing && (src != null || onPrint) && previewInputs() != previewFrom) render(fast = false)
     }
     // Back from PRINT: the strips may have changed the exposure while the preview slept — but when
     // nothing changed, the picture already showing is the right one (107a).
-    LaunchedEffect(printing) { if (!printing && src != null && previewInputs() != previewFrom) render(fast = false) }
+    LaunchedEffect(printing) { if (!printing && (src != null || onPrint) && previewInputs() != previewFrom) render(fast = false) }
     // The decoded copy is kept by Develop.Cache so coming back is instant; nothing to free here.
 
     fun set(block: Recipe.() -> Recipe) { recipe = recipe.block() }
     // 100b: a look changes the film, not the photo's light: the LIGHT tab is carried over
     fun pickLook(id: String, look: Recipe) {
-        val base = filmLook(context, recipe, lookId, ownRecipe != null)
+        val base = filmLook(context, recipe, lookId, cinema)
         lookId = id
         recipe = com.celestial.latent.develop.SceneLight.keepLight(recipe, base, look)
     }
@@ -621,6 +681,9 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
     /** The full-size print (75b: started from the DEVELOP tab, in SIMPLE/FULL and in PRINT alike). */
     fun startFullDevelop() {
         if (fullRunning) return
+        // 107b: what this print is made from, written down once it is saved
+        val madeFrom = developedKey()
+        val madeWith = recipe
         fullRunning = true; fullStarted = System.currentTimeMillis(); status = "full size: queued"; fullError = null
         fullJob = com.celestial.latent.develop.DevelopQueue.submitFull(
             context, source, isRaw, recipe, upscale = printSize, exposureMap = exposureMap, softenMask = softenMap, pairFirst = pairFirst, framing = framing,
@@ -639,6 +702,8 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                 fullRunning = false; fullJob = null
                 if (out != null) {
                     fullError = null
+                    com.celestial.latent.develop.DevelopedFrom.record(context, source, madeFrom)
+                    PhotoRecipes.saveEdited(context, source, madeWith)
                     status = "saved to DCIM/Latent" + com.celestial.latent.develop.Develop.lastFullNote.let { if (it.isEmpty()) "" else " · $it" }
                     // 78a: in HDR view, the saved file itself (a thumbnail would drop its glow)
                     val b = (if (hdrView) com.celestial.latent.develop.HdrGlow.decodeSmall(context, out, 1600) else null)
@@ -751,7 +816,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                     .combinedClickable(onClick = {
                         Haptics.tick(context)
                         // 100b: the film's own look again, but your LIGHT tab stays (Reset light clears it)
-                        val look = filmLook(context, recipe, lookId, ownRecipe != null)
+                        val look = filmLook(context, recipe, lookId, cinema)
                         val fresh = com.celestial.latent.develop.SceneLight.keepLight(recipe, look, look)
                         if (fresh != recipe) { beforeReset = recipe; resetTo = fresh; recipe = fresh }
                     }).padding(horizontal = 12.dp, vertical = 7.dp))

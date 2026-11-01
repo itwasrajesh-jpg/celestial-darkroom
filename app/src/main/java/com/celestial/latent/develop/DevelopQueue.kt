@@ -112,6 +112,13 @@ object DevelopQueue {
                                   // 78b: the kind of file chosen in the darkroom's DEVELOP tab
                                   format = DarkroomPrefs.fileFormat(context.applicationContext))
                           else Develop.developJpeg(context.applicationContext, job.source, recipe)
+                // 107b: the photo keeps the look it was developed with, and the darkroom can show this
+                // print as it is (a RAW develops here with its framing and nothing painted on it)
+                if (job.isRaw) {
+                    val app = context.applicationContext
+                    if (com.celestial.latent.PhotoRecipes.edited(app, job.source) == null) com.celestial.latent.PhotoRecipes.saveEdited(app, job.source, recipe)
+                    DevelopedFrom.record(app, job.source, DevelopedFrom.keyOf(recipe, framing))
+                }
                 onDeveloped(out)
             } catch (t: Throwable) {
                 Log.e("Latent", "develop failed for ${job.source}", t)

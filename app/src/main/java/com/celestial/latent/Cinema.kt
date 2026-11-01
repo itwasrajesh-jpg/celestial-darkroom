@@ -43,20 +43,39 @@ object Cinema {
 }
 
 /**
- * A photo's own recipe, for photos that should not follow the shared one. The darkroom normally
- * works from — and writes back to — the shared recipe the camera develops new shots with. A cinema
- * shot must not: opening it would either show it in the wrong film, or (if edited) send Vision3
- * into every new photo. So a cinema shot keeps its own recipe here; the darkroom opens with it and
- * saves edits to it, and the roll's develop uses it.
+ * A photo's own recipe. A cinema shot is given one when it is taken: it must not follow the
+ * shared recipe the camera develops new shots with (opening it would show it in the wrong film,
+ * or, if edited, send Vision3 into every new photo).
+ *
+ * 107b: every photo edited or developed in the darkroom keeps its own too — what it was last
+ * edited or developed with — so it opens with its own look whatever the camera's film is now, and
+ * its edits never change the camera's film. Kept apart from the cinema ones ([edited]), so a
+ * cinema shot is still known as one after it has been edited.
  */
 object PhotoRecipes {
     private const val FILE = "latent_photo_recipes"
+    private const val EDITS = "latent_photo_edits"
     private fun prefs(context: Context) = context.getSharedPreferences(FILE, Context.MODE_PRIVATE)
+    private fun edits(context: Context) = context.getSharedPreferences(EDITS, Context.MODE_PRIVATE)
 
-    fun load(context: Context, photo: Uri): Recipe? =
+    /** The photo's own recipe: as last edited or developed, else the cinema one it was shot with, else none. */
+    fun load(context: Context, photo: Uri): Recipe? = edited(context, photo) ?: cinema(context, photo)
+
+    /** The recipe a cinema shot was taken with, or null for every other photo. */
+    fun cinema(context: Context, photo: Uri): Recipe? =
         prefs(context).getString(photo.toString(), null)?.let { runCatching { Recipe.fromJson(it) }.getOrNull() }
 
+    /** What the photo was last edited or developed with (107b), or null when it never was. */
+    fun edited(context: Context, photo: Uri): Recipe? =
+        edits(context).getString(photo.toString(), null)?.let { runCatching { Recipe.fromJson(it) }.getOrNull() }
+
+    /** A cinema shot's recipe, as it is taken. */
     fun save(context: Context, photo: Uri, recipe: Recipe) {
         prefs(context).edit().putString(photo.toString(), recipe.toJson()).apply()
+    }
+
+    /** The photo as edited or developed (107b): its own from now on. */
+    fun saveEdited(context: Context, photo: Uri, recipe: Recipe) {
+        edits(context).edit().putString(photo.toString(), recipe.toJson()).apply()
     }
 }
