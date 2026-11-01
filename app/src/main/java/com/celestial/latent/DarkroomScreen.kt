@@ -189,7 +189,6 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
     val printDevelop = remember { PrintDevelop() }
     // 102b: the full-size print rising out of its slot, and the stamp on a recipe just saved
     val printOut = remember { PrintOut() }
-    var stampFor by remember { mutableStateOf<String?>(null) }
     val lookRow = rememberScrollState()
     val developScope = rememberCoroutineScope()
     val hasPrint = preview != null
@@ -227,25 +226,21 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
             m(wetMap), wetLook, m(rainMap), m(exposureMap), m(saturationMap), lithLook, hdrView, fileFormat, hdrGlow,
             com.celestial.latent.develop.Depth.isReady(context)).joinToString("|")
     }
-    var previewFrom by remember { mutableStateOf<String?>(null) }
+    // 107b/107d: the darkroom's opening state, kept in one object (see OpenState: one local, not five)
+    val op = remember { OpenState() }
     // 107b: everything the saved print is made from (DevelopedFrom), as the darkroom has it now
     fun developedKey() = com.celestial.latent.develop.DevelopedFrom.keyOf(recipe, framing, exposureMap, softenMap, fogMap, fogLook,
         raysMap, raysLook, extraLights, depthSplit, saturationMap, lithLook, wetMap, wetLook, rainMap)
     // 107b: opened on its own saved print, which is the picture until something changes: nothing
     // has been developed here yet, so a change develops even before the photo is prepared
-    var onPrint by remember { mutableStateOf(false) }
-    var opening by remember { mutableStateOf(true) }
-    var edited by remember { mutableStateOf(false) }
     // 107b: painted, lit or framed but the film never touched still makes it the photo's own look:
     // once anything has changed since it opened, the recipe it is seen with is kept with it.
     // (107c: this was a DisposableEffect that worked the key out on leaving; on the phone its effect
     // came back null when the darkroom opened and crashed it. Now the key is worked out here, as the
     // screen is drawn, and an ordinary LaunchedEffect keyed on it keeps the recipe.)
-    var openedAs by remember { mutableStateOf<String?>(null) }
-    val keyNow = if (openedAs != null) developedKey() else null
-    LaunchedEffect(keyNow) {
-        val k = keyNow ?: return@LaunchedEffect
-        if (k != openedAs) { delay(400); PhotoRecipes.saveEdited(context, source, recipe) }
+    LaunchedEffect(if (op.openedAs != null) developedKey() else null) {
+        if (op.openedAs == null || developedKey() == op.openedAs) return@LaunchedEffect
+        delay(400); PhotoRecipes.saveEdited(context, source, recipe)
     }
     var coarse by remember { mutableStateOf(false) }
     var fullRunning by remember { mutableStateOf(false) }
@@ -264,34 +259,26 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
         if (motionOn()) tween(700) else androidx.compose.animation.core.snap(), label = "ambient")
     androidx.compose.runtime.SideEffect { LatentColors.ambient = ambientShown.takeIf { it.alpha > 0.003f } }
     DisposableEffect(Unit) { onDispose { LatentColors.ambient = null } }
-    var gpuTest by remember { mutableStateOf("") }
     var lookId by remember { mutableStateOf("") }
-    var levelling by remember { mutableStateOf(false) }
     var fullStarted by remember { mutableStateOf(0L) }
     var elapsed by remember { mutableStateOf(0) }
     var lastRenderMs by remember { mutableStateOf(0) }
     var fullJob by remember { mutableStateOf<com.celestial.latent.develop.DevelopQueue.Running?>(null) }
     var tab by remember { mutableStateOf("light") }
     // 74a: App help, drawn over the darkroom at the page for what is on screen
-    var helpTopic by remember { mutableStateOf<String?>(null) }
     // 75b: the photo's share of the room above the controls, set by dragging the handle freely
     // (it used to snap between three heights) and remembered for next time
     // the photo ↔ controls split, shared with PRINT's steps (75c)
     val panelSplit = remember { PanelSplit(com.celestial.latent.develop.DarkroomPrefs.photoShare(context)) }
     val photoShare = panelSplit.share
     var roomHeight by remember { mutableStateOf(1) }
-    var saveName by remember { mutableStateOf("") }
     // 71a: the recipe before "Reset to film", and the painted effects before "Clear effects", for one Undo each
-    var beforeReset by remember { mutableStateOf<Recipe?>(null) }
-    var resetTo by remember { mutableStateOf<Recipe?>(null) }
-    var clearAsk by remember { mutableStateOf(false) }
-    var beforeClear by remember { mutableStateOf<PaintedEffects?>(null) }
-    // 72a: naming a recipe as it is saved, and renaming or deleting one (long-press on its chip)
-    var naming by remember { mutableStateOf<String?>(null) }
-    var managing by remember { mutableStateOf<String?>(null) }
-    var manageName by remember { mutableStateOf("") }
-    var deleteAsk by remember { mutableStateOf(false) }
-    var recipesRevision by remember { mutableStateOf(0) }
+    // 72a: asks.naming a recipe as it is saved, and renaming or deleting one (long-press on its chip)
+
+    // 107d: the darkroom's small asks and notes (undo, name, rename, delete, help, GPU test...), in one
+    // object. DarkroomScreen is one very large function and each `var x by remember` costs it several
+    // locals; at 268 the phone refused to load it (VerifyError, build #277). See DarkroomAsks.
+    val asks = remember { DarkroomAsks() }
 
     fun render(fast: Boolean) {
         if (fullRunning) return                      // never compete with a full-size develop
@@ -341,7 +328,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                 preview = if (cropFraction < 1f) inPlace(got, lastFull ?: preview?.takeIf { !previewIsPartial }, cropFraction)
                     else got.also { lastFull = it }
                 previewIsPartial = cropFraction < 1f
-                if (inputs != null) previewFrom = inputs
+                if (inputs != null) op.previewFrom = inputs
             } catch (t: Throwable) { status = "failed: ${t.message}" }
             finally {
                 if (cropped !== null && cropped !== src) cropped?.close()
@@ -461,15 +448,15 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
 
     // A quick coarse pass while a control is moving, then a fine one when it settles.
     LaunchedEffect(recipe) {
-        if (opening) {
-            opening = false
+        if (op.opening) {
+            op.opening = false
             // 107b: developed from exactly this? Then its print is the picture, and nothing is developed again.
             val key = developedKey()
-            openedAs = key
+            op.openedAs = key
             val made = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { printAsDeveloped(key) }
             if (made != null && key == developedKey()) {
                 preview = made; lastFull = made; previewIsPartial = false
-                previewFrom = previewInputs(); onPrint = true
+                op.previewFrom = previewInputs(); op.onPrint = true
                 status = "as developed · change anything to re-render"
                 android.util.Log.i("Latent", "darkroom: opened on its saved print, nothing developed")
                 prepareQuietly()
@@ -482,14 +469,14 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                 }
                 if (b != null && preview == null) { preview = b; status = "already developed · change anything to re-render" }
             }
-        } else edited = true
+        } else op.edited = true
         coarse = true
         if (!printing) render(fast = true)
         delay(450)
         coarse = false
         // 107b: an edit is the photo's own, never the camera's (which new shots develop with);
         // a photo only opened keeps following the camera's film until it is edited or developed
-        if (edited) PhotoRecipes.saveEdited(context, source, recipe)
+        if (op.edited) PhotoRecipes.saveEdited(context, source, recipe)
         if (!printing) render(fast = false)
     }
     // Save the mask beside its photo (a moment after the last change), and show it in the preview.
@@ -497,14 +484,14 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
         delay(400)
         val m = exposureMap
         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { ExposureMaps.save(context, source, m) }
-        if (!printing && (src != null || onPrint) && previewInputs() != previewFrom) render(fast = false)
+        if (!printing && (src != null || op.onPrint) && previewInputs() != op.previewFrom) render(fast = false)
     }
     // The same for the painted saturation (62a).
     LaunchedEffect(saturationMap) {
         delay(400)
         val m = saturationMap
         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { ExposureMaps.save(context, source, m, ExposureMaps.SATURATION) }
-        if (!printing && (src != null || onPrint) && previewInputs() != previewFrom) render(fast = false)
+        if (!printing && (src != null || op.onPrint) && previewInputs() != op.previewFrom) render(fast = false)
     }
     // The wet ground and how it shines (64a), kept with the photo; a change re-develops the preview.
     LaunchedEffect(wetMap, wetLook, rainMap) {
@@ -515,7 +502,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
             ExposureMaps.save(context, source, rm, ExposureMaps.RAIN)
             com.celestial.latent.develop.WetLooks.save(context, source, l)
         }
-        if (!printing && (src != null || onPrint) && previewInputs() != previewFrom) render(fast = false)
+        if (!printing && (src != null || op.onPrint) && previewInputs() != op.previewFrom) render(fast = false)
     }
     // The age (97a), kept with the photo. Only the AGE step and the full develop show it: nothing to re-develop.
     LaunchedEffect(ageLook) {
@@ -528,7 +515,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
         delay(400)
         val l = lithLook
         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { com.celestial.latent.develop.LithLooks.save(context, source, l) }
-        if (!printing && (src != null || onPrint) && previewInputs() != previewFrom) render(fast = false)
+        if (!printing && (src != null || op.onPrint) && previewInputs() != op.previewFrom) render(fast = false)
     }
     // The glow (78a), kept with the photo once moved, so a photo never touched keeps following Settings. The slider
     // retunes the glow on screen at once (its map's shape does not depend on the strength); a develop is only
@@ -537,17 +524,17 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
         delay(400)
         val g = hdrGlow
         if (hdrGlowTouched) kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { com.celestial.latent.develop.HdrGlows.save(context, source, g) }
-        if (hdrView && !printing && (src != null || onPrint) && g >= 0.125f && !com.celestial.latent.develop.HdrGlow.has(preview)) render(fast = false)
+        if (hdrView && !printing && (src != null || op.onPrint) && g >= 0.125f && !com.celestial.latent.develop.HdrGlow.has(preview)) render(fast = false)
     }
     // 78b: another kind of file: remembered, and in HDR view the preview shows (or drops) the glow
     LaunchedEffect(fileFormat) {
         com.celestial.latent.develop.DarkroomPrefs.setFileFormat(context, fileFormat)
-        if (hdrView && !printing && (src != null || onPrint)) render(fast = false)
+        if (hdrView && !printing && (src != null || op.onPrint)) render(fast = false)
     }
     // HDR view on or off: the window's mode, and a preview with (or without) its glow
     LaunchedEffect(hdrView) {
         com.celestial.latent.develop.HdrGlow.setWindowHdr(context, hdrView)
-        if (!printing && (src != null || onPrint) && previewInputs() != previewFrom) render(fast = false)
+        if (!printing && (src != null || op.onPrint) && previewInputs() != op.previewFrom) render(fast = false)
     }
     // leaving the darkroom always gives the app its ordinary window back
     DisposableEffect(Unit) { onDispose { com.celestial.latent.develop.HdrGlow.setWindowHdr(context, false) } }
@@ -558,7 +545,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
             ExposureMaps.save(context, source, m, ExposureMaps.SOFTEN, keepBlank = true)
         }
-        if (!printing && (src != null || onPrint) && previewInputs() != previewFrom) render(fast = false)
+        if (!printing && (src != null || op.onPrint) && previewInputs() != op.previewFrom) render(fast = false)
     }
     /**
      * A new framing: the masks are carried across so every mark stays over the same part of the
@@ -582,7 +569,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
         framing = next
         com.celestial.latent.develop.Framings.save(context, source, next)
     }
-    LaunchedEffect(framing) { zoom.reset(); detail = null; if ((src != null || onPrint) && previewInputs() != previewFrom) render(fast = false) }
+    LaunchedEffect(framing) { zoom.reset(); detail = null; if ((src != null || op.onPrint) && previewInputs() != op.previewFrom) render(fast = false) }
     LaunchedEffect(frameOpen) { if (frameOpen) { zoom.reset(); detail = null } }
     // 92c: a small copy of the print in its film edge, for the FRAME panel while the edge is on
     val edgeSample by androidx.compose.runtime.produceState<Bitmap?>(null, preview, recipe.film, framing.edgeFrame, frameOpen) {
@@ -616,7 +603,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
             ExposureMaps.save(context, source, m, ExposureMaps.FOG)
             com.celestial.latent.develop.FogLooks.save(context, source, l)
         }
-        if (!printing && (src != null || onPrint) && previewInputs() != previewFrom) render(fast = false)
+        if (!printing && (src != null || op.onPrint) && previewInputs() != op.previewFrom) render(fast = false)
     }
     // The foreground split and its fixes, kept with the photo; a change re-develops the preview.
     LaunchedEffect(depthSplit, depthFix) {
@@ -626,7 +613,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
             ExposureMaps.save(context, source, sp, ExposureMaps.DEPTH_SPLIT, keepBlank = true)
             ExposureMaps.save(context, source, fx, ExposureMaps.DEPTH_FIX)
         }
-        if (!printing && (src != null || onPrint) && previewInputs() != previewFrom) render(fast = false)
+        if (!printing && (src != null || op.onPrint) && previewInputs() != op.previewFrom) render(fast = false)
     }
     // The rays and where they may fall, kept with the photo. A blank coverage means "nowhere": kept.
     LaunchedEffect(raysMap, raysLook) {
@@ -636,18 +623,18 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
             ExposureMaps.save(context, source, m, ExposureMaps.RAYS, keepBlank = true)
             com.celestial.latent.develop.RaysLooks.save(context, source, l)
         }
-        if (!printing && (src != null || onPrint) && previewInputs() != previewFrom) render(fast = false)
+        if (!printing && (src != null || op.onPrint) && previewInputs() != op.previewFrom) render(fast = false)
     }
     // The extra lights, kept with the photo after a moment's pause, like light 1.
     LaunchedEffect(extraLights) {
         delay(400)
         val l = extraLights
         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { com.celestial.latent.develop.ExtraLights.save(context, source, l) }
-        if (!printing && (src != null || onPrint) && previewInputs() != previewFrom) render(fast = false)
+        if (!printing && (src != null || op.onPrint) && previewInputs() != op.previewFrom) render(fast = false)
     }
     // Back from PRINT: the strips may have changed the exposure while the preview slept — but when
     // nothing changed, the picture already showing is the right one (107a).
-    LaunchedEffect(printing) { if (!printing && (src != null || onPrint) && previewInputs() != previewFrom) render(fast = false) }
+    LaunchedEffect(printing) { if (!printing && (src != null || op.onPrint) && previewInputs() != op.previewFrom) render(fast = false) }
     // The decoded copy is kept by Develop.Cache so coming back is instant; nothing to free here.
 
     fun set(block: Recipe.() -> Recipe) { recipe = recipe.block() }
@@ -823,55 +810,55 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                         // 100b: the film's own look again, but your LIGHT tab stays (Reset light clears it)
                         val look = filmLook(context, recipe, lookId, cinema)
                         val fresh = com.celestial.latent.develop.SceneLight.keepLight(recipe, look, look)
-                        if (fresh != recipe) { beforeReset = recipe; resetTo = fresh; recipe = fresh }
+                        if (fresh != recipe) { asks.beforeReset = recipe; asks.resetTo = fresh; recipe = fresh }
                     }).padding(horizontal = 12.dp, vertical = 7.dp))
             Text("Clear effects", color = LatentColors.Text, fontSize = 11.sp,
                 modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(LatentColors.Surface)
-                    .combinedClickable(onClick = { Haptics.tick(context); clearAsk = true }).padding(horizontal = 12.dp, vertical = 7.dp))
+                    .combinedClickable(onClick = { Haptics.tick(context); asks.clearAsk = true }).padding(horizontal = 12.dp, vertical = 7.dp))
             Text("Save recipe", color = LatentColors.Text, fontSize = 11.sp,
                 modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(LatentColors.Surface)
                     .combinedClickable(onClick = {
                         // 72a: asks for a name first, offering the film's
-                        Haptics.tick(context); saveName = ""
-                        naming = (Develop.FILMS.firstOrNull { it.first == recipe.film }?.second ?: "My recipe") + " – "
+                        Haptics.tick(context); asks.saveName = ""
+                        asks.naming = (Develop.FILMS.firstOrNull { it.first == recipe.film }?.second ?: "My recipe") + " – "
                     }).padding(horizontal = 12.dp, vertical = 7.dp))
         }
-        val draft = naming
+        val draft = asks.naming
         if (draft != null) {
             val clean = Recipes.cleanName(draft)
             val taken = clean.isNotEmpty() && Recipes.exists(context, clean)
-            NameField(draft, "name this recipe") { naming = it }
+            NameField(draft, "name this recipe") { asks.naming = it }
             Row(Modifier.padding(bottom = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text(if (taken) "Replace" else "Save", color = if (clean.isNotEmpty()) LatentColors.AmberInk else LatentColors.TextDim, fontSize = 11.sp,
                     modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(if (clean.isNotEmpty()) LatentColors.Amber else LatentColors.Surface)
                         .combinedClickable(onClick = {
                             if (clean.isEmpty()) return@combinedClickable
                             Haptics.tick(context)
-                            Recipes.save(context, clean, recipe); saveName = clean; naming = null
-                            lookId = "stock:" + clean; recipesRevision++
-                            stampFor = clean; developScope.launch { lookRow.animateScrollTo(0) }
+                            Recipes.save(context, clean, recipe); asks.saveName = clean; asks.naming = null
+                            lookId = "stock:" + clean; asks.recipesRevision++
+                            asks.stampFor = clean; developScope.launch { lookRow.animateScrollTo(0) }
                         }).padding(horizontal = 12.dp, vertical = 7.dp))
                 Text("Cancel", color = LatentColors.Text, fontSize = 11.sp,
                     modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(LatentColors.Surface)
-                        .combinedClickable(onClick = { naming = null }).padding(horizontal = 12.dp, vertical = 7.dp))
+                        .combinedClickable(onClick = { asks.naming = null }).padding(horizontal = 12.dp, vertical = 7.dp))
                 if (taken) Text("a recipe has this name", color = LatentColors.TextDim, fontSize = 10.sp)
             }
         }
-        if (saveName.isNotEmpty()) Text("saved “$saveName” · find it under YOUR RECIPES in the looks above and in the camera's film strip",
+        if (asks.saveName.isNotEmpty()) Text("saved “$asks.saveName” · find it under YOUR RECIPES in the looks above and in the camera's film strip",
             color = LatentColors.Amber, fontSize = 10.sp)
         // Undo for the reset, while nothing has been changed since
-        val undoReset = beforeReset
-        if (undoReset != null && resetTo == recipe) {
+        val undoReset = asks.beforeReset
+        if (undoReset != null && asks.resetTo == recipe) {
             Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("Back to the film's own look.", color = LatentColors.TextDim, fontSize = 11.sp, modifier = Modifier.weight(1f))
                 Text("Undo", color = LatentColors.AmberInk, fontSize = 11.sp,
                     modifier = Modifier.clip(RoundedCornerShape(999.dp)).accentFill()
-                        .combinedClickable(onClick = { Haptics.tick(context); recipe = undoReset; beforeReset = null; resetTo = null })
+                        .combinedClickable(onClick = { Haptics.tick(context); recipe = undoReset; asks.beforeReset = null; asks.resetTo = null })
                         .padding(horizontal = 12.dp, vertical = 7.dp))
             }
         }
         // "Clear effects" asks first, in place (no dialog: those misplace on the Xiaomi)
-        if (clearAsk) {
+        if (asks.clearAsk) {
             Text("Clear this photo's fog, lights, god rays, wet ground, rain, lith print, dodge & burn and painted colour? The film settings and the framing stay.",
                 color = LatentColors.Text, fontSize = 11.sp, modifier = Modifier.padding(top = 4.dp))
             Row(Modifier.padding(vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -879,22 +866,22 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                     modifier = Modifier.clip(RoundedCornerShape(999.dp)).accentFill()
                         .combinedClickable(onClick = {
                             Haptics.tick(context)
-                            beforeClear = PaintedEffects(exposureMap, softenMap, fogMap, fogLook, raysMap, raysLook, extraLights,
+                            asks.beforeClear = PaintedEffects(exposureMap, softenMap, fogMap, fogLook, raysMap, raysLook, extraLights,
                                 saturationMap, lithLook, wetMap, wetLook, rainMap)
                             val none = PaintedEffects.NONE
                             exposureMap = none.exposure; softenMap = none.soften; fogMap = none.fog; fogLook = none.fogLook
                             raysMap = none.rays; raysLook = none.raysLook; extraLights = none.extraLights
                             saturationMap = none.saturation; lithLook = none.lith; wetMap = none.wet; wetLook = none.wetLook; rainMap = none.rain
-                            clearAsk = false
+                            asks.clearAsk = false
                         }).padding(horizontal = 12.dp, vertical = 7.dp))
                 Text("Keep them", color = LatentColors.Text, fontSize = 11.sp,
                     modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(LatentColors.Surface)
-                        .combinedClickable(onClick = { clearAsk = false }).padding(horizontal = 12.dp, vertical = 7.dp))
+                        .combinedClickable(onClick = { asks.clearAsk = false }).padding(horizontal = 12.dp, vertical = 7.dp))
             }
         }
         // ...and its Undo, while the photo is still open
-        val undoClear = beforeClear
-        if (undoClear != null && !clearAsk) {
+        val undoClear = asks.beforeClear
+        if (undoClear != null && !asks.clearAsk) {
             Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("Effects cleared.", color = LatentColors.TextDim, fontSize = 11.sp, modifier = Modifier.weight(1f))
                 Text("Undo", color = LatentColors.AmberInk, fontSize = 11.sp,
@@ -904,7 +891,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                             exposureMap = undoClear.exposure; softenMap = undoClear.soften; fogMap = undoClear.fog; fogLook = undoClear.fogLook
                             raysMap = undoClear.rays; raysLook = undoClear.raysLook; extraLights = undoClear.extraLights
                             saturationMap = undoClear.saturation; lithLook = undoClear.lith; wetMap = undoClear.wet; wetLook = undoClear.wetLook; rainMap = undoClear.rain
-                            beforeClear = null
+                            asks.beforeClear = null
                         }).padding(horizontal = 12.dp, vertical = 7.dp))
             }
         }
@@ -930,7 +917,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                 // 74a: what the controls on screen do
                 GlyphIcon(Glyph.HELP, LatentColors.Amber,
                     Modifier.clip(RoundedCornerShape(999.dp))
-                        .combinedClickable(onClick = { Haptics.tick(context); helpTopic = if (printing) "print" else tab }).padding(horizontal = 4.dp, vertical = 2.dp), 20.dp)
+                        .combinedClickable(onClick = { Haptics.tick(context); asks.helpTopic = if (printing) "print" else tab }).padding(horizontal = 4.dp, vertical = 2.dp), 20.dp)
             }
         }
 
@@ -1255,7 +1242,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                         com.celestial.latent.develop.Recipes.stocks(context)
                     }
                     // 72a: recipes saved here, which nothing used to show
-                    val savedRecipes = remember(recipesRevision, com.celestial.latent.develop.Recipes.names(context).size) {
+                    val savedRecipes = remember(asks.recipesRevision, com.celestial.latent.develop.Recipes.names(context).size) {
                         com.celestial.latent.develop.Recipes.saved(context)
                     }
                     Row(Modifier.fillMaxWidth().horizontalScroll(lookRow).padding(horizontal = 14.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1266,7 +1253,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                                 Modifier.floating(RoundedCornerShape(6.dp), 3.dp).clip(RoundedCornerShape(6.dp)).accentFill(on, LatentColors.card(n))
                                     .combinedClickable(
                                         onClick = { Haptics.tick(context); pickLook("stock:" + name, saved) },
-                                        onLongClick = { Haptics.click(context); managing = name; manageName = name; deleteAsk = false },
+                                        onLongClick = { Haptics.click(context); asks.managing = name; asks.manageName = name; asks.deleteAsk = false },
                                     )
                                     .padding(horizontal = 11.dp, vertical = 6.dp),
                             ) {
@@ -1274,7 +1261,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                                 Text("your recipe", color = if (on) LatentColors.AmberInk.copy(alpha = 0.7f) else LatentColors.Text, fontSize = 8.sp)
                             }
                             // 102b: a recipe just saved gets its stamp
-                            if (stampFor == name) RecipeStamp(Modifier.matchParentSize()) { stampFor = null }
+                            if (asks.stampFor == name) RecipeStamp(Modifier.matchParentSize()) { asks.stampFor = null }
                             }
                         }
                         ourStocks.forEachIndexed { n, (name, saved) ->
@@ -1301,33 +1288,33 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                         }
                     }
                     // 72a: rename or delete a saved recipe (long-press its chip)
-                    val held = managing
+                    val held = asks.managing
                     if (held != null) {
                         Column(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 4.dp)) {
-                            NameField(manageName, "rename “$held”") { manageName = it }
-                            val clean = Recipes.cleanName(manageName)
+                            NameField(asks.manageName, "rename “$held”") { asks.manageName = it }
+                            val clean = Recipes.cleanName(asks.manageName)
                             val canRename = clean.isNotEmpty() && clean != held && !Recipes.exists(context, clean)
                             fun cameraFollows(to: String?) {
                                 // the camera may be shooting with this recipe: keep it pointing at it, or back to a look
                                 val st = AppSettings.load(context)
                                 if (st.preset == "stock:" + held) AppSettings.save(context, st.copy(preset = if (to != null) "stock:" + to else "portra400_endura_wedding"))
                             }
-                            if (!deleteAsk) Row(Modifier.horizontalScroll(rememberScrollState()).padding(vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            if (!asks.deleteAsk) Row(Modifier.horizontalScroll(rememberScrollState()).padding(vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 Text("Rename", color = if (canRename) LatentColors.AmberInk else LatentColors.TextDim, fontSize = 11.sp,
                                     modifier = Modifier.clip(RoundedCornerShape(999.dp)).accentFill(canRename, LatentColors.Surface)
                                         .combinedClickable(onClick = {
                                             if (canRename && Recipes.rename(context, held, clean)) {
                                                 Haptics.tick(context); cameraFollows(clean)
                                                 if (lookId == "stock:" + held) lookId = "stock:" + clean
-                                                managing = null; recipesRevision++
+                                                asks.managing = null; asks.recipesRevision++
                                             }
                                         }).padding(horizontal = 12.dp, vertical = 7.dp))
                                 Text("Delete", color = LatentColors.Text, fontSize = 11.sp,
                                     modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(LatentColors.Surface)
-                                        .combinedClickable(onClick = { Haptics.tick(context); deleteAsk = true }).padding(horizontal = 12.dp, vertical = 7.dp))
+                                        .combinedClickable(onClick = { Haptics.tick(context); asks.deleteAsk = true }).padding(horizontal = 12.dp, vertical = 7.dp))
                                 Text("Done", color = LatentColors.Text, fontSize = 11.sp,
                                     modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(LatentColors.Surface)
-                                        .combinedClickable(onClick = { managing = null }).padding(horizontal = 12.dp, vertical = 7.dp))
+                                        .combinedClickable(onClick = { asks.managing = null }).padding(horizontal = 12.dp, vertical = 7.dp))
                             } else {
                                 Text("Delete the recipe “$held”? Photos already developed with it keep their look.", color = LatentColors.Text, fontSize = 11.sp, modifier = Modifier.padding(top = 4.dp))
                                 Row(Modifier.padding(vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1336,11 +1323,11 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                                             .combinedClickable(onClick = {
                                                 Haptics.tick(context); Recipes.delete(context, held); cameraFollows(null)
                                                 if (lookId == "stock:" + held) lookId = ""
-                                                managing = null; deleteAsk = false; recipesRevision++
+                                                asks.managing = null; asks.deleteAsk = false; asks.recipesRevision++
                                             }).padding(horizontal = 12.dp, vertical = 7.dp))
                                     Text("Keep it", color = LatentColors.Text, fontSize = 11.sp,
                                         modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(LatentColors.Surface)
-                                            .combinedClickable(onClick = { deleteAsk = false }).padding(horizontal = 12.dp, vertical = 7.dp))
+                                            .combinedClickable(onClick = { asks.deleteAsk = false }).padding(horizontal = 12.dp, vertical = 7.dp))
                                 }
                             }
                         }
@@ -1393,11 +1380,11 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                                 Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                     // The photo opens at the brightness it was shot at. This asks the film
                                     // what it would have chosen — a starting point, not a correction.
-                                    Text(if (levelling) "levelling…" else "Auto level", color = LatentColors.AmberInk, fontSize = 11.sp,
+                                    Text(if (asks.levelling) "asks.levelling…" else "Auto level", color = LatentColors.AmberInk, fontSize = 11.sp,
                                         modifier = Modifier.clip(RoundedCornerShape(999.dp)).accentFill()
                                             .combinedClickable(onClick = {
-                                                if (!levelling && !rendering) {
-                                                    Haptics.tick(context); levelling = true
+                                                if (!asks.levelling && !rendering) {
+                                                    Haptics.tick(context); asks.levelling = true
                                                     Thread {
                                                         try {
                                                         val s0 = src
@@ -1412,7 +1399,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                                                             else
                                                                 recipe.copy(exposureEv = (recipe.exposureEv + ev).coerceIn(-3f, 3f))
                                                         }
-                                                        } finally { levelling = false }
+                                                        } finally { asks.levelling = false }
                                                     }.start()
                                                 }
                                             }).padding(horizontal = 12.dp, vertical = 7.dp))
@@ -1626,13 +1613,13 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                                 S("Preview size", recipe.previewMaxSize.toFloat(), 300f, 1600f, "%.0f px") { set { copy(previewMaxSize = Math.round(it)) } }
                                 Toggle("GPU preview (experimental)", recipe.gpuPreview) { set { copy(gpuPreview = it) } }
                                 Note("GPU is for previews only, by the engine's design: its maths is not identical across chip makers, so exports stay on the CPU. It covers the scan stage, and self-checks against the CPU on this device before it is used.")
-                                Text(if (gpuTest.isEmpty()) "Measure GPU vs CPU" else gpuTest, color = LatentColors.AmberInk, fontSize = 11.sp,
+                                Text(if (asks.gpuTest.isEmpty()) "Measure GPU vs CPU" else asks.gpuTest, color = LatentColors.AmberInk, fontSize = 11.sp,
                                     modifier = Modifier.clip(RoundedCornerShape(999.dp)).accentFill().combinedClickable(onClick = {
                                         val busy = com.celestial.latent.develop.DevelopQueue.queued > 0
                                         if (rendering || fullRunning || busy) {
-                                            gpuTest = "wait until nothing is developing, and give the phone a minute to cool"
+                                            asks.gpuTest = "wait until nothing is developing, and give the phone a minute to cool"
                                         } else {
-                                            Haptics.tick(context); gpuTest = "measuring…"
+                                            Haptics.tick(context); asks.gpuTest = "measuring…"
                                             val r = recipe.copy(previewMaxSize = 800)
                                             Thread {
                                                 val q = com.celestial.latent.develop.DevelopQueue
@@ -1642,9 +1629,9 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                                                     var cpu = 0L; var gpu = 0L
                                                     run { val t = System.nanoTime(); Develop.render(context, s0, r.copy(gpuPreview = false), preview = true); cpu = (System.nanoTime() - t) / 1_000_000 }
                                                     run { val t = System.nanoTime(); Develop.render(context, s0, r.copy(gpuPreview = true), preview = true); gpu = (System.nanoTime() - t) / 1_000_000 }
-                                                    gpuTest = "CPU ${cpu} ms · GPU ${gpu} ms" + if (gpu < cpu * 0.9) " — GPU is faster" else if (gpu > cpu * 1.1) " — GPU is slower" else " — no difference"
+                                                    asks.gpuTest = "CPU ${cpu} ms · GPU ${gpu} ms" + if (gpu < cpu * 0.9) " — GPU is faster" else if (gpu > cpu * 1.1) " — GPU is slower" else " — no difference"
                                                     android.util.Log.i("Latent", "gpu comparison: cpu=${cpu}ms gpu=${gpu}ms")
-                                                } catch (t: Throwable) { gpuTest = "failed: ${t.message}" }
+                                                } catch (t: Throwable) { asks.gpuTest = "failed: ${t.message}" }
                                                 finally { if (holds) q.engineLane.release() }
                                             }.start()
                                         }
@@ -1673,7 +1660,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
         com.celestial.latent.develop.LiveEdit(source, isRaw, recipe, exposureMap, softenMap, pairFirst, framing, fogMap, fogLook,
             raysMap, raysLook, extraLights, depthSplit, saturationMap, lithLook, wetMap, wetLook, rainMap),
     ) { liveOpen = false }
-    helpTopic?.let { t -> HelpScreen(start = t) { helpTopic = null } }
+    asks.helpTopic?.let { t -> HelpScreen(start = t) { asks.helpTopic = null } }
     }
 }
 
@@ -1898,4 +1885,45 @@ private fun inPlace(part: Bitmap, under: Bitmap?, fraction: Float): Bitmap {
     // 78a: and their glows laid the same way, so HDR view does not flicker while a control moves
     runCatching { com.celestial.latent.develop.HdrGlow.inPlace(out, part, under, fraction) }
     return out
+}
+
+/**
+ * 107b: how the darkroom opened a photo. One object on purpose (107d): DarkroomScreen is one very
+ * large function, and each `var x by remember` is a local of its own. At 268 locals build #277
+ * failed to load on the phone (VerifyError: "wide register ... Long (Low Half)"); #276's crash in a
+ * DisposableEffect was most likely the same overflow. Keep new darkroom state in holders like this.
+ */
+private class OpenState {
+    /** Everything the whole preview showing was developed from (previewInputs), or null. */
+    var previewFrom by mutableStateOf<String?>(null)
+    /** Opened on its own saved print: nothing developed here yet. */
+    var onPrint by mutableStateOf(false)
+    /** The first look at the recipe has not happened yet. */
+    var opening = true
+    /** The recipe was changed here. */
+    var edited = false
+    /** The photo's developed-from key as it opened (DevelopedFrom). */
+    var openedAs by mutableStateOf<String?>(null)
+}
+
+/**
+ * 107d: the darkroom's small asks and notes, one object instead of fourteen `remember`s: 71a's undo
+ * for Reset and Clear, 72a's naming, renaming and deleting a recipe, help, the GPU test, Auto
+ * level's busy flag and 102b's recipe stamp. Same states, same behaviour; only where they live.
+ */
+private class DarkroomAsks {
+    var beforeReset by mutableStateOf<Recipe?>(null)
+    var resetTo by mutableStateOf<Recipe?>(null)
+    var clearAsk by mutableStateOf(false)
+    var beforeClear by mutableStateOf<PaintedEffects?>(null)
+    var naming by mutableStateOf<String?>(null)
+    var managing by mutableStateOf<String?>(null)
+    var manageName by mutableStateOf("")
+    var deleteAsk by mutableStateOf(false)
+    var recipesRevision by mutableStateOf(0)
+    var helpTopic by mutableStateOf<String?>(null)
+    var saveName by mutableStateOf("")
+    var gpuTest by mutableStateOf("")
+    var levelling by mutableStateOf(false)
+    var stampFor by mutableStateOf<String?>(null)
 }
