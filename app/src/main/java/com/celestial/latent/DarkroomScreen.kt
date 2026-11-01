@@ -237,10 +237,15 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
     var opening by remember { mutableStateOf(true) }
     var edited by remember { mutableStateOf(false) }
     // 107b: painted, lit or framed but the film never touched still makes it the photo's own look:
-    // on leaving, anything changed since it opened keeps the recipe it was seen with
-    val openedAs = remember { mutableStateOf<String?>(null) }
-    androidx.compose.runtime.DisposableEffect(Unit) {
-        onDispose { if (openedAs.value != null && runCatching { developedKey() }.getOrNull() != openedAs.value) PhotoRecipes.saveEdited(context, source, recipe) }
+    // once anything has changed since it opened, the recipe it is seen with is kept with it.
+    // (107c: this was a DisposableEffect that worked the key out on leaving; on the phone its effect
+    // came back null when the darkroom opened and crashed it. Now the key is worked out here, as the
+    // screen is drawn, and an ordinary LaunchedEffect keyed on it keeps the recipe.)
+    var openedAs by remember { mutableStateOf<String?>(null) }
+    val keyNow = if (openedAs != null) developedKey() else null
+    LaunchedEffect(keyNow) {
+        val k = keyNow ?: return@LaunchedEffect
+        if (k != openedAs) { delay(400); PhotoRecipes.saveEdited(context, source, recipe) }
     }
     var coarse by remember { mutableStateOf(false) }
     var fullRunning by remember { mutableStateOf(false) }
@@ -460,7 +465,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
             opening = false
             // 107b: developed from exactly this? Then its print is the picture, and nothing is developed again.
             val key = developedKey()
-            openedAs.value = key
+            openedAs = key
             val made = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { printAsDeveloped(key) }
             if (made != null && key == developedKey()) {
                 preview = made; lastFull = made; previewIsPartial = false
