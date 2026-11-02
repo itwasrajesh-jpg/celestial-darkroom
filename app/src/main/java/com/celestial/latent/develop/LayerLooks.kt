@@ -51,9 +51,12 @@ object LayerLooks {
     fun resolve(layers: List<Layer>?, all: Recipe, main: Recipe): List<LayerLook> {
         val ls = LayerRecipes.own(layers)
         if (ls.isEmpty()) return emptyList()
-        return ls.map { alignTo(LayerRecipes.follow(it.recipe!!, all, main), main) to it }
+        val groups = ls.map { alignTo(LayerRecipes.follow(it.recipe!!, all, main), main) to it }
             .filter { it.first != main }
-            .groupBy({ it.first }, { it.second }).entries.take(MAX_EXTRA).map { (r, group) ->
+            .groupBy({ it.first }, { it.second })
+        if (groups.size > MAX_EXTRA) Log.w("Latent", "layers: ${groups.size} sets of own settings, only the first $MAX_EXTRA are developed: " +
+            groups.values.drop(MAX_EXTRA).flatten().joinToString { it.name })
+        return groups.entries.take(MAX_EXTRA).map { (r, group) ->
                 val m0 = group.first().mask
                 // the group's areas together (overlaps count once): all on the first one's grid
                 val m = if (group.size == 1) m0 else ExposureMap(m0.width, m0.height, FloatArray(m0.width * m0.height) { k ->

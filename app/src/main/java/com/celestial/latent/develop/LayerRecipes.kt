@@ -43,10 +43,21 @@ object LayerRecipes {
         return Recipe.fromJson(x.toString())
     }
 
+    /**
+     * The settings that are whole numbers. Only these step as whole numbers: JSON writes a float
+     * like 1.0 as "1", so a float setting can read back as an Int and must not be treated as one
+     * (109e: a layer's 0.5 grain became −1 when ALL went from 100% to 0%).
+     */
+    private val WHOLE = setOf("halationBounces", "grainSublayerCount", "previewMaxSize")
+    /** "Auto" is −1 here: a switch between auto and a set amount is a choice, set as it is, never shifted. */
+    private val AUTO_BELOW_ZERO = setOf("chromaDenoise", "lumaDenoise")
+
     private fun shifted(k: String, mine: Number, a: Number, b: Number): Any = when {
         k == "printExposure" ->
             (mine.toDouble() * b.toDouble() / a.toDouble().coerceAtLeast(0.01)).coerceIn(PRINT_EXPOSURE_MIN.toDouble(), PRINT_EXPOSURE_MAX.toDouble())
-        a is Int && b is Int -> mine.toInt() + (b - a)
+        k in WHOLE -> (mine.toDouble() + (b.toDouble() - a.toDouble())).let { Math.round(it).toInt() }
+        k in AUTO_BELOW_ZERO -> if (a.toDouble() < 0 || b.toDouble() < 0 || mine.toDouble() < 0) b
+            else (mine.toDouble() + (b.toDouble() - a.toDouble())).coerceIn(0.0, 1.0)
         else -> {
             val v = mine.toDouble() + (b.toDouble() - a.toDouble())
             when {

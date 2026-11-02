@@ -46,7 +46,8 @@ import com.celestial.latent.ui.raised
 @Composable
 internal fun ApplyToRow(layers: List<Layer>, applyTo: Int?, onPick: (Int?) -> Unit) {
     val chosen = layers.firstOrNull { it.id == applyTo }
-    val owning = layers.count { it.visible && it.recipe != null }
+    // 109e: hidden ones too: showing one again must not go past the most there can be
+    val owning = layers.count { it.recipe != null }
     Column(Modifier.fillMaxWidth().padding(horizontal = 14.dp).padding(top = 4.dp)) {
         Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(6.dp)) {
