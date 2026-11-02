@@ -100,6 +100,10 @@ object Layers {
 
     fun wanted(layers: List<Layer>?): Boolean = layers?.any { it.acts } == true
 
+    /** 109d: the other side of an area: 1 − its share in each cell (a broken cell counts as outside). */
+    fun inverted(m: ExposureMap): ExposureMap =
+        ExposureMap(m.width, m.height, FloatArray(m.stops.size) { k -> val v = m.stops[k]; if (v.isFinite()) 1f - v.coerceIn(0f, 1f) else 1f })
+
     /** What the preparation reads: "-" when no layer changes anything. */
     fun key(layers: List<Layer>?): String = if (!wanted(layers)) "-" else layers!!.filter { it.acts }.sortedBy { it.id }.joinToString(";") { it.key() }   // 109b: order changes nothing in the picture, so not the key either
 
