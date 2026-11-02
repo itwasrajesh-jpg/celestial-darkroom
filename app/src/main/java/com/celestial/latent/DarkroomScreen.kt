@@ -148,7 +148,11 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
     val ownRecipe = remember { PhotoRecipes.load(context, source) }
     // a cinema shot keeps its print, scan and format when a look is picked (filmLook)
     val cinema = remember { PhotoRecipes.cinema(context, source) != null }
-    var recipe by remember { mutableStateOf((ownRecipe ?: initial).copy(autoExposure = false)) }
+    // 107b/107d: the darkroom's opening state, kept in one object (see OpenState: one local, not five);
+    // 109a: it also holds the photo's layers (PRINT → LAYERS), read once as the photo opens;
+    // 109c: and the whole photo's recipe, so NEGATIVE can be pointed at a layer (OpenState.neg)
+    val op = remember { OpenState((ownRecipe ?: initial).copy(autoExposure = false)).also { it.layers = com.celestial.latent.develop.Layers.load(context, source) } }
+    var recipe by op.all
     // An export choice, not part of the look — see DarkroomPrefs for why it lives apart.
     var printSize by remember { mutableStateOf(com.celestial.latent.develop.DarkroomPrefs.printSize(context)) }
     // ...and so is the kind of file (78b): JPEG, Ultra HDR, PNG 8-bit or 16-bit
@@ -192,9 +196,6 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
     // ...and where the rain on the window is wiped away or added (65a, WET → WINDOW; how is in wetLook.window)
     var rainMap by remember { mutableStateOf(ExposureMaps.load(context, source, ExposureMaps.RAIN)) }
     /** Everything painted on this photo, as one value, so no render can mix them up. */
-    // 107b/107d: the darkroom's opening state, kept in one object (see OpenState: one local, not five);
-    // 109a: it also holds the photo's layers (PRINT → LAYERS), read once as the photo opens
-    val op = remember { OpenState().also { it.layers = com.celestial.latent.develop.Layers.load(context, source) } }
     fun currentMasks() = Masks(exposureMap, softenMap, fogMap, raysMap, raysOn = true, saturation = saturationMap, lith = lithLook, wet = wetMap, wetLook = wetLook, rain = rainMap, layers = op.layers)
     // A double exposure: this frame was made onto an earlier one, and is shown and printed as both.
     val pairFirst = remember { if (isRaw) com.celestial.latent.develop.DoubleExposure.firstFor(context, source) else null }
@@ -249,7 +250,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
     fun previewInputs(): String {
         fun m(x: ExposureMap?) = x?.let { "${it.width}x${it.height}:${it.stops.contentHashCode()}" } ?: "-"
         return listOf(recipe, framing.key(), m(softenMap), m(fogMap), fogLook, m(raysMap), raysLook, extraLights, m(depthSplit),
-            m(wetMap), wetLook, m(rainMap), m(exposureMap), m(saturationMap), lithLook, hdrView, fileFormat, hdrGlow, com.celestial.latent.develop.Layers.key(op.layers),
+            m(wetMap), wetLook, m(rainMap), m(exposureMap), m(saturationMap), lithLook, hdrView, fileFormat, hdrGlow, com.celestial.latent.develop.Layers.key(op.layers), com.celestial.latent.develop.LayerLooks.key(op.layers),
             com.celestial.latent.develop.Depth.isReady(context)).joinToString("|")
     }
     // 107b: everything the saved print is made from (DevelopedFrom), as the darkroom has it now
@@ -257,6 +258,8 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
         raysMap, raysLook, extraLights, depthSplit, saturationMap, lithLook, wetMap, wetLook, rainMap)
         // 109a: with layers, they are part of what it is made from (without, the key is as before, so saved prints still match)
         .let { k -> if (com.celestial.latent.develop.Layers.wanted(op.layers)) k + "|layers:" + com.celestial.latent.develop.Layers.key(op.layers) else k }
+        // 109c: and the layers' own looks
+        .let { k -> if (com.celestial.latent.develop.LayerLooks.wanted(op.layers)) k + "|looks:" + com.celestial.latent.develop.LayerLooks.key(op.layers) else k }
     // 107b: opened on its own saved print, which is the picture until something changes: nothing
     // has been developed here yet, so a change develops even before the photo is prepared
     // 107b: painted, lit or framed but the film never touched still makes it the photo's own look:
@@ -342,7 +345,17 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                 val lithFrame = if (cropFraction < 1f) (1f - cropFraction) / 2f else 0f
                 val (bytes, _) = Develop.render(context, target, r, preview = true, exposureMap = map, softenMask = softenMap, saturationMap = sat,
                     lith = lithLook, lithFrame = if (lithFrame > 0f) com.celestial.latent.develop.Region(lithFrame, lithFrame, 1f - lithFrame, 1f - lithFrame) else null,
-                    hdrGlow = if (hdrView && fileFormat == com.celestial.latent.develop.DarkroomPrefs.FILE_ULTRA_HDR) hdrGlow.also { glowUsed = it } else 0f) { m -> status = m }
+                    hdrGlow = if (hdrView && fileFormat == com.celestial.latent.develop.DarkroomPrefs.FILE_ULTRA_HDR) hdrGlow.also { glowUsed = it } else 0f,
+                    // 109c: layers with NEGATIVE settings of their own (their masks cut to the centre on the quick pass),
+                    // and the photo prepared again for one whose settings act before the film
+                    looks = com.celestial.latent.develop.LayerLooks.resolve(op.layers, recipe, r)
+                        .let { if (cropFraction < 1f) com.celestial.latent.develop.LayerLooks.crop(it) { m -> m.centreCrop(cropFraction) } else it },
+                    prepareLook = { lr ->
+                        val own = Develop.openCached(context, source, isRaw, decodeEdge(DECODE_EDGE, framing), lr, iso, softenMask = softenMap, pairFirst = pairFirst, framing = framing,
+                            fogMask = fogMap, fogLook = fogLook, raysMask = raysMap, raysLook = raysLook, extraLights = extraLights, depthSplit = depthSplit,
+                            wetMask = wetMap, wetLook = wetLook, rainMask = rainMap, layers = op.layers, forLayer = true) { }
+                        if (cropFraction < 1f) Develop.centreCrop(own, cropFraction) to true else own to false
+                    }) { m -> status = m }
                 lastRenderMs = ((System.nanoTime() - t0) / 1_000_000).toInt()
                 // 78a: the glow slider may have moved while this developed: shown at its strength now
                 val got = BitmapFactory.decodeByteArray(bytes, 0, bytes.size).let { b ->
@@ -400,7 +413,12 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                 extraLights = if (masks.raysOn) el else emptyList(), depthSplit = ds,
                 wetMask = masks.wet, wetLook = masks.wetLook, rainMask = masks.rain, layers = masks.layers) { }
             val (bytes, _) = Develop.render(context, s0, r.copy(previewMaxSize = edge), preview = true, exposureMap = masks.dodge, softenMask = masks.soften,
-                saturationMap = masks.saturation, lith = masks.lith)
+                saturationMap = masks.saturation, lith = masks.lith, looks = com.celestial.latent.develop.LayerLooks.resolve(masks.layers, recipe, r),
+                prepareLook = { lr -> Develop.openCached(context, source, isRaw, decodeEdge(DECODE_EDGE, framing), lr, iso, softenMask = masks.soften, pairFirst = pairFirst, framing = framing,
+                    fogMask = masks.fog, fogLook = fl,
+                    raysMask = masks.rays, raysLook = if (masks.raysOn) rl else com.celestial.latent.develop.RaysLook(),
+                    extraLights = if (masks.raysOn) el else emptyList(), depthSplit = ds,
+                    wetMask = masks.wet, wetLook = masks.wetLook, rainMask = masks.rain, layers = masks.layers, forLayer = true) { } to false })
             BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.let { it to painted }
         } catch (t: Throwable) {
             android.util.Log.w("Latent", "print strip failed: ${t.message}"); null
@@ -424,7 +442,16 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
             Develop.cropRegion(whole, region).use { part ->
                 val (bytes, _) = Develop.render(context, part, r.copy(previewMaxSize = edge), preview = true,
                     exposureMap = masks.dodge?.crop(region), softenMask = masks.soften, saturationMap = masks.saturation?.crop(region),
-                    lith = masks.lith, lithFrame = region, hdrGlow = if (hdrView && fileFormat == com.celestial.latent.develop.DarkroomPrefs.FILE_ULTRA_HDR) hdrGlow else 0f)
+                    lith = masks.lith, lithFrame = region, hdrGlow = if (hdrView && fileFormat == com.celestial.latent.develop.DarkroomPrefs.FILE_ULTRA_HDR) hdrGlow else 0f,
+                    looks = com.celestial.latent.develop.LayerLooks.crop(com.celestial.latent.develop.LayerLooks.resolve(masks.layers, recipe, r)) { m -> m.crop(region) },
+                    prepareLook = { lr ->
+                        val own = Develop.openCached(context, source, isRaw, decodeEdge(DETAIL_EDGE, framing), lr, iso, softenMask = masks.soften, pairFirst = pairFirst, framing = framing,
+                            fogMask = masks.fog, fogLook = fogLook,
+                            raysMask = masks.rays, raysLook = if (masks.raysOn) raysLook else com.celestial.latent.develop.RaysLook(),
+                            extraLights = if (masks.raysOn) extraLights else emptyList(), depthSplit = depthSplit,
+                            wetMask = masks.wet, wetLook = masks.wetLook, rainMask = masks.rain, layers = masks.layers, forLayer = true) { }
+                        Develop.cropRegion(own, region) to true
+                    })
                 BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
             }
         } catch (t: Throwable) {
@@ -671,12 +698,28 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
     LaunchedEffect(printing) { if (!printing && (src != null || op.onPrint) && previewInputs() != op.previewFrom) render(fast = false) }
     // The decoded copy is kept by Develop.Cache so coming back is instant; nothing to free here.
 
-    fun set(block: Recipe.() -> Recipe) { recipe = recipe.block() }
+    // 109c: NEGATIVE's controls change op.neg: the layer chosen under APPLY TO, or the whole photo (ALL)
+    fun set(block: Recipe.() -> Recipe) { op.neg = op.neg.block() }
+    /** PRINT's own controls, and the settings that belong to the whole file: always the whole photo (and so its layers). */
+    fun setAll(block: Recipe.() -> Recipe) { op.setAll(recipe.block()) }
     // 100b: a look changes the film, not the photo's light: the LIGHT tab is carried over
     fun pickLook(id: String, look: Recipe) {
-        val base = filmLook(context, recipe, lookId, cinema)
+        val l = op.layers.firstOrNull { it.id == op.applyTo }
+        if (l != null) {
+            // 109c: on the chosen layer only, from the look it was on
+            val lr = l.recipe ?: recipe
+            val base = filmLook(context, lr, l.lookId ?: lookId, cinema)
+            op.layers = op.layers.map { if (it.id == l.id) com.celestial.latent.develop.LayerRecipes.tidy(
+                it.copy(recipe = com.celestial.latent.develop.SceneLight.keepLight(lr, base, look), lookId = id), recipe) else it }
+            return
+        }
+        val before = lookId
+        val base = filmLook(context, recipe, before, cinema)
         lookId = id
         recipe = com.celestial.latent.develop.SceneLight.keepLight(recipe, base, look)
+        // 109c: on ALL, every layer takes the look too, each keeping its own light
+        op.layers = com.celestial.latent.develop.LayerRecipes.pickedOnAll(op.layers, recipe, look) { lay ->
+            filmLook(context, lay.recipe ?: recipe, lay.lookId ?: before, cinema) }
     }
 
     /** What a full-size develop will include (it used to sit in the bottom bar, before 75a). */
@@ -716,6 +759,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
             fogMask = fogMap, fogLook = fogLook, raysMask = raysMap, raysLook = raysLook, extraLights = extraLights, depthSplit = depthSplit,
             saturationMap = saturationMap, lith = lithLook, wetMask = wetMap, wetLook = wetLook, rainMask = rainMap,
             hdrGlow = hdrGlow, format = fileFormat, age = ageLook, layers = op.layers,
+            looks = com.celestial.latent.develop.LayerLooks.resolve(op.layers, recipe, recipe),
             onStatus = { m ->
                 status = "full size: $m"
                 if (m.startsWith("failed")) fullError =
@@ -842,9 +886,11 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                     .combinedClickable(onClick = {
                         Haptics.tick(context)
                         // 100b: the film's own look again, but your LIGHT tab stays (Reset light clears it)
-                        val look = filmLook(context, recipe, lookId, cinema)
-                        val fresh = com.celestial.latent.develop.SceneLight.keepLight(recipe, look, look)
-                        if (fresh != recipe) { asks.beforeReset = recipe; asks.resetTo = fresh; recipe = fresh }
+                        // 109c: the chosen layer's (APPLY TO), or the whole photo's
+                        val now = op.neg
+                        val look = filmLook(context, now, op.negLook(lookId), cinema)
+                        val fresh = com.celestial.latent.develop.SceneLight.keepLight(now, look, look)
+                        if (fresh != now) { asks.beforeReset = now; asks.resetTo = fresh; op.neg = fresh }
                     }).padding(horizontal = 12.dp, vertical = 7.dp))
             Text("Clear effects", color = LatentColors.Text, fontSize = 11.sp,
                 modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(LatentColors.Surface)
@@ -854,7 +900,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                     .combinedClickable(onClick = {
                         // 72a: asks for a name first, offering the film's
                         Haptics.tick(context); asks.saveName = ""
-                        asks.naming = (Develop.FILMS.firstOrNull { it.first == recipe.film }?.second ?: "My recipe") + " – "
+                        asks.naming = (Develop.FILMS.firstOrNull { it.first == op.neg.film }?.second ?: "My recipe") + " – "
                     }).padding(horizontal = 12.dp, vertical = 7.dp))
         }
         val draft = asks.naming
@@ -868,8 +914,12 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                         .combinedClickable(onClick = {
                             if (clean.isEmpty()) return@combinedClickable
                             Haptics.tick(context)
-                            Recipes.save(context, clean, recipe); asks.saveName = clean; asks.naming = null
-                            lookId = "stock:" + clean; asks.recipesRevision++
+                            Recipes.save(context, clean, op.neg); asks.saveName = clean; asks.naming = null
+                            // 109c: saved from a layer, it is that layer's look now
+                            val chosen = op.applyTo
+                            if (op.layers.any { it.id == chosen }) op.layers = op.layers.map { if (it.id == chosen) it.copy(lookId = "stock:" + clean) else it }
+                            else lookId = "stock:" + clean
+                            asks.recipesRevision++
                             asks.stampFor = clean; developScope.launch { lookRow.animateScrollTo(0) }
                         }).padding(horizontal = 12.dp, vertical = 7.dp))
                 Text("Cancel", color = LatentColors.Text, fontSize = 11.sp,
@@ -882,12 +932,12 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
             color = LatentColors.Amber, fontSize = 10.sp)
         // Undo for the reset, while nothing has been changed since
         val undoReset = asks.beforeReset
-        if (undoReset != null && asks.resetTo == recipe) {
+        if (undoReset != null && asks.resetTo == op.neg) {
             Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("Back to the film's own look.", color = LatentColors.TextDim, fontSize = 11.sp, modifier = Modifier.weight(1f))
                 Text("Undo", color = LatentColors.AmberInk, fontSize = 11.sp,
                     modifier = Modifier.clip(RoundedCornerShape(999.dp)).accentFill()
-                        .combinedClickable(onClick = { Haptics.tick(context); recipe = undoReset; asks.beforeReset = null; asks.resetTo = null })
+                        .combinedClickable(onClick = { Haptics.tick(context); op.neg = undoReset; asks.beforeReset = null; asks.resetTo = null })
                         .padding(horizontal = 12.dp, vertical = 7.dp))
             }
         }
@@ -990,18 +1040,18 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                     developPreview = if (comparingNow) (original ?: preview) else preview,
                     developComparing = comparingNow,
                     onDevelopHold = { holdForOriginal() },
-                    onExposure = { e -> set { copy(printExposure = e) } },
-                    onFilters = { y, m -> set { copy(yFilterShift = y, mFilterShift = m) } },
-                    onGrain = { on, size -> set { copy(grain = on, grainSizeUm2 = size) } },
-                    onGrainAmount = { a -> set { copy(grainAmount = a) } },
+                    onExposure = { e -> setAll { copy(printExposure = e) } },
+                    onFilters = { y, m -> setAll { copy(yFilterShift = y, mFilterShift = m) } },
+                    onGrain = { on, size -> setAll { copy(grain = on, grainSizeUm2 = size) } },
+                    onGrainAmount = { a -> setAll { copy(grainAmount = a) } },
                     exposureMap = exposureMap,
                     onExposureMap = { exposureMap = it },
                     saturationMap = saturationMap,
                     onSaturationMap = { saturationMap = it },
-                    onDirAmount = { a -> set { copy(dirAmount = a, dir = true) } },
+                    onDirAmount = { a -> setAll { copy(dirAmount = a, dir = true) } },
                     softenMap = softenMap,
                     onSoftenMap = { softenMap = it },
-                    onDiffusionOn = { if (!recipe.diffusion) set { copy(diffusion = true) } },
+                    onDiffusionOn = { if (!recipe.diffusion) setAll { copy(diffusion = true) } },
                     fogMap = fogMap,
                     onFogMap = { fogMap = it },
                     fogLook = fogLook,
@@ -1284,9 +1334,12 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                     val savedRecipes = remember(asks.recipesRevision, com.celestial.latent.develop.Recipes.names(context).size) {
                         com.celestial.latent.develop.Recipes.saved(context)
                     }
+                    // 109c: once the photo has layers, where NEGATIVE's changes go
+                    if (op.layers.isNotEmpty()) ApplyToRow(op.layers, op.applyTo) { id -> op.applyTo = id; asks.beforeReset = null; asks.resetTo = null }
+                    val nl = op.negLook(lookId)
                     Row(Modifier.fillMaxWidth().horizontalScroll(lookRow).padding(horizontal = 14.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         savedRecipes.forEachIndexed { n, (name, saved) ->
-                            val on = lookId == "stock:" + name
+                            val on = nl == "stock:" + name
                             Box(Modifier.showLookOnOpen(on, asks, lookRow, developScope)) { Column(
                                 // 87a-2: in Clay each film has its own pastel card, as in the approved proof
                                 Modifier.floating(RoundedCornerShape(6.dp), 3.dp).clip(RoundedCornerShape(6.dp)).accentFill(on, LatentColors.card(n))
@@ -1304,7 +1357,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                             }
                         }
                         ourStocks.forEachIndexed { n, (name, saved) ->
-                            val on = lookId == "stock:" + name
+                            val on = nl == "stock:" + name
                             Column(
                                 Modifier.showLookOnOpen(on, asks, lookRow, developScope)
                                     .floating(RoundedCornerShape(6.dp), 3.dp).clip(RoundedCornerShape(6.dp)).accentFill(on, LatentColors.card(savedRecipes.size + n))
@@ -1316,7 +1369,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                             }
                         }
                         looks.forEachIndexed { n, preset ->
-                            val on = preset.id == lookId
+                            val on = preset.id == nl
                             Column(
                                 Modifier.showLookOnOpen(on, asks, lookRow, developScope)
                                     .floating(RoundedCornerShape(6.dp), 3.dp).clip(RoundedCornerShape(6.dp)).accentFill(on, LatentColors.card(savedRecipes.size + ourStocks.size + n))
@@ -1405,18 +1458,18 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                                 // the print exposure here, and the film exposure lives in Full mode where
                                 // it is labelled for what it does. Slide films have no print stage, so
                                 // there the film exposure is the brightness.
-                                val onPrintRoute = !recipe.scanFilm && !Develop.isSlideFilm(recipe.film)
+                                val onPrintRoute = !op.neg.scanFilm && !Develop.isSlideFilm(op.neg.film)
                                 if (onPrintRoute) {
                                     // Print exposure is the light reaching the paper, and paper darkens
                                     // with light — longer exposure, darker print, exactly as in a
                                     // darkroom. So the slider shows brightness in stops and inverts it,
                                     // or dragging right would make the picture darker.
-                                    val ev = (Math.log(1.0 / recipe.printExposure.coerceAtLeast(0.01f)) / Math.log(2.0)).toFloat()
+                                    val ev = (Math.log(1.0 / op.neg.printExposure.coerceAtLeast(0.01f)) / Math.log(2.0)).toFloat()
                                     S("Exposure", ev, -1.5f, 1.5f, "%+.1f EV", snap = true) {
                                         set { copy(printExposure = Math.pow(2.0, -it.toDouble()).toFloat().coerceIn(com.celestial.latent.develop.PRINT_EXPOSURE_MIN, com.celestial.latent.develop.PRINT_EXPOSURE_MAX)) }
                                     }
                                 } else {
-                                    S("Exposure", recipe.exposureEv, -3f, 3f, "%+.1f EV", snap = true) { set { copy(exposureEv = it) } }
+                                    S("Exposure", op.neg.exposureEv, -3f, 3f, "%+.1f EV", snap = true) { set { copy(exposureEv = it) } }
                                 }
                                 Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                     // The photo opens at the brightness it was shot at. This asks the film
@@ -1429,16 +1482,16 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                                                     Thread {
                                                         try {
                                                         val s0 = src
-                                                        val suggested = if (s0 != null) com.celestial.latent.develop.LookBaker.gainForSource(context, recipe, s0) else 0f
+                                                        val suggested = if (s0 != null) com.celestial.latent.develop.LookBaker.gainForSource(context, op.neg, s0) else 0f
                                                         if (suggested > 0.01f) {
                                                             val ev = (Math.log(suggested.toDouble()) / Math.log(2.0)).toFloat()
                                                             // Applied where brightness actually lives on this route.
-                                                            recipe = if (onPrintRoute)
+                                                            op.neg = if (onPrintRoute)
                                                                 // "Needs more light" means a brighter print,
                                                                 // which means a SHORTER enlarger exposure.
-                                                                recipe.copy(printExposure = (recipe.printExposure / suggested).coerceIn(com.celestial.latent.develop.PRINT_EXPOSURE_MIN, com.celestial.latent.develop.PRINT_EXPOSURE_MAX))
+                                                                op.neg.copy(printExposure = (op.neg.printExposure / suggested).coerceIn(com.celestial.latent.develop.PRINT_EXPOSURE_MIN, com.celestial.latent.develop.PRINT_EXPOSURE_MAX))
                                                             else
-                                                                recipe.copy(exposureEv = (recipe.exposureEv + ev).coerceIn(-3f, 3f))
+                                                                op.neg.copy(exposureEv = (op.neg.exposureEv + ev).coerceIn(-3f, 3f))
                                                         }
                                                         } finally { asks.levelling = false }
                                                     }.start()
@@ -1449,8 +1502,8 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                                         modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(LatentColors.Surface)
                                             .combinedClickable(onClick = {
                                                 Haptics.tick(context)
-                                                val toned = recipe.copy(lightHighlights = 0f, lightShadows = 0f, lightWhites = 0f, lightBlacks = 0f)
-                                                recipe = if (onPrintRoute) toned.copy(printExposure = 1f) else toned.copy(exposureEv = 0f)
+                                                val toned = op.neg.copy(lightHighlights = 0f, lightShadows = 0f, lightWhites = 0f, lightBlacks = 0f)
+                                                op.neg = if (onPrintRoute) toned.copy(printExposure = 1f) else toned.copy(exposureEv = 0f)
                                             }).padding(horizontal = 12.dp, vertical = 7.dp))
                                 }
                                 // the four tones, on the scene's light before the film ([SceneLight]): −1 … 1 shown as −100 … +100
@@ -1459,173 +1512,173 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                                 fun hold(which: String): (Boolean) -> Unit = { on ->
                                     if (on) { if (lightHold != which) { lightHold = which; reachStale = true } } else if (lightHold == which) lightHold = null
                                 }
-                                S("Highlights", recipe.lightHighlights, -1f, 1f, tone(recipe.lightHighlights), snap = true, onHold = hold("highlights")) { set { copy(lightHighlights = Math.round(it * 100) / 100f) } }
-                                S("Shadows", recipe.lightShadows, -1f, 1f, tone(recipe.lightShadows), snap = true, onHold = hold("shadows")) { set { copy(lightShadows = Math.round(it * 100) / 100f) } }
-                                S("Whites", recipe.lightWhites, -1f, 1f, tone(recipe.lightWhites), snap = true, onHold = hold("whites")) { set { copy(lightWhites = Math.round(it * 100) / 100f) } }
-                                S("Blacks", recipe.lightBlacks, -1f, 1f, tone(recipe.lightBlacks), snap = true, onHold = hold("blacks")) { set { copy(lightBlacks = Math.round(it * 100) / 100f) } }
+                                S("Highlights", op.neg.lightHighlights, -1f, 1f, tone(op.neg.lightHighlights), snap = true, onHold = hold("highlights")) { set { copy(lightHighlights = Math.round(it * 100) / 100f) } }
+                                S("Shadows", op.neg.lightShadows, -1f, 1f, tone(op.neg.lightShadows), snap = true, onHold = hold("shadows")) { set { copy(lightShadows = Math.round(it * 100) / 100f) } }
+                                S("Whites", op.neg.lightWhites, -1f, 1f, tone(op.neg.lightWhites), snap = true, onHold = hold("whites")) { set { copy(lightWhites = Math.round(it * 100) / 100f) } }
+                                S("Blacks", op.neg.lightBlacks, -1f, 1f, tone(op.neg.lightBlacks), snap = true, onHold = hold("blacks")) { set { copy(lightBlacks = Math.round(it * 100) / 100f) } }
                                 Note(if (onPrintRoute)
                                     "Exposure sets how long the print is exposed under the enlarger — the darkroom's own way of controlling brightness. Highlights, Shadows, Whites and Blacks change the scene's light before the film, so the film still draws the result."
                                 else
                                     "This film is scanned directly, with no print stage, so exposure is the film exposure itself. Highlights, Shadows, Whites and Blacks change the scene's light before the film, so the film still draws the result.")
                             }
                             "film" -> {
-                                com.celestial.latent.develop.Presets.byId(context, lookId)?.let { p -> Note(p.description) }
-                                S("Push / pull", recipe.pushStops, -2f, 3f, "%+.1f stop") { set { copy(pushStops = it) } }
-                                S("Film contrast", recipe.filmContrast, 0.6f, 1.6f, "%.2f") { set { copy(filmContrast = it) } }
+                                com.celestial.latent.develop.Presets.byId(context, nl)?.let { p -> Note(p.description) }
+                                S("Push / pull", op.neg.pushStops, -2f, 3f, "%+.1f stop") { set { copy(pushStops = it) } }
+                                S("Film contrast", op.neg.filmContrast, 0.6f, 1.6f, "%.2f") { set { copy(filmContrast = it) } }
                                 Head("COLOUR NOISE", null) {}
-                                val auto = recipe.chromaDenoise < 0f
+                                val auto = op.neg.chromaDenoise < 0f
                                 Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                     Text(if (auto) "AUTO · FROM ISO" else "MANUAL", color = if (auto) LatentColors.AmberInk else LatentColors.Text, fontSize = 10.sp,
                                         modifier = Modifier.clip(RoundedCornerShape(999.dp)).accentFill(auto, LatentColors.Surface)
                                             .combinedClickable(onClick = { Haptics.tick(context); set { copy(chromaDenoise = if (auto) 0.4f else -1f) } })
                                             .padding(horizontal = 10.dp, vertical = 5.dp))
                                 }
-                                if (!auto) S("Amount", recipe.chromaDenoise, 0f, 1f, "%.2f") { set { copy(chromaDenoise = it) } }
+                                if (!auto) S("Amount", op.neg.chromaDenoise, 0f, 1f, "%.2f") { set { copy(chromaDenoise = it) } }
                                 Note("Sensor blotches in dark shots are not film grain, and the dye couplers make them worse. This cleans the colour only — brightness, detail and grain are untouched.")
                                 Head("BRIGHTNESS NOISE", null) {}
-                                val lumaAuto = recipe.lumaDenoise < 0f
+                                val lumaAuto = op.neg.lumaDenoise < 0f
                                 Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                     Text(if (lumaAuto) "AUTO · FROM ISO" else "MANUAL", color = if (lumaAuto) LatentColors.AmberInk else LatentColors.Text, fontSize = 10.sp,
                                         modifier = Modifier.clip(RoundedCornerShape(999.dp)).accentFill(lumaAuto, LatentColors.Surface)
                                             .combinedClickable(onClick = { Haptics.tick(context); set { copy(lumaDenoise = if (lumaAuto) 0.4f else -1f) } })
                                             .padding(horizontal = 10.dp, vertical = 5.dp))
                                 }
-                                if (!lumaAuto) S("Amount", recipe.lumaDenoise, 0f, 1f, "%.2f") { set { copy(lumaDenoise = it) } }
+                                if (!lumaAuto) S("Amount", op.neg.lumaDenoise, 0f, 1f, "%.2f") { set { copy(lumaDenoise = it) } }
                                 Note("The sensor's grey speckle in dim shots is digital noise, not film grain. This smooths it while keeping edges, before the film — so the film's own grain is the texture. Lights and fog no longer make it worse.")
                                 // 95a: the AI clean, right under the noise controls it goes beyond (approved mock ai-models/ui-proof/)
-                                Head("NIGHT CLEAN", recipe.nightClean) { set { copy(nightClean = it) } }
-                                S("Strength", recipe.nightCleanStrength, 5f, 50f, "%.0f", recipe.nightClean) { set { copy(nightCleanStrength = Math.round(it).toFloat()) } }
-                                Toggle("Follow the phone's noise", recipe.nightCleanFollow) { set { copy(nightCleanFollow = it) } }
+                                Head("NIGHT CLEAN", op.neg.nightClean) { set { copy(nightClean = it) } }
+                                S("Strength", op.neg.nightCleanStrength, 5f, 50f, "%.0f", op.neg.nightClean) { set { copy(nightCleanStrength = Math.round(it).toFloat()) } }
+                                Toggle("Follow the phone's noise", op.neg.nightCleanFollow) { set { copy(nightCleanFollow = it) } }
                                 Note("For dark shots: a small AI model cleans the sensor's noise before the film, so the film's grain is the only texture. " +
                                     "With it on, the automatic colour and brightness noise cleaning above steps aside (a set amount still applies). " +
                                     "25 is the strength of the approved proof. The small preview is cleaned in proportion to its size, so it shows what the full-size develop will. " +
                                     "Follow the phone's noise spreads the same amount by this photo's own measured noise at each brightness — usually more in the mid-tones, less in the deep shadows. " +
                                     "A few seconds in the preview; about 20–60 s more on a full-size develop.")
-                                Head("DIR COUPLERS", recipe.dir) { set { copy(dir = it) } }
-                                S("Amount", recipe.dirAmount, 0f, 2f, "%.2f", recipe.dir) { set { copy(dirAmount = it) } }
-                                S("Same-layer inhibition", recipe.dirSameLayer, 0f, 2f, "%.2f", recipe.dir) { set { copy(dirSameLayer = it) } }
-                                S("Inter-layer inhibition", recipe.dirInterLayer, 0f, 2f, "%.2f", recipe.dir) { set { copy(dirInterLayer = it) } }
-                                S("Diffusion size", recipe.dirDiffusionUm, 2f, 80f, "%.0f µm", recipe.dir) { set { copy(dirDiffusionUm = it) } }
+                                Head("DIR COUPLERS", op.neg.dir) { set { copy(dir = it) } }
+                                S("Amount", op.neg.dirAmount, 0f, 2f, "%.2f", op.neg.dir) { set { copy(dirAmount = it) } }
+                                S("Same-layer inhibition", op.neg.dirSameLayer, 0f, 2f, "%.2f", op.neg.dir) { set { copy(dirSameLayer = it) } }
+                                S("Inter-layer inhibition", op.neg.dirInterLayer, 0f, 2f, "%.2f", op.neg.dir) { set { copy(dirInterLayer = it) } }
+                                S("Diffusion size", op.neg.dirDiffusionUm, 2f, 80f, "%.0f µm", op.neg.dir) { set { copy(dirDiffusionUm = it) } }
                                 // 108a: what only FULL used to show, at the bottom of FILM
                                 Head("ADVANCED", null) {}
-                                S("Film exposure (contrast & colour)", recipe.exposureEv, -3f, 3f, "%+.1f EV") { set { copy(exposureEv = it) } }
-                                Toggle("Let the print compensate", recipe.printExposureCompensation) { set { copy(printExposureCompensation = it) } }
+                                S("Film exposure (contrast & colour)", op.neg.exposureEv, -3f, 3f, "%+.1f EV") { set { copy(exposureEv = it) } }
+                                Toggle("Let the print compensate", op.neg.printExposureCompensation) { set { copy(printExposureCompensation = it) } }
                                 Note("Turn this off and film exposure changes brightness directly, as it would if you printed every negative for the same time.")
                             }
                             "halation" -> {
-                                Head("HALATION", recipe.halation) { set { copy(halation = it) } }
-                                S("Amount", recipe.halationAmount, 0f, 3f, "%.2f", recipe.halation) { set { copy(halationAmount = it) } }
-                                S("Spread", recipe.halationScale, 0.2f, 3f, "%.2f", recipe.halation) { set { copy(halationScale = it) } }
-                                S("Scatter", recipe.scatterAmount, 0f, 3f, "%.2f", recipe.halation) { set { copy(scatterAmount = it) } }
-                                S("Highlight boost", recipe.halationBoostEv, -2f, 4f, "%+.1f EV", recipe.halation) { set { copy(halationBoostEv = it) } }
-                                S("Protect highlights", recipe.halationProtectEv, 0f, 8f, "%.1f EV", recipe.halation) { set { copy(halationProtectEv = it) } }
-                                S("Bounces", recipe.halationBounces.toFloat(), 1f, 6f, "%.0f", recipe.halation) { set { copy(halationBounces = Math.round(it)) } }
-                                S("Bounce decay", recipe.halationDecay, 0.1f, 0.9f, "%.2f", recipe.halation) { set { copy(halationDecay = it) } }
+                                Head("HALATION", op.neg.halation) { set { copy(halation = it) } }
+                                S("Amount", op.neg.halationAmount, 0f, 3f, "%.2f", op.neg.halation) { set { copy(halationAmount = it) } }
+                                S("Spread", op.neg.halationScale, 0.2f, 3f, "%.2f", op.neg.halation) { set { copy(halationScale = it) } }
+                                S("Scatter", op.neg.scatterAmount, 0f, 3f, "%.2f", op.neg.halation) { set { copy(scatterAmount = it) } }
+                                S("Highlight boost", op.neg.halationBoostEv, -2f, 4f, "%+.1f EV", op.neg.halation) { set { copy(halationBoostEv = it) } }
+                                S("Protect highlights", op.neg.halationProtectEv, 0f, 8f, "%.1f EV", op.neg.halation) { set { copy(halationProtectEv = it) } }
+                                S("Bounces", op.neg.halationBounces.toFloat(), 1f, 6f, "%.0f", op.neg.halation) { set { copy(halationBounces = Math.round(it)) } }
+                                S("Bounce decay", op.neg.halationDecay, 0.1f, 0.9f, "%.2f", op.neg.halation) { set { copy(halationDecay = it) } }
                             }
                             "grain" -> {
-                                Head("GRAIN", recipe.grain) { set { copy(grain = it) } }
+                                Head("GRAIN", op.neg.grain) { set { copy(grain = it) } }
                                 // the whole picture's grain, stronger or weaker without changing its look (61c)
-                                S("Amount", recipe.grainAmount * 100f, 0f, 150f, "%.0f%%", recipe.grain) { set { copy(grainAmount = Math.round(it) / 100f) } }
-                                S("Particle size", recipe.grainSizeUm2, 0.05f, 1.2f, "%.2f µm²", recipe.grain) { set { copy(grainSizeUm2 = it) } }
-                                S("Softness", recipe.grainBlur, 0f, 2f, "%.2f", recipe.grain) { set { copy(grainBlur = it) } }
-                                S("Dye-cloud blur", recipe.grainDyeCloudUm, 0f, 4f, "%.2f µm", recipe.grain) { set { copy(grainDyeCloudUm = it) } }
-                                S("Micro-structure", recipe.grainMicroAmount, 0f, 1f, "%.2f", recipe.grain) { set { copy(grainMicroAmount = it) } }
-                                S("Micro scale", recipe.grainMicroScale, 5f, 80f, "%.0f", recipe.grain) { set { copy(grainMicroScale = it) } }
-                                Toggle("Sublayers", recipe.grainSublayers) { set { copy(grainSublayers = it) } }
-                                S("Sublayer count", recipe.grainSublayerCount.toFloat(), 1f, 4f, "%.0f", recipe.grainSublayers) { set { copy(grainSublayerCount = Math.round(it)) } }
+                                S("Amount", op.neg.grainAmount * 100f, 0f, 150f, "%.0f%%", op.neg.grain) { set { copy(grainAmount = Math.round(it) / 100f) } }
+                                S("Particle size", op.neg.grainSizeUm2, 0.05f, 1.2f, "%.2f µm²", op.neg.grain) { set { copy(grainSizeUm2 = it) } }
+                                S("Softness", op.neg.grainBlur, 0f, 2f, "%.2f", op.neg.grain) { set { copy(grainBlur = it) } }
+                                S("Dye-cloud blur", op.neg.grainDyeCloudUm, 0f, 4f, "%.2f µm", op.neg.grain) { set { copy(grainDyeCloudUm = it) } }
+                                S("Micro-structure", op.neg.grainMicroAmount, 0f, 1f, "%.2f", op.neg.grain) { set { copy(grainMicroAmount = it) } }
+                                S("Micro scale", op.neg.grainMicroScale, 5f, 80f, "%.0f", op.neg.grain) { set { copy(grainMicroScale = it) } }
+                                Toggle("Sublayers", op.neg.grainSublayers) { set { copy(grainSublayers = it) } }
+                                S("Sublayer count", op.neg.grainSublayerCount.toFloat(), 1f, 4f, "%.0f", op.neg.grainSublayers) { set { copy(grainSublayerCount = Math.round(it)) } }
                             }
                             "diffusion" -> {
-                                Head("LENS FILTER", recipe.diffusion) { set { copy(diffusion = it) } }
-                                Toggle("Fast diffusion on export", recipe.fastDiffusion) { set { copy(fastDiffusion = it) } }
-                                Note(if (recipe.fastDiffusion)
+                                Head("LENS FILTER", op.neg.diffusion) { set { copy(diffusion = it) } }
+                                Toggle("Fast diffusion on export", op.neg.fastDiffusion) { set { copy(fastDiffusion = it) } }
+                                Note(if (op.neg.fastDiffusion)
                                     "The same kernel as the engine's, computed with an FFT: seconds rather than minutes. It runs earlier in the chain than the engine's own, so at the same strength it can read a little softer — raise Strength to match if you are comparing them."
                                 else
                                     "The engine's own filter, computed directly. Identical by definition, and the slowest stage by far: minutes at full size.")
                                 // Picking a filter turns it on: choosing a family and then finding every
                                 // control greyed out was a dead end.
-                                Chips(DIFFUSION_FAMILIES, recipe.diffusionFamily) { set { copy(diffusionFamily = it, diffusion = true) } }
-                                if (!recipe.diffusion) Note("The lens filter is off — turn on LENS FILTER above, or tap a filter name, to adjust it.")
-                                S("Strength", recipe.diffusionStrength, 0f, 1f, "%.2f", recipe.diffusion) { set { copy(diffusionStrength = it) } }
-                                S("Spatial scale", recipe.diffusionScale, 0.2f, 3f, "%.2f", recipe.diffusion) { set { copy(diffusionScale = it) } }
-                                S("Core intensity", recipe.diffusionCore, 0f, 3f, "%.2f", recipe.diffusion) { set { copy(diffusionCore = it) } }
-                                S("Core size", recipe.diffusionCoreSize, 0.2f, 3f, "%.2f", recipe.diffusion) { set { copy(diffusionCoreSize = it) } }
-                                S("Halo intensity", recipe.diffusionHalo, 0f, 3f, "%.2f", recipe.diffusion) { set { copy(diffusionHalo = it) } }
-                                S("Halo size", recipe.diffusionHaloSize, 0.2f, 3f, "%.2f", recipe.diffusion) { set { copy(diffusionHaloSize = it) } }
-                                S("Bloom intensity", recipe.diffusionBloom, 0f, 3f, "%.2f", recipe.diffusion) { set { copy(diffusionBloom = it) } }
-                                S("Bloom size", recipe.diffusionBloomSize, 0.2f, 3f, "%.2f", recipe.diffusion) { set { copy(diffusionBloomSize = it) } }
-                                S("Halo warmth", recipe.diffusionWarmth, -1f, 1f, "%+.2f", recipe.diffusion) { set { copy(diffusionWarmth = it) } }
-                                Head("ENLARGER FILTER", recipe.printDiffusion) { set { copy(printDiffusion = it) } }
+                                Chips(DIFFUSION_FAMILIES, op.neg.diffusionFamily) { set { copy(diffusionFamily = it, diffusion = true) } }
+                                if (!op.neg.diffusion) Note("The lens filter is off — turn on LENS FILTER above, or tap a filter name, to adjust it.")
+                                S("Strength", op.neg.diffusionStrength, 0f, 1f, "%.2f", op.neg.diffusion) { set { copy(diffusionStrength = it) } }
+                                S("Spatial scale", op.neg.diffusionScale, 0.2f, 3f, "%.2f", op.neg.diffusion) { set { copy(diffusionScale = it) } }
+                                S("Core intensity", op.neg.diffusionCore, 0f, 3f, "%.2f", op.neg.diffusion) { set { copy(diffusionCore = it) } }
+                                S("Core size", op.neg.diffusionCoreSize, 0.2f, 3f, "%.2f", op.neg.diffusion) { set { copy(diffusionCoreSize = it) } }
+                                S("Halo intensity", op.neg.diffusionHalo, 0f, 3f, "%.2f", op.neg.diffusion) { set { copy(diffusionHalo = it) } }
+                                S("Halo size", op.neg.diffusionHaloSize, 0.2f, 3f, "%.2f", op.neg.diffusion) { set { copy(diffusionHaloSize = it) } }
+                                S("Bloom intensity", op.neg.diffusionBloom, 0f, 3f, "%.2f", op.neg.diffusion) { set { copy(diffusionBloom = it) } }
+                                S("Bloom size", op.neg.diffusionBloomSize, 0.2f, 3f, "%.2f", op.neg.diffusion) { set { copy(diffusionBloomSize = it) } }
+                                S("Halo warmth", op.neg.diffusionWarmth, -1f, 1f, "%+.2f", op.neg.diffusion) { set { copy(diffusionWarmth = it) } }
+                                Head("ENLARGER FILTER", op.neg.printDiffusion) { set { copy(printDiffusion = it) } }
                                 Note("A diffusion filter under the enlarger rather than on the lens. It blooms the negative, so the softening comes out of the print's shadows instead of glowing around its highlights — quieter, and it takes contrast out of the dark end. Emulated before the engine while fast diffusion is on, which makes it stronger for a given strength than the engine's own: start around 0.2. Turn fast diffusion off for the engine's exact version, at minutes per photo.")
-                                Chips(DIFFUSION_FAMILIES, recipe.printDiffusionFamily) { set { copy(printDiffusionFamily = it, printDiffusion = true) } }
-                                S("Strength", recipe.printDiffusionStrength, 0f, 1f, "%.2f", recipe.printDiffusion) { set { copy(printDiffusionStrength = it) } }
+                                Chips(DIFFUSION_FAMILIES, op.neg.printDiffusionFamily) { set { copy(printDiffusionFamily = it, printDiffusion = true) } }
+                                S("Strength", op.neg.printDiffusionStrength, 0f, 1f, "%.2f", op.neg.printDiffusion) { set { copy(printDiffusionStrength = it) } }
                             }
                             "camera" -> {
-                                Head("UV FILTER", recipe.filterUvAmount > 0.001f) { set { copy(filterUvAmount = if (it) 1f else 0f) } }
-                                S("Amount", recipe.filterUvAmount, 0f, 1f, "%.2f") { set { copy(filterUvAmount = it) } }
-                                S("Cut point", recipe.filterUvNm, 360f, 460f, "%.0f nm", recipe.filterUvAmount > 0.001f) { set { copy(filterUvNm = it) } }
-                                S("Softness", recipe.filterUvWidth, 2f, 40f, "%.0f nm", recipe.filterUvAmount > 0.001f) { set { copy(filterUvWidth = it) } }
-                                Head("INFRARED FILTER", recipe.filterIrAmount > 0.001f) { set { copy(filterIrAmount = if (it) 1f else 0f) } }
-                                S("Amount", recipe.filterIrAmount, 0f, 1f, "%.2f") { set { copy(filterIrAmount = it) } }
-                                S("Cut point", recipe.filterIrNm, 600f, 760f, "%.0f nm", recipe.filterIrAmount > 0.001f) { set { copy(filterIrNm = it) } }
-                                S("Softness", recipe.filterIrWidth, 2f, 60f, "%.0f nm", recipe.filterIrAmount > 0.001f) { set { copy(filterIrWidth = it) } }
+                                Head("UV FILTER", op.neg.filterUvAmount > 0.001f) { set { copy(filterUvAmount = if (it) 1f else 0f) } }
+                                S("Amount", op.neg.filterUvAmount, 0f, 1f, "%.2f") { set { copy(filterUvAmount = it) } }
+                                S("Cut point", op.neg.filterUvNm, 360f, 460f, "%.0f nm", op.neg.filterUvAmount > 0.001f) { set { copy(filterUvNm = it) } }
+                                S("Softness", op.neg.filterUvWidth, 2f, 40f, "%.0f nm", op.neg.filterUvAmount > 0.001f) { set { copy(filterUvWidth = it) } }
+                                Head("INFRARED FILTER", op.neg.filterIrAmount > 0.001f) { set { copy(filterIrAmount = if (it) 1f else 0f) } }
+                                S("Amount", op.neg.filterIrAmount, 0f, 1f, "%.2f") { set { copy(filterIrAmount = it) } }
+                                S("Cut point", op.neg.filterIrNm, 600f, 760f, "%.0f nm", op.neg.filterIrAmount > 0.001f) { set { copy(filterIrNm = it) } }
+                                S("Softness", op.neg.filterIrWidth, 2f, 60f, "%.0f nm", op.neg.filterIrAmount > 0.001f) { set { copy(filterIrWidth = it) } }
                                 Note("Film sees a little beyond human sight at both ends, so without these filters reds and blues overshoot. This is the same correction the engine's author uses to tame the filming stage.")
                                 Head("METERING", null) {}
-                                Chips(listOf("center_weighted", "average", "median", "partial", "matrix", "multi_zone", "highlight_weighted"), recipe.meteringMethod, CHIP_NAMES) { set { copy(meteringMethod = it) } }
+                                Chips(listOf("center_weighted", "average", "median", "partial", "matrix", "multi_zone", "highlight_weighted"), op.neg.meteringMethod, CHIP_NAMES) { set { copy(meteringMethod = it) } }
                                 Note("How the engine judges the scene's brightness when setting its own exposure.")
-                                S("Lens blur", recipe.lensBlurUm, 0f, 40f, "%.0f µm") { set { copy(lensBlurUm = it) } }
+                                S("Lens blur", op.neg.lensBlurUm, 0f, 40f, "%.0f µm") { set { copy(lensBlurUm = it) } }
                                 Head("FILM FORMAT", null) {}
-                                Chips(FILM_FORMATS.keys.toList(), recipe.filmFormatMm.toInt().toString(), FILM_FORMATS) { set { copy(filmFormatMm = it.toFloat()) } }
+                                Chips(FILM_FORMATS.keys.toList(), op.neg.filmFormatMm.toInt().toString(), FILM_FORMATS) { set { copy(filmFormatMm = it.toFloat()) } }
                                 Note("Format changes how big grain and halation look, because they are measured in micrometres on the negative. Super 35 is the cinema frame.")
-                                Toggle("85B filter", recipe.lens85b) { set { copy(lens85b = it) } }
+                                Toggle("85B filter", op.neg.lens85b) { set { copy(lens85b = it) } }
                                 Note("The orange filter cinematographers use to shoot tungsten film (Vision3 200T, 500T) in daylight.")
                             }
                             "enlarger" -> {
-                                if (Develop.isSlideFilm(recipe.film)) {
-                                    Note("${Develop.FILMS.firstOrNull { it.first == recipe.film }?.second ?: recipe.film} is a slide film: there is no print stage, so it is scanned directly as a positive. The controls below do nothing for it.")
+                                if (Develop.isSlideFilm(op.neg.film)) {
+                                    Note("${Develop.FILMS.firstOrNull { it.first == op.neg.film }?.second ?: op.neg.film} is a slide film: there is no print stage, so it is scanned directly as a positive. The controls below do nothing for it.")
                                 } else {
-                                    val target = Develop.targetPrint(recipe.film)
+                                    val target = Develop.targetPrint(op.neg.film)
                                     if (target != null) Note("This film was made for " + (Develop.PAPERS.firstOrNull { it.first == target }?.second ?: target) + ", which is selected automatically. Change it if you want a different pairing.")
                                 }
                                 Head("PAPER / PRINT STOCK", null) {}
                                 Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                     Develop.PAPERS.forEach { (id, label) ->
-                                        val on = id == recipe.paper
+                                        val on = id == op.neg.paper
                                         Text(label, color = if (on) LatentColors.AmberInk else LatentColors.Text, fontSize = 10.sp,
                                             modifier = Modifier.clip(RoundedCornerShape(999.dp)).accentFill(on, LatentColors.Surface)
                                                 .combinedClickable(onClick = { Haptics.tick(context); set { copy(paper = id) } }).padding(horizontal = 10.dp, vertical = 5.dp))
                                     }
                                 }
-                                Toggle("Compensate for film exposure", recipe.printExposureCompensation) { set { copy(printExposureCompensation = it) } }
-                                Toggle("Normalise print exposure", recipe.normalizePrintExposure) { set { copy(normalizePrintExposure = it) } }
+                                Toggle("Compensate for film exposure", op.neg.printExposureCompensation) { set { copy(printExposureCompensation = it) } }
+                                Toggle("Normalise print exposure", op.neg.normalizePrintExposure) { set { copy(normalizePrintExposure = it) } }
                                 Note("With these on — as a darkroom printer would work — the enlarger cancels out changes in film exposure, so the Exposure slider changes contrast and colour rather than brightness. Turn the first off to let film exposure change brightness directly.")
-                                S("Print exposure (higher = darker print)", recipe.printExposure, com.celestial.latent.develop.PRINT_EXPOSURE_MIN, com.celestial.latent.develop.PRINT_EXPOSURE_MAX, "%.2f×") { set { copy(printExposure = it) } }
-                                S("Paper contrast", recipe.printContrast, 0.6f, 1.6f, "%.2f") { set { copy(printContrast = it) } }
-                                S("Yellow filter", recipe.yFilterShift, -20f, 20f, "%+.0f") { set { copy(yFilterShift = it) } }
-                                S("Magenta filter", recipe.mFilterShift, -20f, 20f, "%+.0f") { set { copy(mFilterShift = it) } }
-                                S("Yellow neutral", recipe.yFilterNeutral, 0f, 120f, "%.0f") { set { copy(yFilterNeutral = it) } }
-                                S("Magenta neutral", recipe.mFilterNeutral, 0f, 120f, "%.0f") { set { copy(mFilterNeutral = it) } }
-                                S("Pre-flash", recipe.preflash, 0f, 0.5f, "%.2f") { set { copy(preflash = it) } }
-                                S("Enlarger lens blur", recipe.enlargerLensBlur, 0f, 3f, "%.2f") { set { copy(enlargerLensBlur = it) } }
+                                S("Print exposure (higher = darker print)", op.neg.printExposure, com.celestial.latent.develop.PRINT_EXPOSURE_MIN, com.celestial.latent.develop.PRINT_EXPOSURE_MAX, "%.2f×") { set { copy(printExposure = it) } }
+                                S("Paper contrast", op.neg.printContrast, 0.6f, 1.6f, "%.2f") { set { copy(printContrast = it) } }
+                                S("Yellow filter", op.neg.yFilterShift, -20f, 20f, "%+.0f") { set { copy(yFilterShift = it) } }
+                                S("Magenta filter", op.neg.mFilterShift, -20f, 20f, "%+.0f") { set { copy(mFilterShift = it) } }
+                                S("Yellow neutral", op.neg.yFilterNeutral, 0f, 120f, "%.0f") { set { copy(yFilterNeutral = it) } }
+                                S("Magenta neutral", op.neg.mFilterNeutral, 0f, 120f, "%.0f") { set { copy(mFilterNeutral = it) } }
+                                S("Pre-flash", op.neg.preflash, 0f, 0.5f, "%.2f") { set { copy(preflash = it) } }
+                                S("Enlarger lens blur", op.neg.enlargerLensBlur, 0f, 3f, "%.2f") { set { copy(enlargerLensBlur = it) } }
                             }
                             "scanner" -> {
-                                Toggle("Scan the negative (skip the print)", recipe.scanFilm) { set { copy(scanFilm = it) } }
-                                S("Sharpening amount", recipe.unsharpAmount, 0f, 2f, "%.2f") { set { copy(unsharpAmount = it) } }
-                                S("Sharpening radius", recipe.unsharpRadius, 0.2f, 2f, "%.2f") { set { copy(unsharpRadius = it) } }
-                                S("Scanner lens blur", recipe.scannerLensBlur, 0f, 3f, "%.2f") { set { copy(scannerLensBlur = it) } }
-                                Toggle("White correction", recipe.whiteCorrection) { set { copy(whiteCorrection = it) } }
-                                S("White level", recipe.scannerWhiteLevel, 0.8f, 1f, "%.3f", recipe.whiteCorrection) { set { copy(scannerWhiteLevel = it) } }
-                                Toggle("Black correction", recipe.blackCorrection) { set { copy(blackCorrection = it) } }
-                                S("Black level", recipe.scannerBlackLevel, 0f, 0.1f, "%.3f", recipe.blackCorrection) { set { copy(scannerBlackLevel = it) } }
+                                Toggle("Scan the negative (skip the print)", op.neg.scanFilm) { set { copy(scanFilm = it) } }
+                                S("Sharpening amount", op.neg.unsharpAmount, 0f, 2f, "%.2f") { set { copy(unsharpAmount = it) } }
+                                S("Sharpening radius", op.neg.unsharpRadius, 0.2f, 2f, "%.2f") { set { copy(unsharpRadius = it) } }
+                                S("Scanner lens blur", op.neg.scannerLensBlur, 0f, 3f, "%.2f") { set { copy(scannerLensBlur = it) } }
+                                Toggle("White correction", op.neg.whiteCorrection) { set { copy(whiteCorrection = it) } }
+                                S("White level", op.neg.scannerWhiteLevel, 0.8f, 1f, "%.3f", op.neg.whiteCorrection) { set { copy(scannerWhiteLevel = it) } }
+                                Toggle("Black correction", op.neg.blackCorrection) { set { copy(blackCorrection = it) } }
+                                S("Black level", op.neg.scannerBlackLevel, 0f, 0.1f, "%.3f", op.neg.blackCorrection) { set { copy(scannerBlackLevel = it) } }
                             }
                             "glare" -> {
-                                Head("GLARE", recipe.glare) { set { copy(glare = it) } }
-                                S("Amount", recipe.glarePercent, 0f, 0.2f, "%.3f", recipe.glare) { set { copy(glarePercent = it) } }
-                                S("Roughness", recipe.glareRoughness, 0f, 1f, "%.2f", recipe.glare) { set { copy(glareRoughness = it) } }
-                                S("Blur", recipe.glareBlur, 0f, 2f, "%.2f", recipe.glare) { set { copy(glareBlur = it) } }
+                                Head("GLARE", op.neg.glare) { set { copy(glare = it) } }
+                                S("Amount", op.neg.glarePercent, 0f, 0.2f, "%.3f", op.neg.glare) { set { copy(glarePercent = it) } }
+                                S("Roughness", op.neg.glareRoughness, 0f, 1f, "%.2f", op.neg.glare) { set { copy(glareRoughness = it) } }
+                                S("Blur", op.neg.glareBlur, 0f, 2f, "%.2f", op.neg.glare) { set { copy(glareBlur = it) } }
                             }
                             "colour" -> {
                                 Head("OUTPUT COLOUR SPACE", null) {}
-                                Chips(listOf("SRGB", "DISPLAY_P3", "REC709_24", "ADOBE_RGB", "PROPHOTO", "REC2020", "ACES2065_1", "LINEAR_SRGB"), recipe.outputColorSpace, CHIP_NAMES) { set { copy(outputColorSpace = it) } }
+                                Chips(listOf("SRGB", "DISPLAY_P3", "REC709_24", "ADOBE_RGB", "PROPHOTO", "REC2020", "ACES2065_1", "LINEAR_SRGB"), recipe.outputColorSpace, CHIP_NAMES) { setAll { copy(outputColorSpace = it) } }
                                 Note(when (recipe.outputColorSpace) {
                                     "SRGB" -> "Sharing, the web, messaging. The safe default."
                                     "DISPLAY_P3" -> "What this phone's screen actually shows, so the file looks its best on the device. Converted by Celestial Darkroom from the engine's sRGB."
@@ -1639,20 +1692,20 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                                 if (recipe.outputColorSpace in listOf("PROPHOTO", "REC2020", "ACES2065_1", "LINEAR_SRGB"))
                                     Note("A JPEG has only 256 steps per channel. Spread over a space this wide it can band in skies and skin.")
                                 Head("OUT-OF-GAMUT COLOURS", null) {}
-                                Chips(listOf("LEGACY_CLIP", "OFF", "ACES_RGC", "OKLCH", "OKLRAB"), recipe.outputGamutCompress, CHIP_NAMES) { set { copy(outputGamutCompress = it) } }
+                                Chips(listOf("LEGACY_CLIP", "OFF", "ACES_RGC", "OKLCH", "OKLRAB"), recipe.outputGamutCompress, CHIP_NAMES) { setAll { copy(outputGamutCompress = it) } }
                                 Head("FILMING-SIDE COMPRESSION", null) {}
-                                Chips(listOf("OFF", "XY"), recipe.inputGamutCompress, CHIP_NAMES) { set { copy(inputGamutCompress = it) } }
+                                Chips(listOf("OFF", "XY"), op.neg.inputGamutCompress, CHIP_NAMES) { set { copy(inputGamutCompress = it) } }
                                 Note("Gamut compression decides what happens to colours too saturated for the output space — clipping them, or folding them in gently.")
                             }
                             "engine" -> {
                                 Head("RGB → SPECTRUM", null) {}
-                                Chips(listOf("HANATOS2025", "MALLETT2019"), recipe.rgbToRaw, CHIP_NAMES) { set { copy(rgbToRaw = it) } }
+                                Chips(listOf("HANATOS2025", "MALLETT2019"), op.neg.rgbToRaw, CHIP_NAMES) { set { copy(rgbToRaw = it) } }
                                 Note("How a colour is turned into a light spectrum before the film sees it. Hanatos 2025 is the engine's default and still the current method.")
-                                Toggle("Adaptation window", recipe.hanatosWindow) { set { copy(hanatosWindow = it) } }
-                                Toggle("Adaptation surface", recipe.hanatosSurface) { set { copy(hanatosSurface = it) } }
-                                S("Spectral blur", recipe.spectralBlur, 0f, 20f, "%.1f") { set { copy(spectralBlur = it) } }
-                                S("Preview size", recipe.previewMaxSize.toFloat(), 300f, 1600f, "%.0f px") { set { copy(previewMaxSize = Math.round(it)) } }
-                                Toggle("GPU preview (experimental)", recipe.gpuPreview) { set { copy(gpuPreview = it) } }
+                                Toggle("Adaptation window", op.neg.hanatosWindow) { set { copy(hanatosWindow = it) } }
+                                Toggle("Adaptation surface", op.neg.hanatosSurface) { set { copy(hanatosSurface = it) } }
+                                S("Spectral blur", op.neg.spectralBlur, 0f, 20f, "%.1f") { set { copy(spectralBlur = it) } }
+                                S("Preview size", recipe.previewMaxSize.toFloat(), 300f, 1600f, "%.0f px") { setAll { copy(previewMaxSize = Math.round(it)) } }
+                                Toggle("GPU preview (experimental)", recipe.gpuPreview) { setAll { copy(gpuPreview = it) } }
                                 Note("GPU is for previews only, by the engine's design: its maths is not identical across chip makers, so exports stay on the CPU. It covers the scan stage, and self-checks against the CPU on this device before it is used.")
                                 Text(if (asks.gpuTest.isEmpty()) "Measure GPU vs CPU" else asks.gpuTest, color = LatentColors.AmberInk, fontSize = 11.sp,
                                     modifier = Modifier.clip(RoundedCornerShape(999.dp)).accentFill().combinedClickable(onClick = {
@@ -1942,7 +1995,9 @@ private fun inPlace(part: Bitmap, under: Bitmap?, fraction: Float): Bitmap {
  * failed to load on the phone (VerifyError: "wide register ... Long (Low Half)"); #276's crash in a
  * DisposableEffect was most likely the same overflow. Keep new darkroom state in holders like this.
  */
-private class OpenState {
+private class OpenState(start: Recipe) {
+    /** 109c: the whole photo's recipe (ALL): the darkroom's `recipe`. */
+    val all = mutableStateOf(start)
     /** Everything the whole preview showing was developed from (previewInputs), or null. */
     var previewFrom by mutableStateOf<String?>(null)
     /** Opened on its own saved print: nothing developed here yet. */
@@ -1955,6 +2010,29 @@ private class OpenState {
     var openedAs by mutableStateOf<String?>(null)
     /** 109a: the photo's layers (PRINT → LAYERS): here, not a `remember` of its own, to keep DarkroomScreen's locals down. */
     var layers by mutableStateOf<List<com.celestial.latent.develop.Layer>>(emptyList())
+    /** 109c: where NEGATIVE's changes go: a layer's id, or null for the whole photo (ALL). */
+    var applyTo by mutableStateOf<Int?>(null)
+    /** 109c: the look NEGATIVE shows as picked: the chosen layer's, else the photo's [photoLook]. */
+    /**
+     * 109c: what NEGATIVE shows and changes: the layer chosen under APPLY TO (its own settings, or the
+     * whole photo's until it has some), or the whole photo. A change on ALL reaches the layers too
+     * ([setAll]); on a layer, only that layer.
+     */
+    var neg: Recipe
+        get() = layers.firstOrNull { it.id == applyTo }?.let { it.recipe ?: all.value } ?: all.value
+        set(r) {
+            val l = layers.firstOrNull { it.id == applyTo }
+            if (l == null) { setAll(r); return }
+            val whole = all.value
+            layers = layers.map { if (it.id == l.id) com.celestial.latent.develop.LayerRecipes.tidy(it.copy(recipe = r), whole) else it }
+        }
+    /** 109c: the whole photo's recipe becomes [r]; layers with their own settings follow the change. */
+    fun setAll(r: Recipe) {
+        val old = all.value
+        all.value = r
+        layers = com.celestial.latent.develop.LayerRecipes.followAll(layers, old, r)
+    }
+    fun negLook(photoLook: String): String = layers.firstOrNull { it.id == applyTo }?.let { it.lookId ?: photoLook } ?: photoLook
 }
 
 /**

@@ -34,6 +34,14 @@ data class Layer(
     val colour: Float = 1f,
     /** The eye on the card: a hidden layer keeps everything but changes nothing. */
     val visible: Boolean = true,
+    /**
+     * 109c: the layer's own NEGATIVE settings, the whole recipe, made when something is changed in
+     * NEGATIVE with this layer chosen under APPLY TO; null = the whole photo's (ALL). The photo is
+     * developed once more with it and blended in by the layer's area ([LayerLooks]).
+     */
+    val recipe: Recipe? = null,
+    /** 109c: the look last picked for this layer in NEGATIVE (a preset id, or "stock:<name>"); null = the photo's. */
+    val lookId: String? = null,
 ) {
     /** Does it change the light at all? */
     val acts: Boolean get() = visible && (abs(ev) > 1e-4f || abs(warmth) > 1e-4f || abs(colour - 1f) > 1e-4f) && !mask.isBlank
@@ -53,6 +61,13 @@ data class Layer(
         var h = 1
         for (s in mask.stops) h = 31 * h + (if (s.isFinite()) s * 1000f else 0f).roundToInt()
         return "$id:${mask.width}x${mask.height}:$h:$ev:$warmth:$colour:$visible"
+    }
+
+    /** 109c: the area's hash only, for [LayerLooks.key] (its own settings do not care about the light changes). */
+    internal fun maskKey(): String {
+        var h = 1
+        for (s in mask.stops) h = 31 * h + (if (s.isFinite()) s * 1000f else 0f).roundToInt()
+        return "${mask.width}x${mask.height}:$h"
     }
 }
 
@@ -314,7 +329,9 @@ object Layers {
             val w = o.getInt("w"); val h = o.getInt("h"); val m = o.getJSONArray("mask")
             require(m.length() == w * h)
             Layer(o.getInt("id"), o.getString("name"), o.getInt("tint"), ExposureMap(w, h, FloatArray(w * h) { m.getDouble(it).toFloat() }),
-                o.getDouble("ev").toFloat(), o.getDouble("warmth").toFloat(), o.getDouble("colour").toFloat(), o.getBoolean("visible"))
+                o.getDouble("ev").toFloat(), o.getDouble("warmth").toFloat(), o.getDouble("colour").toFloat(), o.getBoolean("visible"),
+                o.optJSONObject("recipe")?.let { Recipe.fromJson(it.toString()) },
+                o.optString("lookId").takeIf { it.isNotEmpty() })
         }
     }.onFailure { Log.w("Latent", "layers: could not read this photo's layers: ${it.message}") }.getOrDefault(emptyList())
 
@@ -326,6 +343,8 @@ object Layers {
             for (l in layers) arr.put(JSONObject().apply {
                 put("id", l.id); put("name", l.name); put("tint", l.tint); put("w", l.mask.width); put("h", l.mask.height)
                 put("ev", l.ev.toDouble()); put("warmth", l.warmth.toDouble()); put("colour", l.colour.toDouble()); put("visible", l.visible)
+                if (l.recipe != null) put("recipe", JSONObject(l.recipe.toJson()))
+                if (l.lookId != null) put("lookId", l.lookId)
                 put("mask", JSONArray().apply { for (s in l.mask.stops) put((s * 1000f).roundToInt() / 1000.0) })
             })
             val tmp = File(f.parentFile, f.name + ".tmp")

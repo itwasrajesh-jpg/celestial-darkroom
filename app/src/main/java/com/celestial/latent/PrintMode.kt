@@ -468,7 +468,7 @@ internal class PrintCache {
         fun painted(mk: Masks, fogLook: FogLook, raysLook: RaysLook, extraLights: List<RaysLook>, depthSplit: ExposureMap?, depthReady: Boolean) =
             listOf(
                 mapKey(mk.dodge), mapKey(mk.soften), mapKey(mk.fog), mapKey(mk.rays), mk.raysOn, mapKey(mk.saturation),
-                mk.lith.hashCode(), mapKey(mk.wet), mk.wetLook.hashCode(), mapKey(mk.rain), com.celestial.latent.develop.Layers.key(mk.layers),
+                mk.lith.hashCode(), mapKey(mk.wet), mk.wetLook.hashCode(), mapKey(mk.rain), com.celestial.latent.develop.Layers.key(mk.layers), com.celestial.latent.develop.LayerLooks.key(mk.layers),
                 fogLook.hashCode(), raysLook.hashCode(), extraLights.hashCode(), mapKey(depthSplit), depthReady,
             ).joinToString("|")
     }
@@ -2760,13 +2760,16 @@ internal fun PaintStep(
             // Tabs: one group of controls at a time, in a space of fixed height, so the photo
             // keeps its size whichever tab is open (a long tab scrolls within the space).
             Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 4.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.Top) {
-            Row(horizontalArrangement = Arrangement.spacedBy(18.dp), verticalAlignment = Alignment.Top) {
-                if (tabsLead != null) Text("$tabsLead  ·", color = LatentColors.Amber, fontSize = 11.sp, letterSpacing = 1.5.sp, maxLines = 1)
+            // 109c: the lead (LAYERS' layer name) takes only the room the tabs and undo leave, shortened with "…"
+            // (three tabs, a long name and Xiaomi's larger text did not fit and BRUSH broke onto three lines)
+            Row(Modifier.weight(1f).padding(end = 12.dp), horizontalArrangement = Arrangement.spacedBy(if (tabsLead != null) 14.dp else 18.dp), verticalAlignment = Alignment.Top) {
+                if (tabsLead != null) Text("$tabsLead  ·", color = LatentColors.Amber, fontSize = 11.sp, letterSpacing = 1.5.sp, maxLines = 1,
+                    softWrap = false, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
                 (tabs.mapIndexed { i, t -> if (i == 0 && layerOn && layer?.tabName != null) layer.tabName else t.first } + "BRUSH").forEachIndexed { i, name ->
                     val on = i == tab
                     val bar by animateFloatAsState(if (on) 1f else 0f, tween(220), label = "tab")
                     Column(Modifier.pointerInput(i) { detectTapGestures(onTap = { if (i != tab) Haptics.tick(context); tab = i }) }) {
-                        Text(name, color = if (on) LatentColors.Amber else LatentColors.TextDim, fontSize = 11.sp, letterSpacing = 1.5.sp)
+                        Text(name, color = if (on) LatentColors.Amber else LatentColors.TextDim, fontSize = 11.sp, letterSpacing = 1.5.sp, maxLines = 1, softWrap = false)
                         Box(Modifier.padding(top = 3.dp).height(2.dp).width((28 * bar).dp).clip(RoundedCornerShape(1.dp)).accentFill())
                     }
                 }

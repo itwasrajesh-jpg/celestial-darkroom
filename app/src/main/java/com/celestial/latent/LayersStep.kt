@@ -220,7 +220,7 @@ internal fun LayersStep(
             tabs = if (sel == null) null else listOf("ADJUST" to @Composable { AdjustRows(sel) { f -> edit(sel.id, f) } }),
             tabsLead = sel?.name,
             // the other layers' settings re-develop the print; this one's painting does so itself
-            refreshKey = layers.joinToString(";") { if (it.id == sel?.id) "${it.ev}:${it.warmth}:${it.colour}:${it.visible}" else it.key() },
+            refreshKey = layers.joinToString(";") { (if (it.id == sel?.id) "${it.ev}:${it.warmth}:${it.colour}:${it.visible}" else it.key()) + ":" + (it.recipe?.toJson()?.hashCode() ?: 0) },
             lookState = sel?.let { Triple(it.ev, it.warmth, it.colour) },
             onRestoreLook = { st ->
                 @Suppress("UNCHECKED_CAST") val t = st as? Triple<Float, Float, Float>
@@ -326,7 +326,9 @@ private fun LayerCard(l: Layer, chosen: Boolean, picture: Bitmap?, tint: Bitmap?
             Text(l.name, color = if (chosen) LatentColors.Amber else LatentColors.Text, fontSize = 11.sp, letterSpacing = 0.8.sp,
                 maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(start = 5.dp))
         }
-        val parts = l.summary().split(" · ")
+        // 109c: a layer with NEGATIVE settings of its own says so first: its look, or just that it has its own
+        val parts = (listOfNotNull(if (l.recipe == null) null else l.lookId?.let { com.celestial.latent.develop.LayerLooks.name(context, it) } ?: "OWN NEGATIVE") +
+            l.summary().split(" · ").filter { l.recipe == null || it != "no changes" })
         Text(if (!l.visible) "hidden" else parts.getOrElse(0) { "" }, color = LatentColors.TextDim, fontSize = 9.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         if (l.visible && parts.size > 1) Text(parts.drop(1).joinToString(" · "), color = LatentColors.TextDim, fontSize = 9.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
