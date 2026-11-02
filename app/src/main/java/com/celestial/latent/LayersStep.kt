@@ -28,6 +28,7 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -95,10 +96,10 @@ private class LayersUi {
 /** The brush paints a layer's area in: 0 outside … 1 inside, its colour on the photo. */
 private fun layerSpec(l: Layer?): PaintSpec = PaintSpec(
     hint = if (l == null) "No layers yet. Tap + layer, or paint on the photo to start one."
-        else "Editing ${l.name}. Its area is tinted. ADJUST changes its light; BRUSH adds or takes away.",
+        else "${l.name}: tinted area. ADJUST its light, BRUSH its area.",
     minusLabel = "take away", plusLabel = "add",
     min = 0f, max = 1f, overlayFull = 1f,
-    tintPlus = Color(l?.let { Layers.COLOURS[it.tint % Layers.COLOURS.size] } ?: Layers.COLOURS[0]), tintMinus = Color(0xFF9A9A9A),
+    tintPlus = Color(l?.let { Layers.COLOURS[Math.floorMod(it.tint, Layers.COLOURS.size)] } ?: Layers.COLOURS[0]), tintMinus = Color(0xFF9A9A9A),
     // a layer is in or out: "medium" fills it in two passes, "strong" at once
     passScale = 1f,
     status = { m, _ ->
@@ -139,7 +140,7 @@ private fun gridOf(b: Bitmap, w: Int, h: Int): FloatArray {
 
 /** A layer's area as a tinted picture the size of its mask, for the photo and the card's thumbnail. */
 private fun tintOf(l: Layer, alpha: Float = 0.55f): Bitmap {
-    val m = l.mask; val c = Layers.COLOURS[l.tint % Layers.COLOURS.size] and 0xFFFFFF
+    val m = l.mask; val c = Layers.COLOURS[Math.floorMod(l.tint, Layers.COLOURS.size)] and 0xFFFFFF
     val px = IntArray(m.width * m.height) { k -> ((m.stops[k].coerceIn(0f, 1f) * alpha * 255f).toInt() shl 24) or c }
     return Bitmap.createBitmap(px, m.width, m.height, Bitmap.Config.ARGB_8888)
 }
@@ -228,9 +229,9 @@ internal fun LayersStep(
             renderBefore = { r, e -> render(r, e, emptyList()) },
             depthRanks = depthRanks, selectPicture = selectPicture,
             depthSplit = depthSplit, onDepthSplit = onDepthSplit, depthFix = depthFix, onDepthFix = onDepthFix,
-            selectUse = (if (sel == null || ui.newBySelect) "make it a layer" else "use for ${sel.name}") to { m: ExposureMap ->
-                if (sel == null || ui.newBySelect) { ui.newBySelect = false; add("SUBJECT", m) } else edit(sel.id) { it.copy(mask = m) }
-            },
+            // 109b: for the open layer the selection goes through the brush (commit), so it shows and undoes
+            selectUse = if (sel == null || ui.newBySelect) Pair<String, ((ExposureMap) -> Unit)?>("make it a layer") { m -> ui.newBySelect = false; add("SUBJECT", m) }
+                        else Pair<String, ((ExposureMap) -> Unit)?>("use for ${sel.name}", null),
             openSelectKey = ui.selectTick,
             startShowMask = sel != null && !ui.showAll,
             onBefore = { b -> ui.picture = b },
@@ -289,14 +290,18 @@ private fun LayersStrip(
 @Composable
 private fun LayerCard(l: Layer, chosen: Boolean, picture: Bitmap?, tint: Bitmap?, onTap: () -> Unit, onEye: () -> Unit, onHold: () -> Unit) {
     val context = LocalContext.current
-    val colour = Color(Layers.COLOURS[l.tint % Layers.COLOURS.size])
+    val colour = Color(Layers.COLOURS[Math.floorMod(l.tint, Layers.COLOURS.size)])
+    // 109b: the gesture is set up once per card, so it must read the newest actions (an old onEye
+    // would hand back the list of layers as it was when the card first appeared)
+    val tapNow by rememberUpdatedState(onTap); val eyeNow by rememberUpdatedState(onEye); val holdNow by rememberUpdatedState(onHold)
     val shape = RoundedCornerShape(10.dp)
     Column(Modifier.width(92.dp).height(120.dp).clip(shape).background(LatentColors.Surface)
         .border(if (chosen) 1.5.dp else 0.dp, if (chosen) LatentColors.Amber else Color.Transparent, shape)
         .pointerInput(l.id) {
             detectTapGestures(
-                onTap = { p -> Haptics.tick(context); if (p.x > size.width - 30.dp.toPx() && p.y < 26.dp.toPx()) onEye() else onTap() },
-                onLongPress = { Haptics.tick(context); onHold() })
+                // the eye's touch area is the thumbnail's top-right 40 × 36 dp (109b: was 30 × 26)
+                onTap = { p -> Haptics.tick(context); if (p.x > size.width - 40.dp.toPx() && p.y < 36.dp.toPx()) eyeNow() else tapNow() },
+                onLongPress = { Haptics.tick(context); holdNow() })
         }.padding(5.dp)) {
         Canvas(Modifier.fillMaxWidth().height(56.dp).clip(RoundedCornerShape(6.dp))) {
             drawRect(Color(0xFF242424))
@@ -417,7 +422,11 @@ private fun AdjustRows(l: Layer, onLayer: ((Layer) -> Layer) -> Unit) {
  */
 @Composable
 private fun LayerSlider(name: String, value: Float, min: Float, max: Float, neutral: Float, label: (Float) -> String, onDone: (Float) -> Unit) {
-    var live by remember(value) { mutableStateOf(value) }
+    // 109b: one state for the slider's life, following [value] when it changes from outside (undo, reset),
+    // and the newest onDone: the gestures are set up once and would otherwise keep the first ones
+    var live by remember { mutableStateOf(value) }
+    LaunchedEffect(value) { live = value }
+    val done by rememberUpdatedState(onDone)
     fun snap(v: Float) = v.coerceIn(min, max).let { if (abs(it - neutral) < (max - min) * 0.03f) neutral else (it * 100f).roundToInt() / 100f }
     Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 4.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -427,11 +436,11 @@ private fun LayerSlider(name: String, value: Float, min: Float, max: Float, neut
         val fill = LatentColors.SliderFill; val track = LatentColors.SliderTrackDim; val thumb = LatentColors.Amber
         Canvas(Modifier.fillMaxWidth().height(28.dp)
             .pointerInput(min, max) {
-                detectTapGestures(onDoubleTap = { live = neutral; onDone(neutral) },
-                    onTap = { p -> live = snap(min + (max - min) * (p.x / size.width)); onDone(live) })
+                detectTapGestures(onDoubleTap = { live = neutral; done(neutral) },
+                    onTap = { p -> live = snap(min + (max - min) * (p.x / size.width)); done(live) })
             }
             .pointerInput(min, max) {
-                detectHorizontalDragGestures(onDragEnd = { onDone(live) }, onDragCancel = { onDone(live) }) { ch, _ ->
+                detectHorizontalDragGestures(onDragEnd = { done(live) }, onDragCancel = { done(live) }) { ch, _ ->
                     live = snap(min + (max - min) * (ch.position.x / size.width)); ch.consume()
                 }
             }) {
