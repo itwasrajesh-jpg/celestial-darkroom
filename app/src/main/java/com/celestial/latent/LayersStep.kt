@@ -109,6 +109,12 @@ private fun layerSpec(l: Layer?): PaintSpec = PaintSpec(
 )
 
 /** A new layer's name, kept apart from the others' (SKY, SKY 2 …). Names stay short: they head a card and the tabs. */
+/** 109d/109e: the opposite's name: NOT SKY, and the opposite of NOT SKY is SKY again. */
+private fun oppositeName(name: String): String {
+    if (name.startsWith("NOT ")) return name.removePrefix("NOT ").ifBlank { "LAYER" }
+    return "NOT $name".take(16)
+}
+
 private fun freeName(base: String, layers: List<Layer>): String {
     if (layers.none { it.name == base }) return base
     var n = 2
@@ -394,6 +400,8 @@ private fun CardMenu(l: Layer, layers: List<Layer>, ui: LayersUi, onLayers: (Lis
             PrintChip("rename", on = false) { ui.renaming = l.name }
             PrintChip("copy", on = false, enabled = layers.size < Layers.MAX) {
                 val c = l.copy(id = (layers.maxOfOrNull { it.id } ?: 0) + 1, name = freeName(l.name, layers), tint = freeTint(layers), mask = l.mask.copy())
+                    // 109e: a copy keeps the NEGATIVE settings only while there is room for one more layer with its own
+                    .let { if (it.recipe != null && layers.count { o -> o.recipe != null } >= com.celestial.latent.develop.LayerLooks.MAX_EXTRA) it.copy(recipe = null, lookId = null) else it }
                 onLayers(layers.toMutableList().also { it.add(i + 1, c) }); ui.selected = c.id; ui.menuFor = null
             }
             PrintChip("‹", on = false, enabled = i > 0) { onLayers(layers.toMutableList().also { java.util.Collections.swap(it, i, i - 1) }) }
@@ -405,7 +413,7 @@ private fun CardMenu(l: Layer, layers: List<Layer>, ui: LayersUi, onLayers: (Lis
           // edge is exactly the complement of this one's: the two meet with no gap and no overlap.
           Row(Modifier.padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
             PrintChip("opposite", on = false, enabled = layers.size < Layers.MAX) {
-                val c = Layer((layers.maxOfOrNull { it.id } ?: 0) + 1, freeName(("NOT " + l.name).take(12), layers), freeTint(layers), Layers.inverted(l.mask))
+                val c = Layer((layers.maxOfOrNull { it.id } ?: 0) + 1, freeName(oppositeName(l.name), layers), freeTint(layers), Layers.inverted(l.mask))
                 onLayers(layers.toMutableList().also { it.add(i + 1, c) }); ui.selected = c.id; ui.menuFor = null; ui.showAll = false
             }
             PrintChip("invert", on = false) {

@@ -164,7 +164,8 @@ object Layers {
 
     /** The guided filter's straight-line fit (a, b) of a mask against the small guide. */
     internal fun fit(I: FloatArray, mask: ExposureMap, sw: Int, sh: Int): Pair<FloatArray, FloatArray> {
-        val p = FloatArray(sw * sh) { k -> mask.sample(((k % sw) + 0.5f) / sw, ((k / sw) + 0.5f) / sh).coerceIn(0f, 1f) }
+        // 109e: a broken cell counts as outside (as [inverted] counts it), so it never spreads through the sums
+        val p = FloatArray(sw * sh) { k -> mask.sample(((k % sw) + 0.5f) / sw, ((k / sw) + 0.5f) / sh).let { v -> if (v.isNaN()) 0f else v.coerceIn(0f, 1f) } }
         val r = max(1, (REACH * max(sw, sh)).roundToInt())
         val mI = boxMean(I, sw, sh, r); val mp = boxMean(p, sw, sh, r)
         val Ip = boxMean(FloatArray(sw * sh) { I[it] * p[it] }, sw, sh, r)

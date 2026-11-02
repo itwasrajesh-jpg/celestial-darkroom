@@ -917,7 +917,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                             Recipes.save(context, clean, op.neg); asks.saveName = clean; asks.naming = null
                             // 109c: saved from a layer, it is that layer's look now
                             val chosen = op.applyTo
-                            if (op.layers.any { it.id == chosen }) op.layers = op.layers.map { if (it.id == chosen) it.copy(lookId = "stock:" + clean) else it }
+                            if (op.layers.any { it.id == chosen }) op.layers = op.layers.map { if (it.id == chosen) it.copy(recipe = it.recipe ?: recipe, lookId = "stock:" + clean) else it }
                             else lookId = "stock:" + clean
                             asks.recipesRevision++
                             asks.stampFor = clean; developScope.launch { lookRow.animateScrollTo(0) }
@@ -1087,7 +1087,8 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                     onRaysLook = { raysLook = it },
                     extraLights = extraLights,
                     onExtraLights = { extraLights = it },
-                    layers = op.layers, onLayers = { op.layers = it },
+                    // 109e: a deleted layer is no longer where NEGATIVE points (a new layer may take its number)
+                    layers = op.layers, onLayers = { op.layers = it; if (it.none { l -> l.id == op.applyTo }) op.applyTo = null },
                     depthSplit = depthSplit, onDepthSplit = { depthSplit = it },
                     depthFix = depthFix, onDepthFix = { depthFix = it },
                     renderWithMasks = { r, edge, mk -> renderStill(r, edge, mk) },
@@ -1269,7 +1270,9 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                         modifier = Modifier.align(Alignment.BottomStart).padding(12.dp).clip(RoundedCornerShape(999.dp))
                             .background(Color(0x66000000)).padding(horizontal = 10.dp, vertical = 4.dp))
                     if (!rendering && !fullRunning && preview == null) Text(if (status.isEmpty()) "no preview yet" else status, color = OnPhoto.Text, fontSize = 11.sp, modifier = Modifier.align(Alignment.Center).padding(24.dp))
-                    Text(if (comparing) "ORIGINAL" else (Develop.FILMS.firstOrNull { it.first == recipe.film }?.second?.uppercase() ?: recipe.film),
+                    // 109e: with a layer chosen under APPLY TO, its name and its film
+                    Text(if (comparing) "ORIGINAL" else ((op.layers.firstOrNull { it.id == op.applyTo }?.let { it.name + " · " } ?: "") +
+                        (Develop.FILMS.firstOrNull { it.first == op.neg.film }?.second?.uppercase() ?: op.neg.film)),
                         color = Color(0xE6FFFFFF), fontSize = 10.sp, letterSpacing = 1.5.sp,
                         modifier = Modifier.align(Alignment.TopStart).padding(12.dp))
                 }
@@ -1400,6 +1403,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                                             if (canRename && Recipes.rename(context, held, clean)) {
                                                 Haptics.tick(context); cameraFollows(clean)
                                                 if (lookId == "stock:" + held) lookId = "stock:" + clean
+                                                op.layers = op.layers.map { if (it.lookId == "stock:" + held) it.copy(lookId = "stock:" + clean) else it }
                                                 asks.managing = null; asks.recipesRevision++
                                             }
                                         }).padding(horizontal = 12.dp, vertical = 7.dp))
@@ -1417,6 +1421,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                                             .combinedClickable(onClick = {
                                                 Haptics.tick(context); Recipes.delete(context, held); cameraFollows(null)
                                                 if (lookId == "stock:" + held) lookId = ""
+                                                op.layers = op.layers.map { if (it.lookId == "stock:" + held) it.copy(lookId = null) else it }
                                                 asks.managing = null; asks.deleteAsk = false; asks.recipesRevision++
                                             }).padding(horizontal = 12.dp, vertical = 7.dp))
                                     Text("Keep it", color = LatentColors.Text, fontSize = 11.sp,
@@ -1479,19 +1484,22 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                                             .combinedClickable(onClick = {
                                                 if (!asks.levelling && !rendering) {
                                                     Haptics.tick(context); asks.levelling = true
+                                                    // 109e: what it levels is fixed as it is tapped; the answer lands only if that is still what NEGATIVE points at
+                                                    val target = op.applyTo; val start = op.neg
                                                     Thread {
                                                         try {
                                                         val s0 = src
-                                                        val suggested = if (s0 != null) com.celestial.latent.develop.LookBaker.gainForSource(context, op.neg, s0) else 0f
+                                                        val suggested = if (s0 != null) com.celestial.latent.develop.LookBaker.gainForSource(context, start, s0) else 0f
                                                         if (suggested > 0.01f) {
                                                             val ev = (Math.log(suggested.toDouble()) / Math.log(2.0)).toFloat()
                                                             // Applied where brightness actually lives on this route.
-                                                            op.neg = if (onPrintRoute)
+                                                            val levelled = if (onPrintRoute)
                                                                 // "Needs more light" means a brighter print,
                                                                 // which means a SHORTER enlarger exposure.
-                                                                op.neg.copy(printExposure = (op.neg.printExposure / suggested).coerceIn(com.celestial.latent.develop.PRINT_EXPOSURE_MIN, com.celestial.latent.develop.PRINT_EXPOSURE_MAX))
+                                                                start.copy(printExposure = (start.printExposure / suggested).coerceIn(com.celestial.latent.develop.PRINT_EXPOSURE_MIN, com.celestial.latent.develop.PRINT_EXPOSURE_MAX))
                                                             else
-                                                                op.neg.copy(exposureEv = (op.neg.exposureEv + ev).coerceIn(-3f, 3f))
+                                                                start.copy(exposureEv = (start.exposureEv + ev).coerceIn(-3f, 3f))
+                                                            developScope.launch { if (op.applyTo == target && op.neg == start) op.neg = levelled }
                                                         }
                                                         } finally { asks.levelling = false }
                                                     }.start()
@@ -1677,6 +1685,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                                 S("Blur", op.neg.glareBlur, 0f, 2f, "%.2f", op.neg.glare) { set { copy(glareBlur = it) } }
                             }
                             "colour" -> {
+                                if (op.applyTo != null) Note("With a layer chosen: the output colour space and out-of-gamut colours belong to the whole file, so they change every layer. Filming-side compression is the layer's own.")
                                 Head("OUTPUT COLOUR SPACE", null) {}
                                 Chips(listOf("SRGB", "DISPLAY_P3", "REC709_24", "ADOBE_RGB", "PROPHOTO", "REC2020", "ACES2065_1", "LINEAR_SRGB"), recipe.outputColorSpace, CHIP_NAMES) { setAll { copy(outputColorSpace = it) } }
                                 Note(when (recipe.outputColorSpace) {
@@ -1704,6 +1713,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                                 Toggle("Adaptation window", op.neg.hanatosWindow) { set { copy(hanatosWindow = it) } }
                                 Toggle("Adaptation surface", op.neg.hanatosSurface) { set { copy(hanatosSurface = it) } }
                                 S("Spectral blur", op.neg.spectralBlur, 0f, 20f, "%.1f") { set { copy(spectralBlur = it) } }
+                                if (op.applyTo != null) Note("Preview size and GPU preview belong to the whole darkroom, not a layer.")
                                 S("Preview size", recipe.previewMaxSize.toFloat(), 300f, 1600f, "%.0f px") { setAll { copy(previewMaxSize = Math.round(it)) } }
                                 Toggle("GPU preview (experimental)", recipe.gpuPreview) { setAll { copy(gpuPreview = it) } }
                                 Note("GPU is for previews only, by the engine's design: its maths is not identical across chip makers, so exports stay on the CPU. It covers the scan stage, and self-checks against the CPU on this device before it is used.")

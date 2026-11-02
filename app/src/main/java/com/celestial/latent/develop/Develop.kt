@@ -281,12 +281,20 @@ object Develop {
      * decodes) so they never push a photo's decode out; one per set, three at most, the oldest freed.
      */
     private object LayerCopies {
-        private const val MAX = LayerLooks.MAX_EXTRA
+        // 109e: twice the layers: the quick pass prepares without the diffusion filters, so each layer
+        // can need two copies, and with one slot each the quick and full passes kept pushing out each other's
+        private const val MAX = 2 * LayerLooks.MAX_EXTRA
         private val entries = LinkedHashMap<String, Source>()
         @Synchronized fun get(key: String): Source? = entries.remove(key)?.also { entries[key] = it }
         @Synchronized fun put(key: String, src: Source) {
-            entries[key] = src
+            // 109e: a copy left half-prepared (a failure) is replaced: freed, not leaked
+            entries.put(key, src)?.takeIf { it !== src }?.close()
             while (entries.size > MAX) entries.remove(entries.keys.first())?.close()
+        }
+        /** 109e: copies of other photos are freed once a new photo's are made (nothing else ever frees them). */
+        @Synchronized fun keepOnly(photoKey: String) {
+            val gone = entries.keys.filter { !it.startsWith("$photoKey|") }
+            for (k in gone) entries.remove(k)?.close()
         }
     }
 
@@ -406,6 +414,7 @@ object Develop {
         ).joinToString("|")
         val working = if (forLayer) {
             val copyKey = "$key|layer|$prep"
+            LayerCopies.keepOnly(key)
             LayerCopies.get(copyKey)?.takeIf { it.preparedFor == prep && it.width == fw && it.height == fh }?.let { return it }
             pristine.blankSized(fw, fh).also { LayerCopies.put(copyKey, it) }
         } else {
