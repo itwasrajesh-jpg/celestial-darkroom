@@ -345,7 +345,7 @@ private fun StepIndicator(active: Int, available: Int, onSelect: (Int) -> Unit, 
     // Four names in one row, measured: "TEST STRIP" and 16 dp gaps would need ~394 dp of the ~357
     // a phone has, and the last would be crushed. "STRIP", 12 dp gaps and 1.2 sp letter spacing
     // come to about 331 dp.
-    val steps = listOf("STRIP", "COLOUR", "DODGE & BURN", "SOFTEN", "FOG", "LIGHT", "WET", "LITH", "AGE", "DEVELOP")
+    val steps = listOf("STRIP", "COLOUR", "LAYERS", "DODGE & BURN", "SOFTEN", "FOG", "LIGHT", "WET", "LITH", "AGE", "DEVELOP")
     // Eight names since 64a's WET (seven since 63a's LITH), measured on this phone as it draws them (61d): spread across the width when they fit;
     // a phone that draws everything larger (the Xiaomi) gets them up to 20% smaller so all six still
     // show; only beyond that does the row scroll, and then it keeps the chosen step in view.
@@ -401,6 +401,8 @@ data class Masks(
     val wetLook: com.celestial.latent.develop.WetLook = com.celestial.latent.develop.WetLook(),
     /** Where the rain on the window is wiped away or added (65a, WET → WINDOW); how is wetLook.window. */
     val rain: ExposureMap? = null,
+    /** 109a: the photo's layers (LAYERS step), each part's own exposure, warmth and colour, before the film. */
+    val layers: List<com.celestial.latent.develop.Layer> = emptyList(),
 )
 
 /** The height of a painting step's tabbed controls: the same for every tab, so the photo never moves. */
@@ -466,7 +468,7 @@ internal class PrintCache {
         fun painted(mk: Masks, fogLook: FogLook, raysLook: RaysLook, extraLights: List<RaysLook>, depthSplit: ExposureMap?, depthReady: Boolean) =
             listOf(
                 mapKey(mk.dodge), mapKey(mk.soften), mapKey(mk.fog), mapKey(mk.rays), mk.raysOn, mapKey(mk.saturation),
-                mk.lith.hashCode(), mapKey(mk.wet), mk.wetLook.hashCode(), mapKey(mk.rain),
+                mk.lith.hashCode(), mapKey(mk.wet), mk.wetLook.hashCode(), mapKey(mk.rain), com.celestial.latent.develop.Layers.key(mk.layers),
                 fogLook.hashCode(), raysLook.hashCode(), extraLights.hashCode(), mapKey(depthSplit), depthReady,
             ).joinToString("|")
     }
@@ -547,6 +549,9 @@ fun PrintPanel(
     depthSplit: ExposureMap? = null, onDepthSplit: (ExposureMap?) -> Unit = {},
     depthFix: ExposureMap? = null, onDepthFix: (ExposureMap?) -> Unit = {},
     onExtraLights: (List<RaysLook>) -> Unit = {},
+    /** 109a: the photo's layers (the LAYERS step), kept by the darkroom with the photo. */
+    layers: List<com.celestial.latent.develop.Layer> = emptyList(),
+    onLayers: (List<com.celestial.latent.develop.Layer>) -> Unit = {},
     renderWithMasks: (Recipe, Int, Masks) -> Pair<Bitmap, String>?,
     /** 107a: everything painted on a print with these masks, as the darkroom would develop it now. */
     paintedKey: (Masks) -> String,
@@ -579,7 +584,7 @@ fun PrintPanel(
     // the selected light as it is being dragged; follows the saved one whenever that changes
     var raysLive by remember(sel) { mutableStateOf(sel.withDefaults()) }
     // all four masks as they stand; each painting step swaps in its own, as it is being painted
-    val all = Masks(exposureMap, softenMap, fogMap, raysMap, raysOn = true, saturation = saturationMap, lith = lithLook, wet = wetMap, wetLook = wetLook, rain = rainMap)
+    val all = Masks(exposureMap, softenMap, fogMap, raysMap, raysOn = true, saturation = saturationMap, lith = lithLook, wet = wetMap, wetLook = wetLook, rain = rainMap, layers = layers)
     // the photo's depth, for painting by distance in every step — worked out once, when first wanted
     // (107a: kept with the photo, so it is worked out once while the photo is open, not once per visit)
     val depthRanks = remember { memory.depthRanks ?: (if (com.celestial.latent.develop.Depth.isReady(context)) DepthRanks() else null).also { memory.depthRanks = it } }
@@ -615,7 +620,7 @@ fun PrintPanel(
 
     Column(modifier.background(LatentColors.Background)) {
         StepIndicator(
-            active = step, available = 10,
+            active = step, available = 11,
             onSelect = { i -> if (i != step) Haptics.tick(context); step = i },
             modifier = Modifier.padding(horizontal = 18.dp).padding(top = 6.dp),
         )
@@ -636,9 +641,9 @@ fun PrintPanel(
             when (s) {
                 0 -> TestStripStep(recipe, render, onExposure, Modifier.fillMaxSize(), onGrain = onGrain, onGrainAmount = onGrainAmount)
                 // 97a: the print aged, as kept on a fridge, in an album, a wallet or a shoebox
-                8 -> AgeStep(recipe, ageLook, onAgeLook, ageSeed, ageWords, render = { r, e -> renderMasked(r, e, all) }, modifier = Modifier.fillMaxSize())
+                9 -> AgeStep(recipe, ageLook, onAgeLook, ageSeed, ageWords, render = { r, e -> renderMasked(r, e, all) }, modifier = Modifier.fillMaxSize())
                 // 75b: finish the print without leaving PRINT
-                9 -> BoxWithConstraints(Modifier.fillMaxSize()) {
+                10 -> BoxWithConstraints(Modifier.fillMaxSize()) {
                     val split = LocalPanelSplit.current
                     val room = constraints.maxHeight
                     Column(Modifier.fillMaxSize()) {
@@ -660,8 +665,14 @@ fun PrintPanel(
                     }
                 }
                 1 -> RingAroundStep(recipe, render, { r, e -> cache.peek(r, e, paintedKey(stripMasks)) }, onFilters, Modifier.fillMaxSize())
+                // 109a: LAYERS — parts of the photo, each with its own exposure, warmth and colour (LayersStep.kt)
+                2 -> LayersStep(recipe, layers, onLayers, depthRanks = depthRanks, selectPicture = selectPicture,
+                    depthSplit = depthSplit, onDepthSplit = onDepthSplit, depthFix = depthFix, onDepthFix = onDepthFix,
+                    render = { r, e, ls -> renderMasked(r, e, all.copy(layers = ls)) },
+                    renderRegion = renderRegionWithMasks?.let { f -> { r, e, ls, reg -> f(r, e, all.copy(layers = ls), reg) } },
+                    modifier = Modifier.fillMaxSize())
                 // each painting step shows the print with BOTH masks: it is one print
-                2 -> {
+                3 -> {
                     // the film's colour as the step began, for "hold: before" (the slider is part of this step)
                     val dirBefore = remember { recipe.dir to recipe.dirAmount }
                     PaintStep(DODGE_BURN_SPEC, recipe, exposureMap, onExposureMap, depthRanks = depthRanks, selectPicture = selectPicture,
@@ -684,7 +695,7 @@ fun PrintPanel(
                         refreshKey = recipe.dir to recipe.dirAmount,
                         renderBefore = { r, e -> renderMasked(r.copy(dir = dirBefore.first, dirAmount = dirBefore.second), e, all.copy(dodge = null, saturation = null)) })
                 }
-                3 -> PaintStep(SOFTEN_SPEC, recipe, softenMap, onSoftenMap, depthRanks = depthRanks, selectPicture = selectPicture,
+                4 -> PaintStep(SOFTEN_SPEC, recipe, softenMap, onSoftenMap, depthRanks = depthRanks, selectPicture = selectPicture,
                     depthSide = sideSoften, onDepthSide = { sideSoften = it }, depthSplit = depthSplit, onDepthSplit = onDepthSplit, depthFix = depthFix, onDepthFix = onDepthFix,
                     renderWith = { r, e, m -> renderMasked(r, e, all.copy(soften = m)) },
                     // begin from what is on screen: softened everywhere if diffusion is on, else sharp
@@ -692,7 +703,7 @@ fun PrintPanel(
                     modifier = Modifier.fillMaxSize(),
                     onPaintPlus = onDiffusionOn,
                     renderRegion = renderRegionWithMasks?.let { f -> { r, e, m, reg -> f(r, e, all.copy(soften = m), reg) } })
-                4 -> PaintStep(FOG_SPEC, recipe, fogMap, onFogMap, depthRanks = depthRanks, selectPicture = selectPicture,
+                5 -> PaintStep(FOG_SPEC, recipe, fogMap, onFogMap, depthRanks = depthRanks, selectPicture = selectPicture,
                     depthSide = sideFog, onDepthSide = { sideFog = it }, depthSplit = depthSplit, onDepthSplit = onDepthSplit, depthFix = depthFix, onDepthFix = onDepthFix,
                     renderWith = { r, e, m -> renderMasked(r, e, all.copy(fog = m)) },
                     stepStartMap = { a -> ExposureMap.blank(a) },
@@ -714,7 +725,7 @@ fun PrintPanel(
                     // a new colour or amount re-develops the print — it used to wait for the next stroke
                     refreshKey = fogLook)
                 // wet ground (64a): painted like the fog, with its own shine; it needs the depth for the ground's shape
-                6 -> PaintStep(WET_SPEC, recipe, wetMap, onWetMap, depthRanks = depthRanks, selectPicture = selectPicture,
+                7 -> PaintStep(WET_SPEC, recipe, wetMap, onWetMap, depthRanks = depthRanks, selectPicture = selectPicture,
                     depthSide = sideWet, onDepthSide = { sideWet = it }, depthSplit = depthSplit, onDepthSplit = onDepthSplit, depthFix = depthFix, onDepthFix = onDepthFix,
                     renderWith = { r, e, m -> renderMasked(r, e, all.copy(wet = m)) },
                     stepStartMap = { a -> ExposureMap.blank(a) },
@@ -736,7 +747,7 @@ fun PrintPanel(
                     lookState = wetLook, onRestoreLook = { onWetLook(it as com.celestial.latent.develop.WetLook) },
                     renderBefore = { r, e -> renderMasked(r, e, all.copy(wet = null, rain = null, wetLook = wetLook.copy(window = com.celestial.latent.develop.RainLook()))) },
                     refreshKey = wetLook)
-                7 -> LithStep(recipe, lithLook, onLithLook, render = { r, e, l -> renderMasked(r, e, all.copy(lith = l)) }, modifier = Modifier.fillMaxSize())
+                8 -> LithStep(recipe, lithLook, onLithLook, render = { r, e, l -> renderMasked(r, e, all.copy(lith = l)) }, modifier = Modifier.fillMaxSize())
                 else -> PaintStep(RAYS_SPEC, recipe, raysMap, onRaysMap, depthRanks = depthRanks, selectPicture = selectPicture,
                     // the light itself lands only on its chosen side; the bar sets the selected light's
                     depthSide = sel.side.roundToInt(), onDepthSide = { setSel(sel.copy(side = it.toFloat())) }, depthSplit = depthSplit, onDepthSplit = onDepthSplit, depthFix = depthFix, onDepthFix = onDepthFix,
@@ -1060,7 +1071,7 @@ private val DODGE_TINT = Color(0xFFF4ECE0)  // where it was held back: pale
  * min/max: the range a place can hold (stops of light; or 0..1 of diffusion).
  * overlayFull: the value at which the guide overlay is at its strongest.
  */
-private class PaintSpec(
+internal class PaintSpec(
     val hint: String,
     /** The mask's untouched value: the tint shows how far painting has moved it from this (0 for most; 1 for light). */
     val neutral: Float = 0f,
@@ -1131,7 +1142,7 @@ private val SATURATION_SPEC = PaintSpec(
  * two chips over the controls. Each keeps its own strokes; the step keeps one history and one
  * "before" for both. [render] develops the print with both: the step's own map, then this one.
  */
-private class PaintLayer(
+internal class PaintLayer(
     /** The two chips: the step's own painting, then this one. */
     val chips: Pair<String, String>,
     val spec: PaintSpec,
@@ -1749,7 +1760,7 @@ private fun FogColourRow(look: FogLook, picking: Boolean, onLook: (FogLook) -> U
  * onPaintPlus: called when a stroke adds (burns, or softens).
  */
 @Composable
-private fun PaintStep(
+internal fun PaintStep(
     stepSpec: PaintSpec,
     recipe: Recipe,
     map: ExposureMap?,
@@ -1800,6 +1811,18 @@ private fun PaintStep(
     room: Float = 0f,
     /** A second painting in the step, chosen by chips (62a: DODGE & BURN's saturation). */
     layer: PaintLayer? = null,
+    /** 109a: shown first under the photo, above the tabs (LAYERS: the strip of layer cards). */
+    strip: (@Composable () -> Unit)? = null,
+    /** 109a: tap to select's one answer, instead of "set foreground / background": its chip's name and what it does with the selection. */
+    selectUse: Pair<String, (ExposureMap) -> Unit>? = null,
+    /** 109a: raised to open tap to select from outside (LAYERS' "+ layer → Tap to select"). */
+    openSelectKey: Int = 0,
+    /** 109a: a name before the tabs, in amber (LAYERS: the chosen layer, "SKY · ADJUST BRUSH"). */
+    tabsLead: String? = null,
+    /** 109a: the brush's area tinted from the start (LAYERS: the chosen layer's area shows). */
+    startShowMask: Boolean = false,
+    /** 109a: the print without this step's effect, each time it is made (LAYERS reads the sky and the depth from it). */
+    onBefore: ((Bitmap) -> Unit)? = null,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -1849,7 +1872,7 @@ private fun PaintStep(
     var line by remember { mutableStateOf<Pair<Pair<Float, Float>, Pair<Float, Float>>?>(null) }
     var brush by remember { mutableStateOf(1) }
     var strength by remember { mutableStateOf(1) }
-    var showMask by remember { mutableStateOf(false) }
+    var showMask by remember { mutableStateOf(startShowMask) }
     var stroke by remember { mutableStateOf<FloatArray?>(null) }
     var strokeTick by remember { mutableStateOf(0) }
     val overlay = remember { Animatable(0f) }
@@ -2002,7 +2025,7 @@ private fun PaintStep(
         if (developing || (before != null && beforeFor == recipe)) return@LaunchedEffect
         val r = current
         val b = withContext(Dispatchers.Default) { beforeNow(r, DB_EDGE) }
-        if (isActive && b != null) { before = b; beforeFor = r }
+        if (isActive && b != null) { before = b; beforeFor = r; onBefore?.invoke(b) }
     }
 
     /** Stamp the brush into the current stroke at a picture position (0..1 across and down). */
@@ -2157,6 +2180,22 @@ private fun PaintStep(
             android.util.Log.i("Latent", "select: set as the " + (if (foreground) "foreground" else "background") + " (${(sel.average() * 100).roundToInt()}% foreground)")
         }
     }
+    /** 109a: the selection on the mask's grid, handed to [selectUse] (LAYERS: it becomes the layer). */
+    fun useSelection() {
+        val a = selAnswer ?: return; val use = selectUse ?: return
+        val m = a.masks[selLevel.coerceIn(0, a.masks.size - 1)]
+        val dims = ExposureMap.blank(aspect); val w = dims.width; val h = dims.height
+        if (a.width != w * SEL_SHOW || a.height != h * SEL_SHOW) return
+        val sel = FloatArray(w * h) { k ->
+            val i = k % w; val j = k / w; var sum = 0f
+            for (dj in 0 until SEL_SHOW) for (di in 0 until SEL_SHOW) sum += m[(j * SEL_SHOW + dj) * a.width + i * SEL_SHOW + di]
+            sum / (SEL_SHOW * SEL_SHOW)
+        }
+        closeSelect()
+        android.util.Log.i("Latent", "select: used for ${use.first} (${(sel.average() * 100).roundToInt()}% of the picture)")
+        use.second(ExposureMap(w, h, sel))
+    }
+    LaunchedEffect(openSelectKey) { if (openSelectKey > 0) openSelect() }
     val selectTapNow by rememberUpdatedState<(Float, Float) -> Unit>({ u, v -> selectTap(u, v) })
     androidx.activity.compose.BackHandler(enabled = selOpen) { closeSelect() }
     // the two model files, picked from the phone instead of downloaded (checked the same way)
@@ -2417,8 +2456,12 @@ private fun PaintStep(
                 Chip("cancel", on = false) { closeSelect() }
                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     val can = selAnswer != null && !selBusy
-                    Chip("set foreground", on = can, enabled = can) { applySelection(true) }
-                    Chip("set background", on = can, enabled = can) { applySelection(false) }
+                    val use = selectUse
+                    if (use != null) Chip(use.first, on = can, enabled = can) { useSelection() }
+                    else {
+                        Chip("set foreground", on = can, enabled = can) { applySelection(true) }
+                        Chip("set background", on = can, enabled = can) { applySelection(false) }
+                    }
                 }
             }
         }
@@ -2443,6 +2486,7 @@ private fun PaintStep(
                         selBusy -> "Outlining…"
                         selAnswer == null -> "Tap an object to select it. Two fingers zoom."
                         selTakeAway -> "Tap what should not be selected."
+                        selectUse != null -> "Same spot again: another size. Other spots add. Then ${selectUse.first}."
                         else -> "Same spot again: another size. Other spots add. Then set it as foreground or background."
                     }
                     gradientTool -> spec.gradientHint
@@ -2647,6 +2691,7 @@ private fun PaintStep(
         Column(if (split != null) Modifier.fillMaxWidth().height(with(LocalDensity.current) { (roomPx * (1f - split.share)).toDp() }) else Modifier.fillMaxWidth()) {
         if (split != null) PanelHandle(split, roomPx)
         Column(Modifier.fillMaxWidth().then(if (split != null) Modifier.weight(1f) else Modifier.heightIn(max = lowerMax)).verticalScroll(rememberScrollState())) {
+        if (!selOpen) strip?.invoke()
         // Two paintings in this step (62a): which one the brush paints, as the fog's tabs look.
         // Widths: LIGHT ~40 dp + 18 + SATURATION ~92 dp, and "painting" words on the right.
         if (!selOpen && layer != null) Row(
@@ -2712,7 +2757,8 @@ private fun PaintStep(
             // Tabs: one group of controls at a time, in a space of fixed height, so the photo
             // keeps its size whichever tab is open (a long tab scrolls within the space).
             Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 4.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.Top) {
-            Row(horizontalArrangement = Arrangement.spacedBy(18.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(18.dp), verticalAlignment = Alignment.Top) {
+                if (tabsLead != null) Text("$tabsLead  ·", color = LatentColors.Amber, fontSize = 11.sp, letterSpacing = 1.5.sp, maxLines = 1)
                 (tabs.mapIndexed { i, t -> if (i == 0 && layerOn && layer?.tabName != null) layer.tabName else t.first } + "BRUSH").forEachIndexed { i, name ->
                     val on = i == tab
                     val bar by animateFloatAsState(if (on) 1f else 0f, tween(220), label = "tab")
@@ -2803,7 +2849,7 @@ internal class DepthRanks {
 }
 
 /** The AIR tab's wish (60a), carried out by the fog step's PaintStep, which has the print, its shape and the depth. */
-private class AirAsk {
+internal class AirAsk {
     var want by mutableStateOf<AirWant?>(null)
     var busy by mutableStateOf(false)
     var status by mutableStateOf("")
@@ -2820,7 +2866,7 @@ private class AirAsk {
         want = AirWant(kind, scale, keepForeground, (want?.serial ?: 0) + 1, template)
     }
 }
-private data class AirWant(val kind: String, val scale: Float, val keepForeground: Boolean, val serial: Int, val template: FogLook? = null)
+internal data class AirWant(val kind: String, val scale: Float, val keepForeground: Boolean, val serial: Int, val template: FogLook? = null)
 
 /**
  * The fog's AIR tab (60a): one tap fills the whole fog from the depth as a real atmosphere —
@@ -2910,6 +2956,10 @@ internal class SelectPicture {
 }
 
 /** A small rounded choice, amber when on. */
+/** 109a: the painting steps' chip, for LAYERS (its own file); CollageScreen has a private Chip of its own. */
+@Composable
+internal fun PrintChip(label: String, on: Boolean, enabled: Boolean = true, onTap: () -> Unit) = Chip(label, on, enabled, onTap)
+
 @Composable
 private fun Chip(label: String, on: Boolean, enabled: Boolean = true, onTap: () -> Unit) {
     val context = LocalContext.current

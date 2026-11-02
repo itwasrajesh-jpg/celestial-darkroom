@@ -192,7 +192,10 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
     // ...and where the rain on the window is wiped away or added (65a, WET → WINDOW; how is in wetLook.window)
     var rainMap by remember { mutableStateOf(ExposureMaps.load(context, source, ExposureMaps.RAIN)) }
     /** Everything painted on this photo, as one value, so no render can mix them up. */
-    fun currentMasks() = Masks(exposureMap, softenMap, fogMap, raysMap, raysOn = true, saturation = saturationMap, lith = lithLook, wet = wetMap, wetLook = wetLook, rain = rainMap)
+    // 107b/107d: the darkroom's opening state, kept in one object (see OpenState: one local, not five);
+    // 109a: it also holds the photo's layers (PRINT → LAYERS), read once as the photo opens
+    val op = remember { OpenState().also { it.layers = com.celestial.latent.develop.Layers.load(context, source) } }
+    fun currentMasks() = Masks(exposureMap, softenMap, fogMap, raysMap, raysOn = true, saturation = saturationMap, lith = lithLook, wet = wetMap, wetLook = wetLook, rain = rainMap, layers = op.layers)
     // A double exposure: this frame was made onto an earlier one, and is shown and printed as both.
     val pairFirst = remember { if (isRaw) com.celestial.latent.develop.DoubleExposure.firstFor(context, source) else null }
     // How the photo is framed — turned, flipped, straightened. The photo's own, like its masks.
@@ -246,14 +249,14 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
     fun previewInputs(): String {
         fun m(x: ExposureMap?) = x?.let { "${it.width}x${it.height}:${it.stops.contentHashCode()}" } ?: "-"
         return listOf(recipe, framing.key(), m(softenMap), m(fogMap), fogLook, m(raysMap), raysLook, extraLights, m(depthSplit),
-            m(wetMap), wetLook, m(rainMap), m(exposureMap), m(saturationMap), lithLook, hdrView, fileFormat, hdrGlow,
+            m(wetMap), wetLook, m(rainMap), m(exposureMap), m(saturationMap), lithLook, hdrView, fileFormat, hdrGlow, com.celestial.latent.develop.Layers.key(op.layers),
             com.celestial.latent.develop.Depth.isReady(context)).joinToString("|")
     }
-    // 107b/107d: the darkroom's opening state, kept in one object (see OpenState: one local, not five)
-    val op = remember { OpenState() }
     // 107b: everything the saved print is made from (DevelopedFrom), as the darkroom has it now
     fun developedKey() = com.celestial.latent.develop.DevelopedFrom.keyOf(recipe, framing, exposureMap, softenMap, fogMap, fogLook,
         raysMap, raysLook, extraLights, depthSplit, saturationMap, lithLook, wetMap, wetLook, rainMap)
+        // 109a: with layers, they are part of what it is made from (without, the key is as before, so saved prints still match)
+        .let { k -> if (com.celestial.latent.develop.Layers.wanted(op.layers)) k + "|layers:" + com.celestial.latent.develop.Layers.key(op.layers) else k }
     // 107b: opened on its own saved print, which is the picture until something changes: nothing
     // has been developed here yet, so a change develops even before the photo is prepared
     // 107b: painted, lit or framed but the film never touched still makes it the photo's own look:
@@ -328,7 +331,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                 // The working buffer belongs to the cache and is reused; never closed here.
                 src = Develop.openCached(context, source, isRaw, decodeEdge(DECODE_EDGE, framing), r, iso, softenMask = softenMap, pairFirst = pairFirst, framing = framing,
                     fogMask = fogMap, fogLook = fogLook, raysMask = raysMap, raysLook = raysLook, extraLights = extraLights, depthSplit = depthSplit,
-                    wetMask = wetMap, wetLook = wetLook, rainMask = rainMap) { m -> status = m }
+                    wetMask = wetMap, wetLook = wetLook, rainMask = rainMap, layers = op.layers) { m -> status = m }
                 // 102a: where the held LIGHT tone acts, read once per hold from the whole prepared picture
                 if (reachStale && lightHold != null) { reach = com.celestial.latent.develop.SceneLight.reachOf(src!!, r); reachStale = false }
                 // Middle of the frame first on the quick pass: it appears sooner and reads the same.
@@ -395,7 +398,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                 fogMask = masks.fog, fogLook = fl,
                 raysMask = masks.rays, raysLook = if (masks.raysOn) rl else com.celestial.latent.develop.RaysLook(),
                 extraLights = if (masks.raysOn) el else emptyList(), depthSplit = ds,
-                wetMask = masks.wet, wetLook = masks.wetLook, rainMask = masks.rain) { }
+                wetMask = masks.wet, wetLook = masks.wetLook, rainMask = masks.rain, layers = masks.layers) { }
             val (bytes, _) = Develop.render(context, s0, r.copy(previewMaxSize = edge), preview = true, exposureMap = masks.dodge, softenMask = masks.soften,
                 saturationMap = masks.saturation, lith = masks.lith)
             BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.let { it to painted }
@@ -417,7 +420,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                 fogMask = masks.fog, fogLook = fogLook,
                 raysMask = masks.rays, raysLook = if (masks.raysOn) raysLook else com.celestial.latent.develop.RaysLook(),
                 extraLights = if (masks.raysOn) extraLights else emptyList(), depthSplit = depthSplit,
-                wetMask = masks.wet, wetLook = masks.wetLook, rainMask = masks.rain) { }
+                wetMask = masks.wet, wetLook = masks.wetLook, rainMask = masks.rain, layers = masks.layers) { }
             Develop.cropRegion(whole, region).use { part ->
                 val (bytes, _) = Develop.render(context, part, r.copy(previewMaxSize = edge), preview = true,
                     exposureMap = masks.dodge?.crop(region), softenMask = masks.soften, saturationMap = masks.saturation?.crop(region),
@@ -462,7 +465,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                 if (src == null) src = Develop.openCached(context, source, isRaw, decodeEdge(DECODE_EDGE, framing), r, Develop.isoOf(context, source),
                     softenMask = softenMap, pairFirst = pairFirst, framing = framing,
                     fogMask = fogMap, fogLook = fogLook, raysMask = raysMap, raysLook = raysLook, extraLights = extraLights, depthSplit = depthSplit,
-                    wetMask = wetMap, wetLook = wetLook, rainMask = rainMap) { }
+                    wetMask = wetMap, wetLook = wetLook, rainMask = rainMap, layers = op.layers) { }
                 android.util.Log.i("Latent", "darkroom: opened on its print; prepared quietly")
             } catch (t: Throwable) { android.util.Log.w("Latent", "darkroom: quiet prepare failed: ${t.message}") }
             finally { q.engineLane.release() }
@@ -507,6 +510,13 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
         delay(400)
         val m = exposureMap
         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { ExposureMaps.save(context, source, m) }
+        if (!printing && (src != null || op.onPrint) && previewInputs() != op.previewFrom) render(fast = false)
+    }
+    // 109a: the layers, kept with the photo; a change re-develops the preview.
+    LaunchedEffect(op.layers) {
+        delay(400)
+        val ls = op.layers
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { com.celestial.latent.develop.Layers.save(context, source, ls) }
         if (!printing && (src != null || op.onPrint) && previewInputs() != op.previewFrom) render(fast = false)
     }
     // The same for the painted saturation (62a).
@@ -588,6 +598,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
             rainMap = rainMap?.let { com.celestial.latent.develop.Framings.carry(it, framing, next, srcAspect) }
             depthSplit = depthSplit?.let { com.celestial.latent.develop.Framings.carry(it, framing, next, srcAspect) }
             depthFix = depthFix?.let { com.celestial.latent.develop.Framings.carry(it, framing, next, srcAspect) }
+            op.layers = op.layers.map { it.copy(mask = com.celestial.latent.develop.Framings.carry(it.mask, framing, next, srcAspect)) }
         }
         framing = next
         com.celestial.latent.develop.Framings.save(context, source, next)
@@ -704,7 +715,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
             context, source, isRaw, recipe, upscale = printSize, exposureMap = exposureMap, softenMask = softenMap, pairFirst = pairFirst, framing = framing,
             fogMask = fogMap, fogLook = fogLook, raysMask = raysMap, raysLook = raysLook, extraLights = extraLights, depthSplit = depthSplit,
             saturationMap = saturationMap, lith = lithLook, wetMask = wetMap, wetLook = wetLook, rainMask = rainMap,
-            hdrGlow = hdrGlow, format = fileFormat, age = ageLook,
+            hdrGlow = hdrGlow, format = fileFormat, age = ageLook, layers = op.layers,
             onStatus = { m ->
                 status = "full size: $m"
                 if (m.startsWith("failed")) fullError =
@@ -882,7 +893,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
         }
         // "Clear effects" asks first, in place (no dialog: those misplace on the Xiaomi)
         if (asks.clearAsk) {
-            Text("Clear this photo's fog, lights, god rays, wet ground, rain, lith print, dodge & burn and painted colour? The film settings and the framing stay.",
+            Text("Clear this photo's layers, fog, lights, god rays, wet ground, rain, lith print, dodge & burn and painted colour? The film settings and the framing stay.",
                 color = LatentColors.Text, fontSize = 11.sp, modifier = Modifier.padding(top = 4.dp))
             Row(Modifier.padding(vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("Clear", color = LatentColors.AmberInk, fontSize = 11.sp,
@@ -895,6 +906,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                             exposureMap = none.exposure; softenMap = none.soften; fogMap = none.fog; fogLook = none.fogLook
                             raysMap = none.rays; raysLook = none.raysLook; extraLights = none.extraLights
                             saturationMap = none.saturation; lithLook = none.lith; wetMap = none.wet; wetLook = none.wetLook; rainMap = none.rain
+                            asks.layersBeforeClear = op.layers; op.layers = emptyList()
                             asks.clearAsk = false
                         }).padding(horizontal = 12.dp, vertical = 7.dp))
                 Text("Keep them", color = LatentColors.Text, fontSize = 11.sp,
@@ -914,6 +926,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                             exposureMap = undoClear.exposure; softenMap = undoClear.soften; fogMap = undoClear.fog; fogLook = undoClear.fogLook
                             raysMap = undoClear.rays; raysLook = undoClear.raysLook; extraLights = undoClear.extraLights
                             saturationMap = undoClear.saturation; lithLook = undoClear.lith; wetMap = undoClear.wet; wetLook = undoClear.wetLook; rainMap = undoClear.rain
+                            op.layers = asks.layersBeforeClear
                             asks.beforeClear = null
                         }).padding(horizontal = 12.dp, vertical = 7.dp))
             }
@@ -1024,6 +1037,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                     onRaysLook = { raysLook = it },
                     extraLights = extraLights,
                     onExtraLights = { extraLights = it },
+                    layers = op.layers, onLayers = { op.layers = it },
                     depthSplit = depthSplit, onDepthSplit = { depthSplit = it },
                     depthFix = depthFix, onDepthFix = { depthFix = it },
                     renderWithMasks = { r, edge, mk -> renderStill(r, edge, mk) },
@@ -1939,6 +1953,8 @@ private class OpenState {
     var edited = false
     /** The photo's developed-from key as it opened (DevelopedFrom). */
     var openedAs by mutableStateOf<String?>(null)
+    /** 109a: the photo's layers (PRINT → LAYERS): here, not a `remember` of its own, to keep DarkroomScreen's locals down. */
+    var layers by mutableStateOf<List<com.celestial.latent.develop.Layer>>(emptyList())
 }
 
 /**
@@ -1961,6 +1977,8 @@ private class DarkroomAsks {
     var gpuTest by mutableStateOf("")
     var levelling by mutableStateOf(false)
     var stampFor by mutableStateOf<String?>(null)
+    /** 109a: the layers as they were before "Clear effects", for its Undo. */
+    var layersBeforeClear: List<com.celestial.latent.develop.Layer> = emptyList()
     /** 108a: the looks row has been scrolled to the photo's look once, on opening (not again as you pick). */
     var lookShown = false
 }

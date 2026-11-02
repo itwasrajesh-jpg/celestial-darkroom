@@ -338,6 +338,7 @@ object Develop {
                    extraLights: List<RaysLook> = emptyList(),
                    depthSplit: ExposureMap? = null,
                    wetMask: ExposureMap? = null, wetLook: WetLook = WetLook(), rainMask: ExposureMap? = null,
+                   layers: List<Layer>? = null,
                    log: (String) -> Unit = {}): Source {
         // The pristine decode is cached on its own, so changing a pre-engine setting costs a
         // copy rather than a fresh decode of the file (which was over a second every time).
@@ -384,6 +385,8 @@ object Develop {
             if (wet) "${wetMask!!.width}x${wetMask.height}:${wetMask.stops.contentHashCode()}:${wetLook.groundKey()}" else "-",
             // rain on the window (65a): how, and where it is wiped
             if (Rain.wanted(wetLook.window)) "${wetLook.window.key()}:${rainMask?.stops?.contentHashCode() ?: 0}" else "-",
+            // 109a: the layers, each part's own exposure, warmth and colour
+            Layers.key(layers),
         ).joinToString("|")
         if (working.preparedFor == prep) return working
         working.frameFrom(pristine, framing)
@@ -414,10 +417,12 @@ object Develop {
         }
         // 100a: the LIGHT tab, on the photo's own light — the lights placed after it are as you set them
         SceneLight.apply(working, recipe, log)
+        // 109a: the LAYERS step, each part's own light, before anything lights or veils it
+        Layers.apply(working, layers, log)
         // what lies under the lights: while it is unchanged, the noise-free copy they land on is reused
         // (the photo — both frames of a pair — and its size, by the decode's own key, then everything applied before the lights)
         val underLights = listOf(key, framing.key(), isoUsed, recipe.chromaDenoise, recipe.lumaDenoise,
-            recipe.nightClean, recipe.nightCleanStrength, recipe.nightCleanFollow, SceneLight.key(recipe),
+            recipe.nightClean, recipe.nightCleanStrength, recipe.nightCleanFollow, SceneLight.key(recipe), Layers.key(layers),
             raysMask?.stops?.contentHashCode() ?: 0, split?.stops?.contentHashCode() ?: 0, working.width, working.height).joinToString("|")
         // the lights on what they meet first, then the air in front of them (60e): fog laid before the
         // light was lit by it as if it were a wall, in patches where the depth said shadow or sun
@@ -1235,7 +1240,8 @@ object Develop {
                     extraLights: List<RaysLook> = emptyList(),
                     depthSplit: ExposureMap? = null, saturationMap: ExposureMap? = null, lith: LithLook = LithLook(),
                     wetMask: ExposureMap? = null, wetLook: WetLook = WetLook(), rainMask: ExposureMap? = null,
-                    hdrGlow: Float = 0f, format: String = DarkroomPrefs.FILE_JPEG, age: AgeLook = AgeLook(), log: (String) -> Unit = {}): Uri {
+                    hdrGlow: Float = 0f, format: String = DarkroomPrefs.FILE_JPEG, age: AgeLook = AgeLook(),
+                    layers: List<Layer>? = null, log: (String) -> Unit = {}): Uri {
         log(if (maxEdge > 0) "decoding…" else "decoding at full size…")
         lastFullNote = ""
         val stored = storedSize(context, source, isRaw)
@@ -1267,7 +1273,7 @@ object Develop {
             // A pair carries the noise of both frames: clean it for the noisier of the two.
             val iso = if (pair) maxOf(isoOf(context, source), isoOf(context, pairFirst!!)) else isoOf(context, source)
             prepareStages(context, source, s, iso, recipe, framing, softenMask, fogMask, fogLook, raysMask, raysLook, extraLights,
-                depthSplit, wetMask, wetLook, rainMask, log)
+                depthSplit, wetMask, wetLook, rainMask, log, layers = layers)
             log("developing ${s.width}×${s.height}…")
             // The fog and light travel inside the file, so the Film Builder can read them exactly
             // later — even if the file is renamed or the original's fog is changed afterwards.
@@ -1327,12 +1333,15 @@ object Develop {
                                softenMask: ExposureMap?, fogMask: ExposureMap?, fogLook: FogLook,
                                raysMask: ExposureMap?, raysLook: RaysLook, extraLights: List<RaysLook>,
                                depthSplit: ExposureMap?, wetMask: ExposureMap?, wetLook: WetLook, rainMask: ExposureMap?,
-                               log: (String) -> Unit, fogScale: Float = 1f, beforeRain: ((Source) -> Unit)? = null) {
+                               log: (String) -> Unit, fogScale: Float = 1f, beforeRain: ((Source) -> Unit)? = null,
+                               layers: List<Layer>? = null) {
         val sunIn = sunInput(context, source, framing, s, listOf(raysLook) + extraLights, log, fogMask != null && fogLook.lit > 0f, Wet.wanted(wetMask))
         nightCleanSource(context, s, recipe, log)
         denoiseSource(s, recipe, iso, log)
         sensorNoiseSource(s, recipe, iso, log)
         SceneLight.apply(s, recipe, log)
+        // 109a: the photo's layers — the darkroom's own when given, else as kept with the photo
+        Layers.apply(s, layers ?: Layers.load(context, source), log)
         val split = splitFor(context, source, listOf(raysLook) + extraLights, depthSplit)
         // the lights on surfaces, then the air in front of them (60e), as in the preview
         sunOnSurfaces(s, listOf(raysLook) + extraLights, raysMask, sunIn, log, null, split)
