@@ -1814,7 +1814,8 @@ internal fun PaintStep(
     /** 109a: shown first under the photo, above the tabs (LAYERS: the strip of layer cards). */
     strip: (@Composable () -> Unit)? = null,
     /** 109a: tap to select's one answer, instead of "set foreground / background": its chip's name and what it does with the selection. */
-    selectUse: Pair<String, (ExposureMap) -> Unit>? = null,
+    /** 109b: a null action makes the selection this step's own mask, through the brush's undo. */
+    selectUse: Pair<String, ((ExposureMap) -> Unit)?>? = null,
     /** 109a: raised to open tap to select from outside (LAYERS' "+ layer → Tap to select"). */
     openSelectKey: Int = 0,
     /** 109a: a name before the tabs, in amber (LAYERS: the chosen layer, "SKY · ADJUST BRUSH"). */
@@ -2193,7 +2194,9 @@ internal fun PaintStep(
         }
         closeSelect()
         android.util.Log.i("Latent", "select: used for ${use.first} (${(sel.average() * 100).roundToInt()}% of the picture)")
-        use.second(ExposureMap(w, h, sel))
+        val picked = ExposureMap(w, h, sel)
+        // 109b: onto the mask being painted, as a stroke would be (shown, undoable, kept by the next stroke)
+        use.second?.invoke(picked) ?: commit(picked)
     }
     LaunchedEffect(openSelectKey) { if (openSelectKey > 0) openSelect() }
     val selectTapNow by rememberUpdatedState<(Float, Float) -> Unit>({ u, v -> selectTap(u, v) })
@@ -2963,11 +2966,14 @@ internal fun PrintChip(label: String, on: Boolean, enabled: Boolean = true, onTa
 @Composable
 private fun Chip(label: String, on: Boolean, enabled: Boolean = true, onTap: () -> Unit) {
     val context = LocalContext.current
+    // 109b: the newest action (the gesture below is set up once per label/state; LAYERS' copy, move and
+    // delete chips would otherwise act on the list of layers as it was when the menu opened)
+    val tapNow by rememberUpdatedState(onTap)
     Text(
         label, fontSize = 11.sp,
         color = when { on -> LatentColors.AmberInk; enabled -> LatentColors.Text; else -> LatentColors.Line },
         modifier = Modifier.raised(RoundedCornerShape(999.dp), 2.dp).clip(RoundedCornerShape(999.dp)).accentFill(on, LatentColors.Surface)
-            .pointerInput(label, on, enabled) { detectTapGestures(onTap = { if (enabled) { Haptics.tick(context); onTap() } }) }
+            .pointerInput(label, on, enabled) { detectTapGestures(onTap = { if (enabled) { Haptics.tick(context); tapNow() } }) }
             .padding(horizontal = 10.dp, vertical = 5.dp),
     )
 }

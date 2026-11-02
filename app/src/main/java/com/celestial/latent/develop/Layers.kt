@@ -51,7 +51,7 @@ data class Layer(
     /** Its mask hashed at the 1/1000 it is saved with, so a layer read back from the photo has the same key. */
     fun key(): String {
         var h = 1
-        for (s in mask.stops) h = 31 * h + (s * 1000f).roundToInt()
+        for (s in mask.stops) h = 31 * h + (if (s.isFinite()) s * 1000f else 0f).roundToInt()
         return "$id:${mask.width}x${mask.height}:$h:$ev:$warmth:$colour:$visible"
     }
 }
@@ -86,11 +86,15 @@ object Layers {
     fun wanted(layers: List<Layer>?): Boolean = layers?.any { it.acts } == true
 
     /** What the preparation reads: "-" when no layer changes anything. */
-    fun key(layers: List<Layer>?): String = if (!wanted(layers)) "-" else layers!!.filter { it.acts }.joinToString(";") { it.key() }
+    fun key(layers: List<Layer>?): String = if (!wanted(layers)) "-" else layers!!.filter { it.acts }.sortedBy { it.id }.joinToString(";") { it.key() }   // 109b: order changes nothing in the picture, so not the key either
 
     /** The guide: brightness as a 0..1 value (mid grey 0.5), so shadows and highlights both have edges to snap to. */
     private fun guideOf(r: Float, g: Float, b: Float): Float {
-        val y = max(0f, LUM[0] * r + LUM[1] * g + LUM[2] * b)
+        val y = LUM[0] * r + LUM[1] * g + LUM[2] * b
+        // 109b: a broken pixel (NaN, infinite) must not reach the running sums, which would carry it
+        // across the whole picture; it guides as black (NaN) or white (too bright)
+        if (!(y > 0f)) return 0f
+        if (y == Float.POSITIVE_INFINITY) return 1f
         return y / (y + 0.18f)
     }
 
@@ -169,8 +173,12 @@ object Layers {
         val fits = act.map { fit(I, it.mask, sw, sh) }
         val n = act.size
         val ev = FloatArray(n) { act[it].ev }; val wm = FloatArray(n) { act[it].warmth }; val cl = FloatArray(n) { act[it].colour - 1f }
+        val As = Array(n) { fits[it].first }; val Bs = Array(n) { fits[it].second }
         val fx = 1f * sw / w; val fy = 1f * sh / h
-        for (y in 0 until h) {
+        // 109b: rows in bands over the phone's cores; each pixel is worked out on its own, so the answer
+        // is the same for any number of bands
+        val bands = max(1, min(Runtime.getRuntime().availableProcessors(), h / 64))
+        fun band(y0b: Int, y1b: Int) { for (y in y0b until y1b) {
             val sy = ((y + 0.5f) * fy - 0.5f).coerceIn(0f, (sh - 1).toFloat())
             val y0 = sy.toInt(); val y1 = min(y0 + 1, sh - 1); val ty = sy - y0
             var p = y * w * 3
@@ -180,21 +188,30 @@ object Layers {
                 val k00 = y0 * sw + x0; val k01 = y0 * sw + x1; val k10 = y1 * sw + x0; val k11 = y1 * sw + x1
                 val r = f.get(p); val g = f.get(p + 1); val b = f.get(p + 2)
                 val gi = guideOf(r, g, b)
-                var e = 0f; var warm = 0f; var sat = 1f
+                var e = 0f; var warm = 0f; var sat = 1f; var touched = false
                 for (i in 0 until n) {
-                    val (A, B) = fits[i]
+                    val A = As[i]; val B = Bs[i]
                     val aa = (A[k00] * (1 - tx) + A[k01] * tx) * (1 - ty) + (A[k10] * (1 - tx) + A[k11] * tx) * ty
                     val bb = (B[k00] * (1 - tx) + B[k01] * tx) * (1 - ty) + (B[k10] * (1 - tx) + B[k11] * tx) * ty
-                    val wt = (aa * gi + bb).coerceIn(0f, 1f)
+                    val wt = (aa * gi + bb).let { v -> if (v.isNaN()) 0f else v.coerceIn(0f, 1f) }
+                    if (wt <= 0f) continue
+                    touched = true
                     e += wt * ev[i]; warm += wt * wm[i]; sat += wt * cl[i]
                 }
+                // 109b: a pixel no layer reaches stays exactly as it was
+                if (!touched) { p += 3; continue }
                 if (sat < 0f) sat = 0f
-                val gain = 2f.pow(e)
+                val gain = if (e == 0f) 1f else 2f.pow(e)
                 val r2 = r * gain * (1f + WARM * warm); val g2 = g * gain; val b2 = b * gain * (1f - WARM * warm)
                 val yy = LUM[0] * r2 + LUM[1] * g2 + LUM[2] * b2
                 f.put(p, max(0f, yy + (r2 - yy) * sat)); f.put(p + 1, max(0f, yy + (g2 - yy) * sat)); f.put(p + 2, max(0f, yy + (b2 - yy) * sat))
                 p += 3
             }
+        } }
+        if (bands == 1) band(0, h) else {
+            val step = (h + bands - 1) / bands
+            val ts = (0 until bands).map { k -> Thread { band(k * step, min(h, (k + 1) * step)) }.apply { start() } }
+            ts.forEach { it.join() }
         }
     }
 
