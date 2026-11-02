@@ -108,6 +108,29 @@ private val TAB_GLYPHS = mapOf(
     "colour" to Glyph.COLOUR, "engine" to Glyph.ENGINE, "develop" to Glyph.DEVELOP,
 )
 
+/**
+ * 108b: what the engine's own option names mean, shown on the chips. The engine name stays in
+ * brackets where it is a real method name you might look up; plain ones just read normally.
+ * The recipe still stores the engine's name, so saved recipes and exports are unchanged.
+ */
+private val CHIP_NAMES = mapOf(
+    // output colour space
+    "SRGB" to "sRGB", "DISPLAY_P3" to "Display P3", "REC709_24" to "Rec.709 · 2.4 (video)", "ADOBE_RGB" to "Adobe RGB",
+    "PROPHOTO" to "ProPhoto", "REC2020" to "Rec.2020 (HDR video)", "ACES2065_1" to "ACES 2065-1 (grading)",
+    "LINEAR_SRGB" to "Linear sRGB (compositing)",
+    // out-of-gamut colours, and filming-side compression
+    "LEGACY_CLIP" to "Clip (classic)", "OFF" to "Off", "ACES_RGC" to "Soft fold (ACES RGC)", "OKLCH" to "Keep hue (Oklch)",
+    "OKLRAB" to "Keep hue, truer darks (Oklrab)", "XY" to "Gentle (xy)",
+    // RGB to spectrum
+    "HANATOS2025" to "Hanatos 2025 (default)", "MALLETT2019" to "Mallett 2019",
+    // metering
+    "center_weighted" to "Centre-weighted", "average" to "Average", "median" to "Median", "partial" to "Partial",
+    "matrix" to "Matrix", "multi_zone" to "Multi-zone", "highlight_weighted" to "Highlight-weighted",
+)
+
+/** 108b: film format by its name; the chips used to show only the millimetres (25, 35, 60, 100). */
+private val FILM_FORMATS = linkedMapOf("25" to "Super 35", "35" to "35 mm", "60" to "120 / 6×6", "100" to "Large format")
+
 /** The four optical diffusion filters the engine models. */
 private val DIFFUSION_FAMILIES = listOf("glimmerglass", "black_pro_mist", "pro_mist", "cinebloom", "fog")
 
@@ -1533,12 +1556,12 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                                 S("Softness", recipe.filterIrWidth, 2f, 60f, "%.0f nm", recipe.filterIrAmount > 0.001f) { set { copy(filterIrWidth = it) } }
                                 Note("Film sees a little beyond human sight at both ends, so without these filters reds and blues overshoot. This is the same correction the engine's author uses to tame the filming stage.")
                                 Head("METERING", null) {}
-                                Chips(listOf("center_weighted", "average", "median", "partial", "matrix", "multi_zone", "highlight_weighted"), recipe.meteringMethod) { set { copy(meteringMethod = it) } }
+                                Chips(listOf("center_weighted", "average", "median", "partial", "matrix", "multi_zone", "highlight_weighted"), recipe.meteringMethod, CHIP_NAMES) { set { copy(meteringMethod = it) } }
                                 Note("How the engine judges the scene's brightness when setting its own exposure.")
                                 S("Lens blur", recipe.lensBlurUm, 0f, 40f, "%.0f µm") { set { copy(lensBlurUm = it) } }
                                 Head("FILM FORMAT", null) {}
-                                Chips(listOf("25" to "Super 35", "35" to "35 mm", "60" to "120 / 6×6", "100" to "Large format").map { it.first }, recipe.filmFormatMm.toInt().toString()) { set { copy(filmFormatMm = it.toFloat()) } }
-                                Note("Format changes how big grain and halation look, because they are measured in micrometres on the negative. 25 is Super 35, the cinema frame.")
+                                Chips(FILM_FORMATS.keys.toList(), recipe.filmFormatMm.toInt().toString(), FILM_FORMATS) { set { copy(filmFormatMm = it.toFloat()) } }
+                                Note("Format changes how big grain and halation look, because they are measured in micrometres on the negative. Super 35 is the cinema frame.")
                                 Toggle("85B filter", recipe.lens85b) { set { copy(lens85b = it) } }
                                 Note("The orange filter cinematographers use to shoot tungsten film (Vision3 200T, 500T) in daylight.")
                             }
@@ -1588,7 +1611,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                             }
                             "colour" -> {
                                 Head("OUTPUT COLOUR SPACE", null) {}
-                                Chips(listOf("SRGB", "DISPLAY_P3", "REC709_24", "ADOBE_RGB", "PROPHOTO", "REC2020", "ACES2065_1", "LINEAR_SRGB"), recipe.outputColorSpace) { set { copy(outputColorSpace = it) } }
+                                Chips(listOf("SRGB", "DISPLAY_P3", "REC709_24", "ADOBE_RGB", "PROPHOTO", "REC2020", "ACES2065_1", "LINEAR_SRGB"), recipe.outputColorSpace, CHIP_NAMES) { set { copy(outputColorSpace = it) } }
                                 Note(when (recipe.outputColorSpace) {
                                     "SRGB" -> "Sharing, the web, messaging. The safe default."
                                     "DISPLAY_P3" -> "What this phone's screen actually shows, so the file looks its best on the device. Converted by Celestial Darkroom from the engine's sRGB."
@@ -1602,14 +1625,14 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                                 if (recipe.outputColorSpace in listOf("PROPHOTO", "REC2020", "ACES2065_1", "LINEAR_SRGB"))
                                     Note("A JPEG has only 256 steps per channel. Spread over a space this wide it can band in skies and skin.")
                                 Head("OUT-OF-GAMUT COLOURS", null) {}
-                                Chips(listOf("LEGACY_CLIP", "OFF", "ACES_RGC", "OKLCH", "OKLRAB"), recipe.outputGamutCompress) { set { copy(outputGamutCompress = it) } }
+                                Chips(listOf("LEGACY_CLIP", "OFF", "ACES_RGC", "OKLCH", "OKLRAB"), recipe.outputGamutCompress, CHIP_NAMES) { set { copy(outputGamutCompress = it) } }
                                 Head("FILMING-SIDE COMPRESSION", null) {}
-                                Chips(listOf("OFF", "XY"), recipe.inputGamutCompress) { set { copy(inputGamutCompress = it) } }
+                                Chips(listOf("OFF", "XY"), recipe.inputGamutCompress, CHIP_NAMES) { set { copy(inputGamutCompress = it) } }
                                 Note("Gamut compression decides what happens to colours too saturated for the output space — clipping them, or folding them in gently.")
                             }
                             "engine" -> {
                                 Head("RGB → SPECTRUM", null) {}
-                                Chips(listOf("HANATOS2025", "MALLETT2019"), recipe.rgbToRaw) { set { copy(rgbToRaw = it) } }
+                                Chips(listOf("HANATOS2025", "MALLETT2019"), recipe.rgbToRaw, CHIP_NAMES) { set { copy(rgbToRaw = it) } }
                                 Note("How a colour is turned into a light spectrum before the film sees it. Hanatos 2025 is the engine's default and still the current method.")
                                 Toggle("Adaptation window", recipe.hanatosWindow) { set { copy(hanatosWindow = it) } }
                                 Toggle("Adaptation surface", recipe.hanatosSurface) { set { copy(hanatosSurface = it) } }
@@ -1761,12 +1784,12 @@ private fun Toggle(label: String, value: Boolean, onChange: (Boolean) -> Unit) {
 }
 
 @Composable
-private fun Chips(options: List<String>, selected: String, onSelect: (String) -> Unit) {
+private fun Chips(options: List<String>, selected: String, names: Map<String, String> = emptyMap(), onSelect: (String) -> Unit) {
     val context = LocalContext.current
     Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
         options.forEach { o ->
             val on = o == selected
-            Text(o.replace('_', ' '), color = if (on) LatentColors.AmberInk else LatentColors.Text, fontSize = 10.sp,
+            Text(names[o] ?: o.replace('_', ' '), color = if (on) LatentColors.AmberInk else LatentColors.Text, fontSize = 10.sp,
                 modifier = Modifier.raised(RoundedCornerShape(999.dp), 2.dp).clip(RoundedCornerShape(999.dp)).accentFill(on, LatentColors.Surface)
                     .combinedClickable(onClick = { Haptics.tick(context); onSelect(o) }).padding(horizontal = 10.dp, vertical = 5.dp))
         }
