@@ -16,5 +16,6 @@ object PhotoData {
         STORES.forEach { context.getSharedPreferences(it, Context.MODE_PRIVATE).edit().remove(key).apply() }
         context.getSharedPreferences("latent_double", Context.MODE_PRIVATE).edit().remove("pair:$key").apply()
         ExposureMaps.forget(context, photo)
+        Layers.forget(context, photo)
     }
 }
