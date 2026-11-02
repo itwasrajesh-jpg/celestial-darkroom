@@ -373,7 +373,7 @@ private fun AddMenu(layers: List<Layer>, ui: LayersUi, add: (String, ExposureMap
     }
 }
 
-/** Hold a card: rename, copy, move left or right, delete. Widths: rename 62 + copy 48 + ‹ 30 + › 30 + delete 56 + done 50 ≈ 296 dp. */
+/** Hold a card: rename, copy, move left or right, delete; 109d: opposite, invert (second row). Widths: rename 62 + copy 48 + ‹ 30 + › 30 + delete 56 + done 50 ≈ 296 dp. */
 @Composable
 private fun CardMenu(l: Layer, layers: List<Layer>, ui: LayersUi, onLayers: (List<Layer>) -> Unit) {
     val i = layers.indexOfFirst { it.id == l.id }
@@ -389,7 +389,8 @@ private fun CardMenu(l: Layer, layers: List<Layer>, ui: LayersUi, onLayers: (Lis
                 }
                 PrintChip("cancel", on = false) { ui.renaming = null }
             }
-        } else Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+        } else Column {
+          Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
             PrintChip("rename", on = false) { ui.renaming = l.name }
             PrintChip("copy", on = false, enabled = layers.size < Layers.MAX) {
                 val c = l.copy(id = (layers.maxOfOrNull { it.id } ?: 0) + 1, name = freeName(l.name, layers), tint = freeTint(layers), mask = l.mask.copy())
@@ -399,8 +400,20 @@ private fun CardMenu(l: Layer, layers: List<Layer>, ui: LayersUi, onLayers: (Lis
             PrintChip("›", on = false, enabled = i < layers.size - 1) { onLayers(layers.toMutableList().also { java.util.Collections.swap(it, i, i + 1) }) }
             PrintChip("delete", on = false) { onLayers(layers.filter { it.id != l.id }); ui.menuFor = null; if (ui.selected == l.id) ui.selected = -1 }
             PrintChip("done", on = false) { ui.menuFor = null }
+          }
+          // 109d: the other side of this layer. Snapping is linear in the area, so the opposite's snapped
+          // edge is exactly the complement of this one's: the two meet with no gap and no overlap.
+          Row(Modifier.padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            PrintChip("opposite", on = false, enabled = layers.size < Layers.MAX) {
+                val c = Layer((layers.maxOfOrNull { it.id } ?: 0) + 1, freeName(("NOT " + l.name).take(12), layers), freeTint(layers), Layers.inverted(l.mask))
+                onLayers(layers.toMutableList().also { it.add(i + 1, c) }); ui.selected = c.id; ui.menuFor = null; ui.showAll = false
+            }
+            PrintChip("invert", on = false) {
+                onLayers(layers.map { if (it.id == l.id) it.copy(mask = Layers.inverted(it.mask)) else it }); ui.menuFor = null
+            }
+          }
         }
-        Text("${l.name}: overlapping layers add up, so the order changes only the strip.", color = LatentColors.TextDim, fontSize = 11.sp, modifier = Modifier.padding(top = 6.dp))
+        Text("${l.name}: opposite makes a new layer of everything outside it; invert flips its own area. Overlaps add up, so order changes only the strip.", color = LatentColors.TextDim, fontSize = 11.sp, modifier = Modifier.padding(top = 6.dp))
     }
 }
 
