@@ -706,6 +706,7 @@ object Develop {
                exposureMap: ExposureMap? = null, softenMask: ExposureMap? = null, saturationMap: ExposureMap? = null,
                lith: LithLook = LithLook(), lithFrame: Region? = null, hdrGlow: Float = 0f,
                png: PngTarget? = null, filmEdge: Int = 0, aged: AgedTarget? = null,
+               looks: List<LayerLook> = emptyList(),
                log: (String) -> Unit = {}): Pair<ByteArray, Pair<Int, Int>> {
         val t = System.nanoTime()
         Log.i("Latent", "render start: source ${source.width}x${source.height}, preview=$preview, cap=${recipe.previewMaxSize}")
@@ -726,6 +727,9 @@ object Develop {
                 val sceneEv = if (glow) recipe.exposureEv + runCatching { engine.meterExposureEv(source.image, params) }.getOrDefault(0.0) else 0.0
                 val result = if (preview) engine.simulatePreview(source.image, params) else engine.simulate(source.image, params)
                 result.use { r ->
+                    // 109c: layers with a film look of their own: the photo developed again in each, blended in by the layer
+                    if (looks.isNotEmpty()) LayerLooks.blend(engine, source, r, looks, preview,
+                        { lr -> filmParams(source, lr.copy(previewMaxSize = recipe.previewMaxSize, gpuPreview = recipe.gpuPreview), preview, upscale, exposureMap, softenMask).first }, log)
                     // painted saturation (62a): on the finished print, before any bars
                     if (Saturation.wanted(saturationMap)) {
                         val ts = System.nanoTime()
@@ -1135,6 +1139,9 @@ object Develop {
     /** 81d: native memory the film engine needs per pixel, with some room over the 81c measurement (~103). */
     private const val ENGINE_BYTES_PER_PIXEL = 115L
 
+    /** 109c: a finished print held for a layer's look (three floats a pixel). */
+    private const val LOOK_BYTES_PER_PIXEL = 12L
+
     /** 81d: memory left for the rest of the phone (and the framing, the 16:9 letterbox, the file) after a develop. */
     private const val RESERVE_BYTES = 600L shl 20
 
@@ -1142,7 +1149,7 @@ object Develop {
      * 81d: the longest edge to develop a [sw]x[sh] photo at, the largest of [FULL_EDGES] whose film
      * fits in what the phone has free now, [upscale] (print size) included; the smallest if none does.
      */
-    private fun fullEdgeFor(context: Context, sw: Int, sh: Int, upscale: Float): Int {
+    private fun fullEdgeFor(context: Context, sw: Int, sh: Int, upscale: Float, extraLooks: Int = 0): Int {
         val mi = ActivityManager.MemoryInfo()
         (context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager)?.getMemoryInfo(mi) ?: return FULL_EDGE_CAP
         val room = mi.availMem - RESERVE_BYTES
@@ -1150,7 +1157,9 @@ object Develop {
         for (edge in FULL_EDGES) {
             val k = minOf(1.0, edge.toDouble() / long)
             val pixels = sw * k * sh * k * upscale * upscale
-            if ((pixels * ENGINE_BYTES_PER_PIXEL).toLong() <= room) {
+            // 109c: each layer look holds one more finished print (float RGB) while the next develops
+            val perPixel = ENGINE_BYTES_PER_PIXEL + LOOK_BYTES_PER_PIXEL * extraLooks
+            if ((pixels * perPixel).toLong() <= room) {
                 Log.i("Latent", "full develop size: ${sw}x$sh at edge $edge needs about ${(pixels * ENGINE_BYTES_PER_PIXEL).toLong() shr 20} MB, " +
                     "phone has ${mi.availMem shr 20} MB free")
                 return edge
@@ -1241,11 +1250,11 @@ object Develop {
                     depthSplit: ExposureMap? = null, saturationMap: ExposureMap? = null, lith: LithLook = LithLook(),
                     wetMask: ExposureMap? = null, wetLook: WetLook = WetLook(), rainMask: ExposureMap? = null,
                     hdrGlow: Float = 0f, format: String = DarkroomPrefs.FILE_JPEG, age: AgeLook = AgeLook(),
-                    layers: List<Layer>? = null, log: (String) -> Unit = {}): Uri {
+                    layers: List<Layer>? = null, looks: List<LayerLook> = emptyList(), log: (String) -> Unit = {}): Uri {
         log(if (maxEdge > 0) "decoding…" else "decoding at full size…")
         lastFullNote = ""
         val stored = storedSize(context, source, isRaw)
-        val fullEdge = stored?.let { (sw, sh) -> fullEdgeFor(context, sw, sh, upscale) } ?: FULL_EDGE_CAP
+        val fullEdge = stored?.let { (sw, sh) -> fullEdgeFor(context, sw, sh, upscale, looks.size) } ?: FULL_EDGE_CAP
         val cap = if (maxEdge > 0) minOf(maxEdge, fullEdge) else fullEdge
         val peaks = MemoryPeaks(context)
         var developedW = 0; var developedH = 0
@@ -1293,7 +1302,7 @@ object Develop {
             val agedTag = (if (tag != null) "${tag}_" else "") + "AGED"
             if (bits == 0) {
                 val aged = if (age.on) AgedTarget(age, AgedPrint.seedOf(source), AgedPrint.backWords(context, source, recipe.film), null) else null
-                val (bytes, dims) = render(context, s, recipe, preview = false, upscale = upscale, exposureMap = exposureMap, softenMask = softenMask, saturationMap = saturationMap, lith = lith,
+                val (bytes, dims) = render(context, s, recipe, preview = false, upscale = upscale, exposureMap = exposureMap, softenMask = softenMask, saturationMap = saturationMap, lith = lith, looks = looks,
                     hdrGlow = if (format == DarkroomPrefs.FILE_ULTRA_HDR) hdrGlow else 0f, filmEdge = framing.edgeFrame, aged = aged, log = log)
                 log("saving ${dims.first}×${dims.second}, ${bytes.size / 1024} KB")
                 val clean = saveDeveloped(context, bytes, source, recipe.film, tag = tag, note = note)
@@ -1307,7 +1316,7 @@ object Develop {
                 val tmpAged = File(context.cacheDir, "develop-aged-${System.nanoTime()}.png")
                 try {
                     val aged = if (age.on) AgedTarget(age, AgedPrint.seedOf(source), AgedPrint.backWords(context, source, recipe.film), PngTarget(tmpAged, bits, note)) else null
-                    val (_, dims) = render(context, s, recipe, preview = false, upscale = upscale, exposureMap = exposureMap, softenMask = softenMask, saturationMap = saturationMap, lith = lith,
+                    val (_, dims) = render(context, s, recipe, preview = false, upscale = upscale, exposureMap = exposureMap, softenMask = softenMask, saturationMap = saturationMap, lith = lith, looks = looks,
                         png = PngTarget(tmp, bits, note), filmEdge = framing.edgeFrame, aged = aged, log = log)
                     log("saving ${dims.first}×${dims.second}, PNG $bits-bit, ${tmp.length() / 1024} KB")
                     val clean = saveDevelopedFile(context, tmp, source, recipe.film, tag = tag)

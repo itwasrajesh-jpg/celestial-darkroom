@@ -37,7 +37,7 @@ object DevelopQueue {
                    depthSplit: ExposureMap? = null, saturationMap: ExposureMap? = null, lith: LithLook = LithLook(),
                    wetMask: ExposureMap? = null, wetLook: WetLook = WetLook(), rainMask: ExposureMap? = null,
                    hdrGlow: Float = 0f, format: String = DarkroomPrefs.FILE_JPEG, age: AgeLook = AgeLook(),
-                   layers: List<Layer>? = null,
+                   layers: List<Layer>? = null, looks: List<LayerLook> = emptyList(),
                    onStatus: (String) -> Unit, onDone: (Uri?) -> Unit): Running {
         val handle = Running()
         pending.incrementAndGet(); onChanged()
@@ -55,7 +55,7 @@ object DevelopQueue {
                 holdsLane = acquireLane(120)
                 if (handle.cancelled) { Log.i("Latent", "full develop cancelled while waiting"); return@execute }
                 onStatus("starting")
-                out = Develop.developFull(app, source, isRaw, recipe, upscale = upscale, exposureMap = exposureMap, softenMask = softenMask, pairFirst = pairFirst, framing = framing, fogMask = fogMask, fogLook = fogLook, raysMask = raysMask, raysLook = raysLook, extraLights = extraLights, depthSplit = depthSplit, saturationMap = saturationMap, lith = lith, wetMask = wetMask, wetLook = wetLook, rainMask = rainMask, hdrGlow = hdrGlow, format = format, age = age, layers = layers) { m -> if (!handle.cancelled) onStatus(m) }
+                out = Develop.developFull(app, source, isRaw, recipe, upscale = upscale, exposureMap = exposureMap, softenMask = softenMask, pairFirst = pairFirst, framing = framing, fogMask = fogMask, fogLook = fogLook, raysMask = raysMask, raysLook = raysLook, extraLights = extraLights, depthSplit = depthSplit, saturationMap = saturationMap, lith = lith, wetMask = wetMask, wetLook = wetLook, rainMask = rainMask, hdrGlow = hdrGlow, format = format, age = age, layers = layers, looks = looks) { m -> if (!handle.cancelled) onStatus(m) }
                 if (handle.cancelled) { Log.i("Latent", "full develop finished after cancel; result discarded"); out = null }
             } catch (t: Throwable) {
                 Log.e("Latent", "full develop failed", t)
