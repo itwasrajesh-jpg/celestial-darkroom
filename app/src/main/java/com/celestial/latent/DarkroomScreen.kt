@@ -844,7 +844,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                 if (taken) Text("a recipe has this name", color = LatentColors.TextDim, fontSize = 10.sp)
             }
         }
-        if (asks.saveName.isNotEmpty()) Text("saved “$asks.saveName” · find it under YOUR RECIPES in the looks above and in the camera's film strip",
+        if (asks.saveName.isNotEmpty()) Text("saved “${asks.saveName}” · find it under YOUR RECIPES in the looks above and in the camera's film strip",
             color = LatentColors.Amber, fontSize = 10.sp)
         // Undo for the reset, while nothing has been changed since
         val undoReset = asks.beforeReset
@@ -1380,7 +1380,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                                 Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                     // The photo opens at the brightness it was shot at. This asks the film
                                     // what it would have chosen — a starting point, not a correction.
-                                    Text(if (asks.levelling) "asks.levelling…" else "Auto level", color = LatentColors.AmberInk, fontSize = 11.sp,
+                                    Text(if (asks.levelling) "levelling…" else "Auto level", color = LatentColors.AmberInk, fontSize = 11.sp,
                                         modifier = Modifier.clip(RoundedCornerShape(999.dp)).accentFill()
                                             .combinedClickable(onClick = {
                                                 if (!asks.levelling && !rendering) {
