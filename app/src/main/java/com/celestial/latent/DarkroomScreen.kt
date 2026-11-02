@@ -57,6 +57,7 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInParent
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
@@ -129,7 +130,6 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
     var printSize by remember { mutableStateOf(com.celestial.latent.develop.DarkroomPrefs.printSize(context)) }
     // ...and so is the kind of file (78b): JPEG, Ultra HDR, PNG 8-bit or 16-bit
     var fileFormat by remember { mutableStateOf(com.celestial.latent.develop.DarkroomPrefs.fileFormat(context)) }
-    var full by remember { mutableStateOf(false) }
     // PRINT mode: test strips (and, later, the ring-around and dodge & burn) instead of sliders.
     var printing by remember { mutableStateOf(false) }
     // Why the last full-size develop failed, in plain words — shown until the next one starts.
@@ -905,13 +905,15 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
             GlyphIcon(Glyph.BACK, LatentColors.Text, Modifier.combinedClickable(onClick = onBack).padding(horizontal = 6.dp), 22.dp)
             Text("DARKROOM", color = LatentColors.Text, fontSize = 12.sp, letterSpacing = 4.sp)
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                listOf("SIMPLE", "FULL", "PRINT").forEach { label ->
-                    val on = when (label) { "PRINT" -> printing; "FULL" -> !printing && full; else -> !printing && !full }
+                // 108a: SIMPLE and FULL showed the same tabs (FULL added three FILM controls), so they are one
+                // room now, NEGATIVE: the negative is shaped here, then printed in PRINT
+                listOf("NEGATIVE", "PRINT").forEach { label ->
+                    val on = if (label == "PRINT") printing else !printing
                     Text(label, color = if (on) LatentColors.AmberInk else LatentColors.TextDim, fontSize = 10.sp, letterSpacing = 1.5.sp,
                         modifier = Modifier.clip(RoundedCornerShape(999.dp)).accentFill(on, Color.Transparent)
                             .combinedClickable(onClick = {
                                 if (!on) Haptics.tick(context)
-                                when (label) { "PRINT" -> printing = true; "FULL" -> { printing = false; full = true }; else -> { printing = false; full = false } }
+                                printing = label == "PRINT"
                             }).padding(horizontal = 9.dp, vertical = 3.dp))
                 }
                 // 74a: what the controls on screen do
@@ -1248,7 +1250,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                     Row(Modifier.fillMaxWidth().horizontalScroll(lookRow).padding(horizontal = 14.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         savedRecipes.forEachIndexed { n, (name, saved) ->
                             val on = lookId == "stock:" + name
-                            Box { Column(
+                            Box(Modifier.showLookOnOpen(on, asks, lookRow, developScope)) { Column(
                                 // 87a-2: in Clay each film has its own pastel card, as in the approved proof
                                 Modifier.floating(RoundedCornerShape(6.dp), 3.dp).clip(RoundedCornerShape(6.dp)).accentFill(on, LatentColors.card(n))
                                     .combinedClickable(
@@ -1267,7 +1269,8 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                         ourStocks.forEachIndexed { n, (name, saved) ->
                             val on = lookId == "stock:" + name
                             Column(
-                                Modifier.floating(RoundedCornerShape(6.dp), 3.dp).clip(RoundedCornerShape(6.dp)).accentFill(on, LatentColors.card(savedRecipes.size + n))
+                                Modifier.showLookOnOpen(on, asks, lookRow, developScope)
+                                    .floating(RoundedCornerShape(6.dp), 3.dp).clip(RoundedCornerShape(6.dp)).accentFill(on, LatentColors.card(savedRecipes.size + n))
                                     .combinedClickable(onClick = { Haptics.tick(context); pickLook("stock:" + name, saved) })
                                     .padding(horizontal = 11.dp, vertical = 6.dp),
                             ) {
@@ -1278,7 +1281,8 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                         looks.forEachIndexed { n, preset ->
                             val on = preset.id == lookId
                             Column(
-                                Modifier.floating(RoundedCornerShape(6.dp), 3.dp).clip(RoundedCornerShape(6.dp)).accentFill(on, LatentColors.card(savedRecipes.size + ourStocks.size + n))
+                                Modifier.showLookOnOpen(on, asks, lookRow, developScope)
+                                    .floating(RoundedCornerShape(6.dp), 3.dp).clip(RoundedCornerShape(6.dp)).accentFill(on, LatentColors.card(savedRecipes.size + ourStocks.size + n))
                                     .combinedClickable(onClick = { Haptics.tick(context); pickLook(preset.id, preset.recipe) })
                                     .padding(horizontal = 11.dp, vertical = 6.dp),
                             ) {
@@ -1431,11 +1435,6 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                                 com.celestial.latent.develop.Presets.byId(context, lookId)?.let { p -> Note(p.description) }
                                 S("Push / pull", recipe.pushStops, -2f, 3f, "%+.1f stop") { set { copy(pushStops = it) } }
                                 S("Film contrast", recipe.filmContrast, 0.6f, 1.6f, "%.2f") { set { copy(filmContrast = it) } }
-                                if (full) {
-                                    S("Film exposure (contrast & colour)", recipe.exposureEv, -3f, 3f, "%+.1f EV") { set { copy(exposureEv = it) } }
-                                    Toggle("Let the print compensate", recipe.printExposureCompensation) { set { copy(printExposureCompensation = it) } }
-                                    Note("Turn this off and film exposure changes brightness directly, as it would if you printed every negative for the same time.")
-                                }
                                 Head("COLOUR NOISE", null) {}
                                 val auto = recipe.chromaDenoise < 0f
                                 Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -1470,6 +1469,11 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                                 S("Same-layer inhibition", recipe.dirSameLayer, 0f, 2f, "%.2f", recipe.dir) { set { copy(dirSameLayer = it) } }
                                 S("Inter-layer inhibition", recipe.dirInterLayer, 0f, 2f, "%.2f", recipe.dir) { set { copy(dirInterLayer = it) } }
                                 S("Diffusion size", recipe.dirDiffusionUm, 2f, 80f, "%.0f µm", recipe.dir) { set { copy(dirDiffusionUm = it) } }
+                                // 108a: what only FULL used to show, at the bottom of FILM
+                                Head("ADVANCED", null) {}
+                                S("Film exposure (contrast & colour)", recipe.exposureEv, -3f, 3f, "%+.1f EV") { set { copy(exposureEv = it) } }
+                                Toggle("Let the print compensate", recipe.printExposureCompensation) { set { copy(printExposureCompensation = it) } }
+                                Note("Turn this off and film exposure changes brightness directly, as it would if you printed every negative for the same time.")
                             }
                             "halation" -> {
                                 Head("HALATION", recipe.halation) { set { copy(halation = it) } }
@@ -1725,7 +1729,9 @@ private fun Head(title: String, active: Boolean?, onActive: (Boolean) -> Unit) {
     val context = LocalContext.current
     Row(Modifier.fillMaxWidth().padding(top = 12.dp, bottom = 2.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
         Text(title, color = LatentColors.TextBright, fontSize = 10.sp, letterSpacing = 1.5.sp)
-        if (active != null) Text(if (active) "ON" else "OFF", color = if (active) LatentColors.Amber else LatentColors.Line, fontSize = 10.sp,
+        // 108a: a section's switch stays a word (ON / OFF) — a setting inside it is a small switch, see Toggle.
+        // OFF is TextDim, not Line, so it can be read.
+        if (active != null) Text(if (active) "ON" else "OFF", color = if (active) LatentColors.Amber else LatentColors.TextDim, fontSize = 10.sp, letterSpacing = 1.5.sp,
             modifier = Modifier.combinedClickable(onClick = { Haptics.tick(context); onActive(!active) }).padding(horizontal = 6.dp, vertical = 2.dp))
     }
 }
@@ -1742,9 +1748,15 @@ private fun Note(text: String) {
 @Composable
 private fun Toggle(label: String, value: Boolean, onChange: (Boolean) -> Unit) {
     val context = LocalContext.current
-    Row(Modifier.fillMaxWidth().combinedClickable(onClick = { Haptics.tick(context); onChange(!value) }).padding(vertical = 10.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-        Text(label, color = LatentColors.Text, fontSize = 11.sp)
-        Text(if (value) "ON" else "OFF", color = if (value) LatentColors.Amber else LatentColors.Line, fontSize = 10.sp, letterSpacing = 1.sp)
+    Row(Modifier.fillMaxWidth().combinedClickable(onClick = { Haptics.tick(context); onChange(!value) }).padding(vertical = 10.dp),
+        horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+        Text(label, color = LatentColors.Text, fontSize = 11.sp, modifier = Modifier.weight(1f, fill = false).padding(end = 12.dp))
+        // 108a: a setting is a small switch, so it no longer looks like a section's ON / OFF (Head)
+        Box(Modifier.size(width = 30.dp, height = 17.dp).clip(RoundedCornerShape(999.dp))
+            .background(if (value) LatentColors.Amber else LatentColors.SliderTrack)) {
+            Box(Modifier.align(if (value) Alignment.CenterEnd else Alignment.CenterStart).padding(2.dp).size(13.dp)
+                .clip(RoundedCornerShape(999.dp)).background(if (value) LatentColors.AmberInk else LatentColors.TextDim))
+        }
     }
 }
 
@@ -1926,4 +1938,23 @@ private class DarkroomAsks {
     var gpuTest by mutableStateOf("")
     var levelling by mutableStateOf(false)
     var stampFor by mutableStateOf<String?>(null)
+    /** 108a: the looks row has been scrolled to the photo's look once, on opening (not again as you pick). */
+    var lookShown = false
 }
+
+/**
+ * 108a: the photo's own look starts on screen. The looks row used to open at its first card, so a
+ * photo developed with a look further along showed no card lit at all. Once, on opening, the row
+ * slides that card to the middle; picking a look later never moves the row under your finger.
+ */
+private fun Modifier.showLookOnOpen(on: Boolean, asks: DarkroomAsks, row: androidx.compose.foundation.ScrollState,
+                                    scope: kotlinx.coroutines.CoroutineScope): Modifier =
+    if (!on || asks.lookShown) this else onGloballyPositioned { c ->
+        if (asks.lookShown) return@onGloballyPositioned
+        asks.lookShown = true
+        val x = c.positionInParent().x
+        val w = c.size.width
+        val view = row.viewportSize
+        if (view <= 0 || (x - row.value >= 0f && x - row.value + w <= view)) return@onGloballyPositioned
+        scope.launch { row.animateScrollTo((x + w / 2f - view / 2f).toInt().coerceAtLeast(0)) }
+    }

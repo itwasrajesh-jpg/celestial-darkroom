@@ -64,13 +64,13 @@ object HelpText {
     )
 
     val TOPICS: List<Topic> = listOf(
-        Topic("basics", "THE DARKROOM", "START HERE", "Simple, Full and Print; reset, clear and recipes",
+        Topic("basics", "THE DARKROOM", "START HERE", "Negative and Print; reset, clear and recipes",
             "Open any photo from the Roll to develop it here. Nothing you do changes the original: the darkroom keeps your edit beside the photo and saves a new file when you press Develop, at the top of the DEVELOP tab (in PRINT, the last step).",
             listOf(
-                Section("THE THREE ROOMS", items = listOf(
-                    Item("Simple · Full · Print", "top right",
-                        "SIMPLE shows the controls most photos need. FULL opens every control the film engine has, in the tabs described in this help. PRINT turns the darkroom into an enlarger: test strips, colour ring-around and everything you paint by hand.",
-                        use = "Start in SIMPLE, choose a look, then go to PRINT to finish. Use FULL when you want to understand or change one specific part of the film."),
+                Section("THE TWO ROOMS", items = listOf(
+                    Item("Negative · Print", "top right",
+                        "NEGATIVE holds every control the film engine has, in the tabs described in this help, from the scene's light to the scanner. PRINT turns the darkroom into an enlarger: test strips, colour ring-around and everything you paint by hand.",
+                        use = "Start in NEGATIVE, choose a look, then go to PRINT to finish. The tabs run in the order light travels, so go to the tab for the part of the film you want to change."),
                     Item("The handle above the controls", "drag · double-tap",
                         "Drag the small bar above the tabs to give the photo or the controls more room; it stays where you let go and is remembered, in PRINT's painting steps and DEVELOP too. Double-tap it for the usual height.",
                         use = "More room for sliders while you fine-tune, a bigger photo while you judge."),
@@ -139,7 +139,7 @@ object HelpText {
                         "More detail held in bright skies and deep shadows at once.",
                         "Snappier mid-tones, but bright and dark ends clip sooner.",
                         "Lower it for backlit or high-contrast scenes. Raise it for fog, overcast light or dull interiors."),
-                    Item("Film exposure (Full mode)", "−3 to +3 EV",
+                    Item("Film exposure (ADVANCED, bottom of FILM)", "−3 to +3 EV",
                         "How much light the negative got. Because the print compensates, it changes how the film draws tones and colour rather than how bright the print is.",
                         "An under-exposed negative: thinner shadows, heavier colour, more contrast.",
                         "An over-exposed negative: open shadows, soft pastel colour, the classic \"rated at half box speed\" look.",
