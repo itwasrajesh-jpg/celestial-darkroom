@@ -8,26 +8,25 @@ import java.nio.ByteOrder
 import kotlin.math.max
 import kotlin.math.min
 
-/** 109c: one look a layer asks for, ready to develop: its recipe and where it goes (the layers' areas together). */
+/** 109c: one set of layer settings to develop: the recipe, where it goes (those layers' areas together), and whose they are. */
 data class LayerLook(val id: String, val recipe: Recipe, val mask: ExposureMap)
 
 /**
- * 109c: a NEGATIVE look per layer. The film engine develops a whole picture in one look, so a layer
- * with its own look is made by developing the photo once more in that look and blending that print
- * in by the layer's area, snapped to the print's own edges with the same guided filter as the layers'
- * light (proof: layers/109c-preset-per-layer/, the real engine on the palm and the cat).
+ * 109c: NEGATIVE per layer ([LayerRecipes]). The film engine develops a whole picture with one set of
+ * settings, so a layer with its own is made by developing the photo once more with them and blending
+ * that print in by the layer's area, snapped to the print's own edges with the same guided filter as
+ * the layers' light (proof: layers/109c-preset-per-layer/, the real engine on the palm and the cat).
  *
- * Each extra look costs one more develop and one more print held in memory, so at most [MAX_EXTRA]
- * looks besides the photo's own; layers sharing a look share its develop.
+ * Each extra set costs one more develop and one more print held in memory, so at most [MAX_EXTRA]
+ * besides the photo's own; layers with the same settings share one develop. Where a layer's settings
+ * change what happens before the film (the LIGHT tab, noise cleaning, Night Clean, the 85B, the
+ * diffusion filters, the film size), the photo is also prepared again for it.
  *
- * What a look takes: the film, paper, grain, halation, couplers, contrast and colour of its preset,
- * with this print's own changes carried over the way picking it in NEGATIVE carries them
- * ([SceneLight.keepLight]: the LIGHT tab, and the exposure moved from the photo's look). What stays
- * the photo's: the lens and enlarger filters (they were already made on the shared negative), the
- * film size, the output colour space and the preview size, so both prints line up pixel for pixel.
+ * What always stays the photo's: the preview size, the GPU preview and the output colour space, so
+ * both prints come out the same size and in the same colours to blend.
  */
 object LayerLooks {
-    const val MAX_EXTRA = 2
+    const val MAX_EXTRA = 3
 
     /** A look's own starting recipe: a preset, or a recipe saved or built here ("stock:<name>"). */
     fun lookRecipe(context: Context, id: String): Recipe? =
@@ -37,60 +36,54 @@ object LayerLooks {
     fun name(context: Context, id: String): String =
         (if (id.startsWith("stock:")) id.removePrefix("stock:") else Presets.byId(context, id)?.name?.substringBefore(" — ") ?: id).uppercase()
 
-    /** The layers that ask for a look of their own and can show it. */
-    private fun asking(layers: List<Layer>?): List<Layer> =
-        layers?.filter { it.visible && it.look != null && !it.mask.isBlank } ?: emptyList()
+    fun wanted(layers: List<Layer>?): Boolean = LayerRecipes.own(layers).isNotEmpty()
 
-    fun wanted(layers: List<Layer>?): Boolean = asking(layers).isNotEmpty()
-
-    /** What the prints read: "-" when no layer has a look (so keys made before 109c still match). */
-    fun key(layers: List<Layer>?): String = asking(layers).sortedBy { it.id }.joinToString(";") { "${it.look}@${it.maskKey()}" }.ifEmpty { "-" }
+    /** What the prints read: "-" when no layer has settings of its own (so keys made before 109c still match). */
+    fun key(layers: List<Layer>?): String = LayerRecipes.own(layers).sortedBy { it.id }
+        .joinToString(";") { "${it.recipe!!.toJson().hashCode()}@${it.maskKey()}" }.ifEmpty { "-" }
 
     /**
-     * The looks to develop for a print made with [main] (the photo's recipe as this render uses it,
-     * a test strip's step included) whose own look is [mainLook] (an id as [lookRecipe] takes).
+     * The sets to develop for a print made with [main]: the photo's settings as this render uses
+     * them (a test strip's step, the quick pass's lighter settings, the preview size included), when
+     * the darkroom's own are [all]. Each layer's settings take the same changes ([LayerRecipes.follow]);
+     * one that comes out the same as [main] needs nothing.
      */
-    fun resolve(context: Context, layers: List<Layer>?, main: Recipe, mainLook: String): List<LayerLook> {
-        val ls = asking(layers)
+    fun resolve(layers: List<Layer>?, all: Recipe, main: Recipe): List<LayerLook> {
+        val ls = LayerRecipes.own(layers)
         if (ls.isEmpty()) return emptyList()
-        val base = lookRecipe(context, mainLook) ?: main
-        return ls.groupBy { it.look!! }.entries.take(MAX_EXTRA).mapNotNull { (id, group) ->
-            val to = lookRecipe(context, id) ?: return@mapNotNull null
-            val r = alignTo(SceneLight.keepLight(main, base, to), main)
-            val m0 = group.first().mask
-            // the group's areas together (overlaps count once): all on the first one's grid
-            val m = if (group.size == 1) m0 else ExposureMap(m0.width, m0.height, FloatArray(m0.width * m0.height) { k ->
-                val u = ((k % m0.width) + 0.5f) / m0.width; val v = ((k / m0.width) + 0.5f) / m0.height
-                group.sumOf { it.mask.sample(u, v).coerceIn(0f, 1f).toDouble() }.toFloat().coerceAtMost(1f)
-            })
-            LayerLook(id, r, m)
-        }
+        return ls.map { alignTo(LayerRecipes.follow(it.recipe!!, all, main), main) to it }
+            .filter { it.first != main }
+            .groupBy({ it.first }, { it.second }).entries.take(MAX_EXTRA).map { (r, group) ->
+                val m0 = group.first().mask
+                // the group's areas together (overlaps count once): all on the first one's grid
+                val m = if (group.size == 1) m0 else ExposureMap(m0.width, m0.height, FloatArray(m0.width * m0.height) { k ->
+                    val u = ((k % m0.width) + 0.5f) / m0.width; val v = ((k / m0.width) + 0.5f) / m0.height
+                    group.sumOf { it.mask.sample(u, v).coerceIn(0f, 1f).toDouble() }.toFloat().coerceAtMost(1f)
+                })
+                LayerLook(group.joinToString("+") { it.name }, r, m)
+            }
     }
 
-    /** The parts of a look's recipe that must stay the photo's, so the two prints line up. */
+    /** The parts of a layer's recipe that must stay the photo's, so the two prints line up. */
     private fun alignTo(r: Recipe, main: Recipe): Recipe = r.copy(
         previewMaxSize = main.previewMaxSize, gpuPreview = main.gpuPreview,
-        outputColorSpace = main.outputColorSpace, outputGamutCompress = main.outputGamutCompress, inputGamutCompress = main.inputGamutCompress,
-        filmFormatMm = main.filmFormatMm,
-        fastDiffusion = main.fastDiffusion, diffusion = main.diffusion, diffusionFamily = main.diffusionFamily,
-        diffusionStrength = main.diffusionStrength, diffusionScale = main.diffusionScale,
-        diffusionCore = main.diffusionCore, diffusionCoreSize = main.diffusionCoreSize,
-        diffusionHalo = main.diffusionHalo, diffusionHaloSize = main.diffusionHaloSize,
-        diffusionBloom = main.diffusionBloom, diffusionBloomSize = main.diffusionBloomSize, diffusionWarmth = main.diffusionWarmth,
-        printDiffusion = main.printDiffusion, printDiffusionFamily = main.printDiffusionFamily, printDiffusionStrength = main.printDiffusionStrength,
+        outputColorSpace = main.outputColorSpace, outputGamutCompress = main.outputGamutCompress,
     )
 
     /** The look masks for a part of the picture (the quick pass's centre, a zoomed region). */
     fun crop(looks: List<LayerLook>, f: (ExposureMap) -> ExposureMap): List<LayerLook> = looks.map { it.copy(mask = f(it.mask)) }
 
     /**
-     * Develops [source] once in each look and blends them into [main] (the photo's own print, in place)
-     * by each look's area snapped to [main]'s edges. [params] makes a look's engine settings (the same
-     * as the photo's print gets: dodge & burn, print size). The looks are all developed first and then
-     * blended in one pass, so every area snaps against the photo's print as it came from the film;
-     * where areas overlap past full, they share the place.
+     * Develops [source] once with each layer's settings and blends them into [main] (the photo's own
+     * print, in place) by each one's area snapped to [main]'s edges. [params] makes a set's engine
+     * settings (the same as the photo's print gets: dodge & burn, print size). Where a set prepares the
+     * photo differently from [mainRecipe], [prepare] gives the photo prepared for it (and whether it is
+     * to be closed after; null = use [source]). All are developed first and then blended in one pass,
+     * so every area snaps against the photo's print as it came from the film; where areas overlap past
+     * full, they share the place.
      */
     fun blend(engine: SpektraEngine, source: Develop.Source, main: SimResult, looks: List<LayerLook>, preview: Boolean,
+              mainRecipe: Recipe, prepare: ((Recipe) -> Pair<Develop.Source, Boolean>?)?,
               params: (Recipe) -> com.spectrafilm.engine.SpektraParams, log: (String) -> Unit = {}) {
         if (looks.isEmpty()) return
         val t = System.nanoTime()
@@ -99,15 +92,22 @@ object LayerLooks {
         try {
             val used = ArrayList<LayerLook>()
             for (look in looks) {
-                log("developing a layer's own look (${used.size + 1} of ${looks.size})…")
-                val r = if (preview) engine.simulatePreview(source.image, params(look.recipe)) else engine.simulate(source.image, params(look.recipe))
-                if (r.width != w || r.height != h) { Log.w("Latent", "layer look ${look.id}: ${r.width}x${r.height} is not the print's ${w}x$h; skipped"); r.close(); continue }
+                val own = if (prepare != null && Develop.preparedKeyOf(look.recipe) != Develop.preparedKeyOf(mainRecipe)) {
+                    log("preparing the photo for ${look.id}…")
+                    runCatching { prepare(look.recipe) }.getOrElse { t -> Log.e("Latent", "layer ${look.id}: could not prepare the photo", t); null }
+                } else null
+                log("developing ${look.id} with its own settings (${used.size + 1} of ${looks.size})…")
+                val s = own?.first ?: source
+                val r = try {
+                    if (preview) engine.simulatePreview(s.image, params(look.recipe)) else engine.simulate(s.image, params(look.recipe))
+                } finally { if (own != null && own.second) own.first.close() }
+                if (r.width != w || r.height != h) { Log.w("Latent", "layer ${look.id}: ${r.width}x${r.height} is not the print's ${w}x$h; skipped"); r.close(); continue }
                 results.add(r); used.add(look)
             }
             if (results.isEmpty()) return
             blendInto(main.data.order(ByteOrder.nativeOrder()).asFloatBuffer(), w, h,
                 results.map { it.data.order(ByteOrder.nativeOrder()).asFloatBuffer() }, used.map { it.mask })
-            Log.i("Latent", "layer looks ${used.joinToString { it.id }} developed and blended at ${w}x$h in ${(System.nanoTime() - t) / 1_000_000} ms")
+            Log.i("Latent", "layers' own settings ${used.joinToString { it.id }} developed and blended at ${w}x$h in ${(System.nanoTime() - t) / 1_000_000} ms")
         } finally {
             results.forEach { it.close() }
         }

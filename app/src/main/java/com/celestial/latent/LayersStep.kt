@@ -217,12 +217,10 @@ internal fun LayersStep(
             stepStartMap = { a -> ExposureMap.blank(a) },
             modifier = modifier,
             renderRegion = renderRegion?.let { f -> { r, e, m, reg -> f(r, e, if (sel == null) layers else layers.map { if (it.id == sel.id) it.copy(mask = m ?: ExposureMap.blank(aspect())) else it }, reg) } },
-            tabs = if (sel == null) null else listOf("ADJUST" to @Composable { AdjustRows(sel) { f -> edit(sel.id, f) } },
-                // 109c: the layer's own film look
-                "LOOK" to @Composable { LookRows(sel, layers) { f -> edit(sel.id, f) } }),
+            tabs = if (sel == null) null else listOf("ADJUST" to @Composable { AdjustRows(sel) { f -> edit(sel.id, f) } }),
             tabsLead = sel?.name,
             // the other layers' settings re-develop the print; this one's painting does so itself
-            refreshKey = layers.joinToString(";") { (if (it.id == sel?.id) "${it.ev}:${it.warmth}:${it.colour}:${it.visible}" else it.key()) + ":" + it.look },
+            refreshKey = layers.joinToString(";") { (if (it.id == sel?.id) "${it.ev}:${it.warmth}:${it.colour}:${it.visible}" else it.key()) + ":" + (it.recipe?.toJson()?.hashCode() ?: 0) },
             lookState = sel?.let { Triple(it.ev, it.warmth, it.colour) },
             onRestoreLook = { st ->
                 @Suppress("UNCHECKED_CAST") val t = st as? Triple<Float, Float, Float>
@@ -328,9 +326,9 @@ private fun LayerCard(l: Layer, chosen: Boolean, picture: Bitmap?, tint: Bitmap?
             Text(l.name, color = if (chosen) LatentColors.Amber else LatentColors.Text, fontSize = 11.sp, letterSpacing = 0.8.sp,
                 maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(start = 5.dp))
         }
-        // 109c: a layer with its own look says so first
-        val parts = (listOfNotNull(l.look?.let { com.celestial.latent.develop.LayerLooks.name(context, it) }) +
-            l.summary().split(" · ").filter { l.look == null || it != "no changes" })
+        // 109c: a layer with NEGATIVE settings of its own says so first: its look, or just that it has its own
+        val parts = (listOfNotNull(if (l.recipe == null) null else l.lookId?.let { com.celestial.latent.develop.LayerLooks.name(context, it) } ?: "OWN NEGATIVE") +
+            l.summary().split(" · ").filter { l.recipe == null || it != "no changes" })
         Text(if (!l.visible) "hidden" else parts.getOrElse(0) { "" }, color = LatentColors.TextDim, fontSize = 9.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         if (l.visible && parts.size > 1) Text(parts.drop(1).joinToString(" · "), color = LatentColors.TextDim, fontSize = 9.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
@@ -415,41 +413,6 @@ private fun AdjustRows(l: Layer, onLayer: ((Layer) -> Layer) -> Unit) {
         LayerSlider("Colour", l.colour, 0f, 2f, 1f, { String.format(Locale.US, "×%.2f", it) }) { v -> onLayer { it.copy(colour = v) } }
         Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(top = 2.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
             PrintChip("reset layer", on = false, enabled = abs(l.ev) + abs(l.warmth) + abs(l.colour - 1f) > 1e-4f) { onLayer { it.copy(ev = 0f, warmth = 0f, colour = 1f) } }
-        }
-    }
-}
-
-/**
- * 109c: LOOK — the layer's own film look, from the same looks as NEGATIVE (your recipes, films built
- * here, the presets), or the photo's own. Each look besides the photo's develops the photo once more
- * and is blended in by the layer, so at most [LayerLooks.MAX_EXTRA] of them; layers on the same look
- * share it.
- */
-@Composable
-private fun LookRows(l: Layer, layers: List<Layer>, onLayer: ((Layer) -> Layer) -> Unit) {
-    val context = LocalContext.current
-    val presets = remember { com.celestial.latent.develop.Presets.all(context) }
-    val saved = remember { com.celestial.latent.develop.Recipes.saved(context) + com.celestial.latent.develop.Recipes.stocks(context) }
-    // the looks other shown layers already use: a new one may be picked only while there is room
-    val others = layers.filter { it.id != l.id && it.visible && it.look != null }.mapNotNull { it.look }.toSet()
-    val room = others.size < com.celestial.latent.develop.LayerLooks.MAX_EXTRA
-    val choices: List<Pair<String?, String>> = listOf<Pair<String?, String>>(null to "PHOTO'S LOOK") +
-        saved.map { (name, _) -> ("stock:" + name) to name.uppercase() } +
-        presets.map { it.id to it.name.substringBefore(" — ").uppercase() }
-    Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 6.dp)) {
-        Text(
-            if (l.look == null) "This layer develops in the photo's look. Pick another and the photo is developed once more in it, so the print takes longer."
-            else "${l.name} develops in ${com.celestial.latent.develop.LayerLooks.name(context, l.look)}. The rest keeps the photo's look.",
-            color = LatentColors.TextDim, fontSize = 10.sp, modifier = Modifier.padding(bottom = 6.dp))
-        if (!room && l.look == null) Text("${com.celestial.latent.develop.LayerLooks.MAX_EXTRA} looks besides the photo's at most: use one already chosen.",
-            color = LatentColors.Amber, fontSize = 10.sp, modifier = Modifier.padding(bottom = 6.dp))
-        for (row in choices.chunked(2)) {
-            Row(Modifier.fillMaxWidth().padding(bottom = 6.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                for ((id, label) in row) {
-                    val can = id == null || id == l.look || id in others || room
-                    PrintChip(label, on = l.look == id, enabled = can) { if (can) onLayer { it.copy(look = id) } }
-                }
-            }
         }
     }
 }
