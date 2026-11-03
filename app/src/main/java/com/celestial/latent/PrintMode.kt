@@ -85,6 +85,14 @@ import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateCentroid
 import com.celestial.latent.develop.Region
 import com.celestial.latent.ui.LatentColors
+import com.celestial.latent.ui.pressIn
+import com.celestial.latent.ui.NumKind
+import com.celestial.latent.ui.Num
+import com.celestial.latent.ui.SliderOrder
+import com.celestial.latent.ui.LivingSlider
+import com.celestial.latent.ui.glideItem
+import com.celestial.latent.ui.LocalGlide
+import com.celestial.latent.ui.GlideRow
 import com.celestial.latent.ui.accentFill
 import com.celestial.latent.ui.OnPhoto
 import com.celestial.latent.ui.raised
@@ -272,7 +280,7 @@ private fun TestStripStep(
                 "test around it", color = if (canRetest) LatentColors.AmberInk else LatentColors.TextDim, fontSize = 11.sp,
                 modifier = Modifier.clip(RoundedCornerShape(999.dp))
                     .accentFill(canRetest, LatentColors.Surface)
-                    .then(if (canRetest) Modifier.pointerInput(selected) {
+                    .then(if (canRetest) Modifier.pressIn().pointerInput(selected) {
                         detectTapGestures(onTap = {
                             Haptics.tick(context)
                             val chosen = exposures[selected]
@@ -292,7 +300,7 @@ private fun TestStripStep(
         Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
             Chip("grain", on = recipe.grain) { onGrain(!recipe.grain, recipe.grainSizeUm2) }
             Text("finer", color = LatentColors.TextDim, fontSize = 10.sp, modifier = Modifier.padding(start = 10.dp))
-            androidx.compose.material3.Slider(
+            LivingSlider(
                 value = grainLive, onValueChange = { grainLive = it },
                 onValueChangeFinished = { onGrain(true, grainLive) }, valueRange = 0.05f..1.2f,
                 enabled = recipe.grain,
@@ -307,8 +315,8 @@ private fun TestStripStep(
         var amountLive by remember(recipe.grainAmount) { mutableStateOf(recipe.grainAmount) }
         Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("amount", color = if (recipe.grain) LatentColors.Text else LatentColors.TextDim, fontSize = 10.sp, modifier = Modifier.width(50.dp))
-            androidx.compose.material3.Slider(
-                value = amountLive, onValueChange = { amountLive = (it * 20f).roundToInt() / 20f },
+            LivingSlider(
+                value = amountLive, onValueChange = { amountLive = (it * 20f).roundToInt() / 20f }, label = { "${(it * 100f).roundToInt()}%" },
                 onValueChangeFinished = { onGrainAmount(amountLive) }, valueRange = 0f..1.5f,
                 enabled = recipe.grain,
                 colors = androidx.compose.material3.SliderDefaults.colors(thumbColor = LatentColors.Amber,
@@ -385,7 +393,7 @@ private fun StepIndicator(active: Int, available: Int, onSelect: (Int) -> Unit, 
             steps.forEachIndexed { i, label ->
                 val on = i == active
                 val bar by animateFloatAsState(if (on) 1f else 0f, tween(260), label = "step")
-                Column(Modifier.pointerInput(i) { detectTapGestures(onTap = { onSelect(i) }) }) {
+                Column(Modifier.pressIn().pointerInput(i) { detectTapGestures(onTap = { onSelect(i) }) }) {
                     Text("${i + 1}  $label", color = when { on -> LatentColors.Amber; i < available -> LatentColors.TextDim; else -> LatentColors.Line },
                         fontSize = (10f * k).sp, letterSpacing = (1.2f * k).sp, maxLines = 1, softWrap = false)
                     Box(Modifier.padding(top = 4.dp).height(2.dp).width((40 * bar).dp).clip(RoundedCornerShape(1.dp)).accentFill())
@@ -585,6 +593,8 @@ fun PrintPanel(
     onDevelopHold: (suspend androidx.compose.foundation.gestures.PressGestureScope.() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
+    // 111c: in Clay, each slider of the room takes the next pastel
+    SliderOrder.Group(Unit) {
     val context = LocalContext.current
     val cache = memory.cache
     var step by memory.step
@@ -862,6 +872,7 @@ fun PrintPanel(
         }
     }
 }
+}
 
 /** Grid order: the current print, then the four straight colour moves, then the corners. */
 private val RING_ORDER = intArrayOf(4, 1, 3, 5, 7, 0, 2, 6, 8)
@@ -1043,7 +1054,7 @@ private fun RingAroundStep(
                     val on = sz == stepSize
                     Text(
                         String.format(Locale.US, "%.0f", sz), color = if (on) LatentColors.AmberInk else LatentColors.TextDim, fontSize = 11.sp,
-                        modifier = Modifier.clip(RoundedCornerShape(999.dp)).accentFill(on, LatentColors.Surface)
+                        modifier = Modifier.pressIn().clip(RoundedCornerShape(999.dp)).accentFill(on, LatentColors.Surface)
                             .pointerInput(sz, on) { detectTapGestures(onTap = { if (!on && !gliding) { Haptics.tick(context); stepSize = sz } }) }
                             .padding(horizontal = 10.dp, vertical = 5.dp),
                     )
@@ -1434,7 +1445,7 @@ private fun SettleSlider(left: String, right: String, value: Float, range: Close
     var live by remember(value) { mutableStateOf(value) }
     Row(verticalAlignment = Alignment.CenterVertically) {
         Text(left, color = LatentColors.TextDim, fontSize = 10.sp)
-        androidx.compose.material3.Slider(
+        LivingSlider(
             value = live, onValueChange = { live = it }, onValueChangeFinished = { onSettle(live) }, valueRange = range,
             colors = androidx.compose.material3.SliderDefaults.colors(thumbColor = LatentColors.Amber,
                 activeTrackColor = LatentColors.SliderFill, inactiveTrackColor = LatentColors.SliderTrackDim),
@@ -1461,7 +1472,7 @@ private fun RaysLightTab(
         }
         // which light: a few lights per photo, chosen to enhance — not one on every lamp
         Row(Modifier.fillMaxWidth().padding(bottom = 6.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-            Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+            GlideRow("${selected + 1}", horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text("light", color = LatentColors.TextDim, fontSize = 11.sp, modifier = Modifier.padding(end = 2.dp))
                 for (i in 0 until count) Chip("${i + 1}", on = i == selected) { onSelect(i) }
                 if (count < 1 + com.celestial.latent.develop.ExtraLights.MAX) Chip("+", on = false) { onAdd() }
@@ -1470,7 +1481,7 @@ private fun RaysLightTab(
         }
         // the kind of light, as in 3D software; switching keeps where it is (only a sun may be off the
         // picture, so another kind comes back to the nearest edge)
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+        GlideRow(look.type, Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
             listOf("point", "sun", "spot", "area").forEach { t ->
                 Chip(t, on = look.type == t) {
                     val at = if (t == "sun") look.u to look.v else keep(look.u, look.v)
@@ -1479,7 +1490,7 @@ private fun RaysLightTab(
             }
         }
         Row(Modifier.fillMaxWidth().padding(top = 6.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            GlideRow(when (look.mode) { "add" -> "add light"; "gaps" -> "through gaps"; else -> null }, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 Chip("add light", on = look.mode == "add") { onLook(look.copy(mode = "add")) }
                 Chip("through gaps", on = look.mode == "gaps") { onLook(look.copy(mode = "gaps")) }
                 // a sun can shine in through a window: a rectangle to fit over it, the sun placed beyond
@@ -1597,7 +1608,7 @@ private fun LightColourRows(look: RaysLook, onLook: (RaysLook) -> Unit) {
                 Canvas(Modifier.fillMaxWidth().height(12.dp).padding(horizontal = 10.dp).clip(RoundedCornerShape(999.dp))) {
                     drawRect(androidx.compose.ui.graphics.Brush.horizontalGradient((0..12).map { k -> Color.hsv(k * 30f % 360f, 0.85f, 0.95f) }))
                 }
-                androidx.compose.material3.Slider(
+                LivingSlider(
                     value = hueLive, onValueChange = { hueLive = it }, onValueChangeFinished = { onLook(look.copy(hue = hueLive)) },
                     valueRange = 0f..360f,
                     colors = androidx.compose.material3.SliderDefaults.colors(thumbColor = LatentColors.Amber,
@@ -1705,7 +1716,8 @@ private fun FogColourRow(look: FogLook, picking: Boolean, onLook: (FogLook) -> U
         activeTrackColor = LatentColors.SliderFill, inactiveTrackColor = LatentColors.SliderTrackDim)
     Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 6.dp)) {
         // seven choices: wider than a phone, so they scroll; switching keeps warmth, amount, hue, tint
-        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+        GlideRow(if (picking) "tap photo" else if (look.mode == "picked") "from photo" else look.mode,
+            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
             Chip("auto", on = look.mode == "auto") { onLook(look.copy(mode = "auto")) }
             Fog.PRESETS.forEach { (name, _) -> Chip(name, on = look.mode == name) { onLook(look.copy(mode = name)) } }
             Chip("colour", on = look.mode == "colour") { onLook(look.copy(mode = "colour")) }
@@ -1720,7 +1732,7 @@ private fun FogColourRow(look: FogLook, picking: Boolean, onLook: (FogLook) -> U
                     val stops = (0..12).map { k -> Color.hsv(k * 30f % 360f, 0.55f, 0.95f) }
                     drawRect(androidx.compose.ui.graphics.Brush.horizontalGradient(stops))
                 }
-                androidx.compose.material3.Slider(
+                LivingSlider(
                     value = hueLive, onValueChange = { hueLive = it },
                     onValueChangeFinished = { onLook(look.copy(hue = hueLive)) }, valueRange = 0f..360f,
                     colors = androidx.compose.material3.SliderDefaults.colors(thumbColor = LatentColors.Amber,
@@ -1730,7 +1742,7 @@ private fun FogColourRow(look: FogLook, picking: Boolean, onLook: (FogLook) -> U
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("neutral", color = LatentColors.TextDim, fontSize = 10.sp)
-                androidx.compose.material3.Slider(
+                LivingSlider(
                     value = tintLive, onValueChange = { tintLive = it },
                     onValueChangeFinished = { onLook(look.copy(tint = tintLive)) }, valueRange = 0f..1f,
                     colors = sliderColours, modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
@@ -1743,7 +1755,7 @@ private fun FogColourRow(look: FogLook, picking: Boolean, onLook: (FogLook) -> U
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.size(14.dp).clip(RoundedCornerShape(999.dp)).background(Color(Fog.swatch(look.copy(warmth = warmthLive)))))
             Text("cool", color = LatentColors.TextDim, fontSize = 10.sp, modifier = Modifier.padding(start = 6.dp))
-            androidx.compose.material3.Slider(
+            LivingSlider(
                 value = warmthLive, onValueChange = { warmthLive = it },
                 onValueChangeFinished = { onLook(look.copy(warmth = warmthLive)) }, valueRange = -1f..1f,
                 colors = sliderColours, modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
@@ -1754,7 +1766,7 @@ private fun FogColourRow(look: FogLook, picking: Boolean, onLook: (FogLook) -> U
         var amountLive by remember(look.amount) { mutableStateOf(look.amount) }
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("amount", color = LatentColors.TextDim, fontSize = 10.sp)
-            androidx.compose.material3.Slider(
+            LivingSlider(
                 value = amountLive, onValueChange = { amountLive = it },
                 onValueChangeFinished = { onLook(look.copy(amount = (amountLive * 100f).roundToInt() / 100f)) },
                 valueRange = 0f..1f, colors = sliderColours, modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
@@ -1766,7 +1778,7 @@ private fun FogColourRow(look: FogLook, picking: Boolean, onLook: (FogLook) -> U
         var litLive by remember(look.lit) { mutableStateOf(look.lit) }
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("lit by lights", color = LatentColors.TextDim, fontSize = 10.sp)
-            androidx.compose.material3.Slider(
+            LivingSlider(
                 value = litLive, onValueChange = { litLive = it },
                 onValueChangeFinished = { onLook(look.copy(lit = (litLive * 20f).roundToInt() / 20f)) },
                 valueRange = 0f..1f, colors = sliderColours, modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
@@ -2436,7 +2448,7 @@ internal fun PaintStep(
             Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 6.dp),
             horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically,
         ) {
-            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            GlideRow(if (plus) spec.plusLabel else spec.minusLabel, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 listOf(false to spec.minusLabel, true to spec.plusLabel).forEach { (b, label) -> Chip(label, on = plus == b) { plus = b } }
                 if (spec.gradientAmount != null) Chip("gradient", on = gradientTool) { gradientTool = !gradientTool }
             }
@@ -2444,7 +2456,7 @@ internal fun PaintStep(
                 for (i in 0..2) {
                     val on = brush == i
                     val d = (10 + i * 6).dp
-                    Box(Modifier.size(28.dp).pointerInput(i) { detectTapGestures(onTap = { Haptics.tick(context); brush = i }) },
+                    Box(Modifier.pressIn().size(28.dp).pointerInput(i) { detectTapGestures(onTap = { Haptics.tick(context); brush = i }) },
                         contentAlignment = Alignment.Center) {
                         Box(Modifier.size(d).clip(RoundedCornerShape(999.dp)).accentFill(on, LatentColors.Surface))
                     }
@@ -2456,7 +2468,7 @@ internal fun PaintStep(
             Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 6.dp),
             horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically,
         ) {
-            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            GlideRow((spec.strengths?.map { it.first } ?: listOf("gentle", "medium", "strong")).getOrNull(strength), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 (spec.strengths?.map { it.first } ?: listOf("gentle", "medium", "strong")).forEachIndexed { i, label -> Chip(label, on = strength == i) { strength = i } }
             }
             Chip("mask", on = showMask) { showMask = !showMask }
@@ -2563,7 +2575,7 @@ internal fun PaintStep(
                 modifier = Modifier.weight(1f).pointerInput(Unit) { detectTapGestures(onTap = { hintOpen = !hintOpen }) },
             )
             if (!selOpen) Text(if (hintOpen) "×" else "?", color = LatentColors.TextDim, fontSize = 11.sp,
-                modifier = Modifier.padding(start = 6.dp).size(22.dp).clip(RoundedCornerShape(999.dp))
+                modifier = Modifier.pressIn().padding(start = 6.dp).size(22.dp).clip(RoundedCornerShape(999.dp))
                     .border(1.dp, LatentColors.Line, RoundedCornerShape(999.dp))
                     .pointerInput(Unit) { detectTapGestures(onTap = { hintOpen = !hintOpen }) }
                     .wrapContentHeight(Alignment.CenterVertically), textAlign = TextAlign.Center)
@@ -2741,13 +2753,13 @@ internal fun PaintStep(
             Text(
                 when { comparing && before == null -> "developing…"; comparing -> "BEFORE"; else -> "hold: before" },
                 color = if (comparing) OnPhoto.AmberInk else OnPhoto.Text, fontSize = 10.sp, letterSpacing = 1.sp,
-                modifier = Modifier.align(Alignment.TopEnd).padding(8.dp).clip(RoundedCornerShape(999.dp))
+                modifier = Modifier.pressIn().align(Alignment.TopEnd).padding(8.dp).clip(RoundedCornerShape(999.dp))
                     .background(if (comparing) OnPhoto.Amber else Color(0xCC161615))
                     .pointerInput(Unit) { detectTapGestures(onPress = { comparing = true; tryAwaitRelease(); comparing = false }) }
                     .padding(horizontal = 10.dp, vertical = 5.dp),
             )
             if (zoom.zoomed) Text("${String.format(Locale.US, "%.1f", zoom.scale)}×  · " + (if (sharpening) "sharpening… · fit" else "fit"), color = LatentColors.AmberInk, fontSize = 10.sp,
-                modifier = Modifier.align(Alignment.TopStart).padding(6.dp).clip(RoundedCornerShape(999.dp)).accentFill()
+                modifier = Modifier.pressIn().align(Alignment.TopStart).padding(6.dp).clip(RoundedCornerShape(999.dp)).accentFill()
                     .pointerInput(Unit) { detectTapGestures(onTap = { Haptics.tick(context); zoom.reset(); detail = null }) }
                     .padding(horizontal = 10.dp, vertical = 4.dp))
         }
@@ -2770,7 +2782,7 @@ internal fun PaintStep(
                 listOf(false to layer.chips.first, true to layer.chips.second).forEach { (on, name) ->
                     val chosen = on == layerOn
                     val bar by animateFloatAsState(if (chosen) 1f else 0f, tween(220), label = "layer")
-                    Column(Modifier.pointerInput(on, chosen) { detectTapGestures(onTap = { if (!chosen) { Haptics.tick(context); chooseLayer(on) } }) }) {
+                    Column(Modifier.pressIn().pointerInput(on, chosen) { detectTapGestures(onTap = { if (!chosen) { Haptics.tick(context); chooseLayer(on) } }) }) {
                         Text(name, color = if (chosen) LatentColors.Amber else LatentColors.TextDim, fontSize = 11.sp, letterSpacing = 1.5.sp)
                         Box(Modifier.padding(top = 3.dp).height(2.dp).width((28 * bar).dp).clip(RoundedCornerShape(1.dp)).accentFill())
                     }
@@ -2788,7 +2800,7 @@ internal fun PaintStep(
         // (foreground warm, background cool), and fix — paint on the photo to correct it, on any tab.
         if (!selOpen && (depthRanks != null || depthSplit != null)) Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 6.dp)) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+                GlideRow(when (depthSide) { 1 -> "near"; 2 -> "far"; else -> null }, horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text("depth", color = LatentColors.TextDim, fontSize = 10.sp, letterSpacing = 1.sp)
                     // 110a: near / far, as "+ layer" names them ("background" is also a layer's name)
                     Chip("near", on = depthSide == 1) { onDepthSide(if (depthSide == 1) 0 else 1) }
@@ -2834,7 +2846,7 @@ internal fun PaintStep(
                 (tabs.mapIndexed { i, t -> if (i == 0 && layerOn && layer?.tabName != null) layer.tabName else t.first } + "BRUSH").forEachIndexed { i, name ->
                     val on = i == tab
                     val bar by animateFloatAsState(if (on) 1f else 0f, tween(220), label = "tab")
-                    Column(Modifier.pointerInput(i) { detectTapGestures(onTap = { if (i != tab) Haptics.tick(context); tab = i }) }) {
+                    Column(Modifier.pressIn().pointerInput(i) { detectTapGestures(onTap = { if (i != tab) Haptics.tick(context); tab = i }) }) {
                         Text(name, color = if (on) LatentColors.Amber else LatentColors.TextDim, fontSize = 11.sp, letterSpacing = 1.5.sp, maxLines = 1, softWrap = false)
                         Box(Modifier.padding(top = 3.dp).height(2.dp).width((28 * bar).dp).clip(RoundedCornerShape(1.dp)).accentFill())
                     }
@@ -2844,9 +2856,9 @@ internal fun PaintStep(
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 key(historyTick) {
                     Text("undo", color = if (undo.isNotEmpty()) LatentColors.Amber else LatentColors.TextDim, fontSize = 11.sp,
-                        modifier = Modifier.pointerInput(Unit) { detectTapGestures(onTap = { undoStep() }) })
+                        modifier = Modifier.pressIn().pointerInput(Unit) { detectTapGestures(onTap = { undoStep() }) })
                     Text("redo", color = if (redo.isNotEmpty()) LatentColors.Amber else LatentColors.TextDim, fontSize = 11.sp,
-                        modifier = Modifier.pointerInput(Unit) { detectTapGestures(onTap = { redoStep() }) })
+                        modifier = Modifier.pressIn().pointerInput(Unit) { detectTapGestures(onTap = { redoStep() }) })
                 }
             }
             }
@@ -2965,7 +2977,7 @@ private fun AirRow(look: FogLook, ask: AirAsk, hasDepth: Boolean, filmAir: FogLo
         var scaleLive by remember(ask.scale) { mutableStateOf(ask.scale) }
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("thinner", color = LatentColors.TextDim, fontSize = 10.sp)
-            androidx.compose.material3.Slider(
+            LivingSlider(
                 value = scaleLive, onValueChange = { scaleLive = it },
                 onValueChangeFinished = { ask.scale = scaleLive; if (current != null) ask.ask(current) }, valueRange = 0.3f..2f,
                 enabled = hasDepth, colors = sliderColours, modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
@@ -3039,7 +3051,7 @@ private fun OutlinedChip(label: String, onTap: () -> Unit) {
     val tapNow by rememberUpdatedState(onTap)
     Text(
         label, fontSize = 11.sp, color = LatentColors.Amber,
-        modifier = Modifier.clip(RoundedCornerShape(999.dp)).border(1.dp, LatentColors.Amber, RoundedCornerShape(999.dp))
+        modifier = Modifier.pressIn().clip(RoundedCornerShape(999.dp)).border(1.dp, LatentColors.Amber, RoundedCornerShape(999.dp))
             .pointerInput(label) { detectTapGestures(onTap = { Haptics.tick(context); tapNow() }) }
             .padding(horizontal = 10.dp, vertical = 5.dp),
     )
@@ -3048,13 +3060,17 @@ private fun OutlinedChip(label: String, onTap: () -> Unit) {
 @Composable
 private fun Chip(label: String, on: Boolean, enabled: Boolean = true, onTap: () -> Unit) {
     val context = LocalContext.current
+    // 111b: inside a gliding row the pill is the row's; the chip fades its own background under it
+    val glide = LocalGlide.current
+    val off = if (enabled) LatentColors.Text else LatentColors.Line
     // 109b: the newest action (the gesture below is set up once per label/state; LAYERS' copy, move and
     // delete chips would otherwise act on the list of layers as it was when the menu opened)
     val tapNow by rememberUpdatedState(onTap)
     Text(
         label, fontSize = 11.sp,
-        color = when { on -> LatentColors.AmberInk; enabled -> LatentColors.Text; else -> LatentColors.Line },
-        modifier = Modifier.raised(RoundedCornerShape(999.dp), 2.dp).clip(RoundedCornerShape(999.dp)).accentFill(on, LatentColors.Surface)
+        color = glide?.ink(label, off, on) ?: if (on) LatentColors.AmberInk else off,
+        modifier = Modifier.pressIn().raised(RoundedCornerShape(999.dp), 2.dp).clip(RoundedCornerShape(999.dp))
+            .then(if (glide != null) Modifier.glideItem(glide, label, LatentColors.Surface, on) else Modifier.accentFill(on, LatentColors.Surface))
             .pointerInput(label, on, enabled) { detectTapGestures(onTap = { if (enabled) { Haptics.tick(context); tapNow() } }) }
             .padding(horizontal = 10.dp, vertical = 5.dp),
     )
@@ -3302,8 +3318,8 @@ private fun AgeSlider(name: String, what: String, value: Float, enabled: Boolean
     Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
         Text(name.uppercase(), color = if (enabled) LatentColors.Text else LatentColors.TextDim, fontSize = 10.sp, letterSpacing = 1.sp, modifier = Modifier.width(40.dp))
         Text(what, color = LatentColors.TextDim, fontSize = 9.sp, modifier = Modifier.width(40.dp))
-        androidx.compose.material3.Slider(
-            value = live, onValueChange = { live = (it * 20f).roundToInt() / 20f },
+        LivingSlider(
+            value = live, onValueChange = { live = (it * 20f).roundToInt() / 20f }, label = { "${(it * 100f).roundToInt()}%" },
             onValueChangeFinished = { onDone(live) }, valueRange = 0f..com.celestial.latent.develop.AgedPrint.MAX,
             enabled = enabled,
             colors = androidx.compose.material3.SliderDefaults.colors(thumbColor = LatentColors.Amber,
@@ -3344,9 +3360,9 @@ private fun WetSlider(name: String, value: Float, range: ClosedFloatingPointRang
     Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 2.dp), verticalAlignment = Alignment.CenterVertically) {
         Text(name, color = if (enabled) LatentColors.Text else LatentColors.TextDim, fontSize = 10.sp, modifier = Modifier.width(64.dp))
         Text(left, color = LatentColors.TextDim, fontSize = 9.sp)
-        androidx.compose.material3.Slider(
+        LivingSlider(
             value = live, onValueChange = { live = it }, onValueChangeFinished = { onDone(live) }, valueRange = range,
-            enabled = enabled,
+            enabled = enabled, label = label,
             colors = androidx.compose.material3.SliderDefaults.colors(thumbColor = LatentColors.Amber,
                 activeTrackColor = LatentColors.SliderFill, inactiveTrackColor = LatentColors.SliderTrackDim),
             modifier = Modifier.weight(1f).padding(horizontal = 6.dp),
@@ -3362,8 +3378,8 @@ private fun LithSlider(name: String, value: Float, enabled: Boolean, onDone: (Fl
     var live by remember(value) { mutableStateOf(value) }
     Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
         Text(name, color = if (enabled) LatentColors.Text else LatentColors.TextDim, fontSize = 10.sp, modifier = Modifier.width(50.dp))
-        androidx.compose.material3.Slider(
-            value = live, onValueChange = { live = (it * 20f).roundToInt() / 20f },
+        LivingSlider(
+            value = live, onValueChange = { live = (it * 20f).roundToInt() / 20f }, label = { "${(it * 100f).roundToInt()}%" },
             onValueChangeFinished = { onDone(live) }, valueRange = 0f..1f,
             enabled = enabled,
             colors = androidx.compose.material3.SliderDefaults.colors(thumbColor = LatentColors.Amber,

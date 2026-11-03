@@ -29,6 +29,12 @@ import com.celestial.latent.develop.Layer
 import com.celestial.latent.develop.LayerLooks
 import com.celestial.latent.develop.Layers
 import com.celestial.latent.ui.LatentColors
+import com.celestial.latent.ui.pressIn
+import com.celestial.latent.ui.waveHost
+import com.celestial.latent.ui.Wave
+import com.celestial.latent.ui.glideItem
+import com.celestial.latent.ui.LocalGlide
+import com.celestial.latent.ui.GlideRow
 import com.celestial.latent.ui.accentFill
 import com.celestial.latent.ui.raised
 
@@ -56,23 +62,25 @@ internal fun ApplyToRow(layers: List<Layer>, applyTo: Int?, noFilm: Boolean, his
         val chips = rememberScrollState()
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             // the chips scroll under start fresh; their ends fade where more is hidden
-            Row(Modifier.weight(1f).fadeEnds(chips).horizontalScroll(chips), verticalAlignment = Alignment.CenterVertically,
+            // 111b: one pill glides between ALL and the layers
+            GlideRow(chosen?.id ?: "ALL", Modifier.weight(1f).fadeEnds(chips).horizontalScroll(chips), verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 if (layers.isNotEmpty()) {
                     Text("APPLY TO", color = LatentColors.TextDim, fontSize = 9.sp, letterSpacing = 1.5.sp, modifier = Modifier.padding(end = 2.dp))
-                    TargetChip("ALL", null, on = chosen == null, enabled = true, own = false) { onPick(null) }
+                    TargetChip("ALL", null, on = chosen == null, enabled = true, own = false) { if (chosen != null) Wave.start(); onPick(null) }
                     for (l in layers) {
                         val can = l.recipe != null || owning < LayerLooks.MAX_EXTRA
-                        TargetChip(l.name, Layers.COLOURS[Math.floorMod(l.tint, Layers.COLOURS.size)], on = l.id == chosen?.id, enabled = can, own = l.recipe != null) {
-                            if (can) onPick(l.id)
+                        TargetChip(l.name, Layers.COLOURS[Math.floorMod(l.tint, Layers.COLOURS.size)], on = l.id == chosen?.id, enabled = can, own = l.recipe != null, key = l.id) {
+                            if (can) { if (l.id != chosen?.id) Wave.start(); onPick(l.id) }
                         }
                     }
                 }
             }
-            Row(Modifier.padding(start = 6.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            // (outside the gliding row: undo and redo are actions, not choices)
+            androidx.compose.runtime.CompositionLocalProvider(LocalGlide provides null) { Row(Modifier.padding(start = 6.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 TargetChip("↶", null, on = false, enabled = history.canUndo, own = false) { onUndo() }
                 TargetChip("↷", null, on = false, enabled = history.canRedo, own = false) { onRedo() }
-            }
+            } }
         }
         val dot = if (owning > 0) " The dot marks a layer with its own settings." else ""
         val line = when {
@@ -90,19 +98,23 @@ internal fun ApplyToRow(layers: List<Layer>, applyTo: Int?, noFilm: Boolean, his
 }
 
 @Composable
-internal fun TargetChip(label: String, tint: Int?, on: Boolean, enabled: Boolean, own: Boolean, onTap: () -> Unit) {
+internal fun TargetChip(label: String, tint: Int?, on: Boolean, enabled: Boolean, own: Boolean, key: Any = label, onTap: () -> Unit) {
     val context = LocalContext.current
+    // 111b: inside a gliding row the pill is the row's; the chip fades its own background under it
+    val glide = LocalGlide.current
+    val off = if (enabled) LatentColors.TextBright else LatentColors.Line
     val tapNow by rememberUpdatedState(onTap)
     Row(
-        Modifier.raised(RoundedCornerShape(999.dp), 2.dp).clip(RoundedCornerShape(999.dp)).accentFill(on, LatentColors.Surface)
+        Modifier.pressIn().raised(RoundedCornerShape(999.dp), 2.dp).clip(RoundedCornerShape(999.dp))
+            .then(if (glide != null) Modifier.glideItem(glide, key, LatentColors.Surface, on) else Modifier.accentFill(on, LatentColors.Surface))
             .pointerInput(label, on, enabled) { detectTapGestures(onTap = { if (enabled) { Haptics.tick(context); tapNow() } }) }
             .padding(horizontal = 10.dp, vertical = 5.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (tint != null) Box(Modifier.padding(end = 5.dp).size(7.dp).clip(CircleShape).background(Color(tint)))
         Text(label, fontSize = 10.sp, letterSpacing = 1.sp, maxLines = 1,
-            color = when { on -> LatentColors.AmberInk; enabled -> LatentColors.TextBright; else -> LatentColors.Line })
+            color = glide?.ink(key, off, on) ?: if (on) LatentColors.AmberInk else off)
         // a layer with settings of its own
-        if (own) Box(Modifier.padding(start = 5.dp).size(4.dp).clip(CircleShape).background(if (on) LatentColors.AmberInk else LatentColors.Amber))
+        if (own) Box(Modifier.padding(start = 5.dp).size(4.dp).clip(CircleShape).background(glide?.ink(key, LatentColors.Amber, on) ?: if (on) LatentColors.AmberInk else LatentColors.Amber))
     }
 }

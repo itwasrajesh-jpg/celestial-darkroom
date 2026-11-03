@@ -39,6 +39,12 @@ import androidx.compose.ui.unit.sp
 import com.celestial.latent.camera.Lenses
 import com.celestial.latent.ui.AppTheme
 import com.celestial.latent.ui.LatentColors
+import com.celestial.latent.ui.pressIn
+import com.celestial.latent.ui.waveHost
+import com.celestial.latent.ui.Wave
+import com.celestial.latent.ui.glideItem
+import com.celestial.latent.ui.LocalGlide
+import com.celestial.latent.ui.GlideRow
 import com.celestial.latent.ui.accentFill
 import com.celestial.latent.ui.glow
 import com.celestial.latent.ui.raised
@@ -47,7 +53,7 @@ import com.celestial.latent.ui.raised
 fun SettingsScreen(settings: AppSettings, onChange: (AppSettings) -> Unit, onOpenReport: () -> Unit, onOpenVendor: () -> Unit, onOpenProbe: () -> Unit, onOpenDepth: () -> Unit, onOpenLogs: () -> Unit, onOpenExtension: () -> Unit, onOpenAbout: () -> Unit, onBack: () -> Unit, onOpenHelp: () -> Unit = {}, onOpenRecipeExport: () -> Unit = {}, onOpenRecipeImport: () -> Unit = {}) {
     Column(
         Modifier.fillMaxSize().background(LatentColors.Background).glow().statusBarsPadding().navigationBarsPadding()
-            .verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 12.dp),
+            .verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 12.dp).waveHost(),
     ) {
         Text("‹ back", color = LatentColors.Text, fontSize = 14.sp, modifier = Modifier.combinedClickable(onClick = onBack).padding(vertical = 6.dp))
         Spacer(Modifier.height(8.dp))
@@ -71,6 +77,16 @@ fun SettingsScreen(settings: AppSettings, onChange: (AppSettings) -> Unit, onOpe
             selected = LatentColors.theme,
             places = themeChips,
         ) { ThemeReveal.start(uiContext, themeChips[it], it) }
+        // 111a: the pace of every touch motion (press-in, the gliding pill, sliders, the panel waves). 100% is
+        // the approved proofs' pace and the fastest; it can only be slowed, to half speed at most.
+        SpeedRow()
+        // 111d: what the big moments do to the panel (approved proofs touch-motion/4-6); tapping one shows it
+        OptionRow(
+            title = "Panel wave",
+            subtitle = "On a big moment (a look picked, APPLY TO changed, Auto level, Start fresh, a print made) a wave spreads from your finger. Light: a band of light lights each control's edge. Water: the controls bob as the ripple passes. Wash: a faint tint of what you touched spreads and fades.",
+            options = com.celestial.latent.ui.Wave.Style.entries.map { it.label to it },
+            selected = com.celestial.latent.ui.Wave.style,
+        ) { com.celestial.latent.ui.Wave.set(uiContext, it); com.celestial.latent.ui.Wave.start() }
         // 105c
         ToggleRow("Breathing shutter", "In manual, when the meter reads 0 the shutter wakes, glows in the theme's colours and breathes, with small lights circling it. Turn off for a plain shutter.", settings.breathingShutter) { onChange(settings.copy(breathingShutter = it)) }
 
@@ -315,26 +331,52 @@ private fun ToggleRow(title: String, subtitle: String, value: Boolean, onChange:
 @Composable
 private fun <T> OptionRow(title: String, subtitle: String, options: List<Pair<String, T>>, selected: T,
                           places: MutableMap<T, androidx.compose.ui.geometry.Offset>? = null, onSelect: (T) -> Unit) {
+    val ctx = LocalContext.current
     Column(Modifier.fillMaxWidth().padding(vertical = 10.dp)) {
         Text(title, color = LatentColors.TextBright, fontSize = 15.sp)
         Text(subtitle, color = LatentColors.TextDim, fontSize = 12.sp)
         Spacer(Modifier.height(8.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        // 111b: one pill glides to the new choice
+        com.celestial.latent.ui.GlideRow(options.firstOrNull { it.second == selected }?.first, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            val glide = com.celestial.latent.ui.LocalGlide.current!!
             options.forEach { (label, v) ->
                 val on = v == selected
                 Text(
                     label,
-                    color = if (on) LatentColors.AmberInk else LatentColors.Text,
+                    color = glide.ink(label, LatentColors.Text),
                     fontSize = 13.sp,
-                    modifier = Modifier
+                    modifier = Modifier.pressIn()
                         .then(if (places != null) Modifier.onGloballyPositioned { places[v] = it.boundsInRoot().center } else Modifier)
                         .raised(RoundedCornerShape(999.dp), 3.dp)
                         .clip(RoundedCornerShape(999.dp))
-                        .accentFill(on, LatentColors.Surface)
-                        .combinedClickable(onClick = { onSelect(v) })
+                        .glideItem(glide, label, LatentColors.Surface)
+                        .combinedClickable(onClick = { if (!on) Haptics.tick(ctx); onSelect(v) })
                         .padding(horizontal = 14.dp, vertical = 7.dp),
                 )
             }
         }
+    }
+}
+
+/** 111a: Settings → Look → Motion speed, 50-100% in steps of 10, a tick on each step. */
+@Composable
+private fun SpeedRow() {
+    val ctx = LocalContext.current
+    val speed = com.celestial.latent.ui.Touch.speed
+    Column(Modifier.fillMaxWidth().padding(vertical = 10.dp)) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text("Motion speed", color = LatentColors.TextBright, fontSize = 15.sp)
+            Text("${Math.round(speed * 100)}%", color = LatentColors.TextBright, fontSize = 15.sp)
+        }
+        Text("How quickly buttons, pills and sliders answer your touch. 100% is the fastest; slow it to as little as half speed if you like it calmer. Off when the phone's animations are off.",
+            color = LatentColors.TextDim, fontSize = 12.sp)
+        androidx.compose.material3.Slider(
+            value = speed, valueRange = com.celestial.latent.ui.Touch.SPEED_MIN..1f, steps = 4,
+            onValueChange = { v ->
+                val r = Math.round(v * 10) / 10f
+                if (r != com.celestial.latent.ui.Touch.speed) { Haptics.tick(ctx); com.celestial.latent.ui.Touch.setSpeed(ctx, r) }
+            },
+            colors = androidx.compose.material3.SliderDefaults.colors(thumbColor = LatentColors.Amber, activeTrackColor = LatentColors.SliderFill, inactiveTrackColor = LatentColors.SliderTrack),
+        )
     }
 }

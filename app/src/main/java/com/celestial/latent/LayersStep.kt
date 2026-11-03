@@ -52,6 +52,9 @@ import com.celestial.latent.develop.Layers
 import com.celestial.latent.develop.Recipe
 import com.celestial.latent.develop.Region
 import com.celestial.latent.ui.LatentColors
+import com.celestial.latent.ui.pressIn
+import com.celestial.latent.ui.Num
+import com.celestial.latent.ui.LivingSlider
 import com.celestial.latent.ui.accentFill
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -286,7 +289,7 @@ private fun LayersStrip(
                 onTap = { ui.selected = l.id; ui.menuFor = null; ui.adding = false; ui.newBySelect = false },
                 onEye = { onLayers(layers.map { if (it.id == l.id) it.copy(visible = !it.visible) else it }) },
                 onHold = { ui.menuFor = l.id; ui.adding = false; ui.renaming = null; ui.deleteAsk = false })
-            Box(Modifier.width(56.dp).height(120.dp).clip(RoundedCornerShape(10.dp)).border(1.dp, if (ui.adding) LatentColors.Amber else LatentColors.Line, RoundedCornerShape(10.dp))
+            Box(Modifier.pressIn().width(56.dp).height(120.dp).clip(RoundedCornerShape(10.dp)).border(1.dp, if (ui.adding) LatentColors.Amber else LatentColors.Line, RoundedCornerShape(10.dp))
                 .pointerInput(layers.size) { detectTapGestures(onTap = { Haptics.tick(context); ui.adding = !ui.adding; ui.menuFor = null }) },
                 contentAlignment = Alignment.Center) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -316,7 +319,7 @@ private fun LayerCard(l: Layer, uses: List<String>, chosen: Boolean, picture: Bi
     // would hand back the list of layers as it was when the card first appeared)
     val tapNow by rememberUpdatedState(onTap); val eyeNow by rememberUpdatedState(onEye); val holdNow by rememberUpdatedState(onHold)
     val shape = RoundedCornerShape(10.dp)
-    Column(Modifier.width(92.dp).height(120.dp).clip(shape).background(LatentColors.Surface)
+    Column(Modifier.pressIn().width(92.dp).height(120.dp).clip(shape).background(LatentColors.Surface)
         .border(if (chosen) 1.5.dp else 0.dp, if (chosen) LatentColors.Amber else Color.Transparent, shape)
         .pointerInput(l.id) {
             detectTapGestures(
@@ -455,9 +458,9 @@ private fun CardMenu(l: Layer, layers: List<Layer>, ui: LayersUi, onLayers: (Lis
 @Composable
 private fun AdjustRows(l: Layer, onLayer: ((Layer) -> Layer) -> Unit) {
     Column(Modifier.fillMaxWidth().padding(bottom = 6.dp)) {
-        LayerSlider("Exposure", l.ev, -2f, 2f, 0f, { String.format(Locale.US, "%+.1f EV", it).replace('-', '−') }) { v -> onLayer { it.copy(ev = v) } }
-        LayerSlider("Warmth", l.warmth, -1f, 1f, 0f, { String.format(Locale.US, "%+.2f", it).replace('-', '−') }) { v -> onLayer { it.copy(warmth = v) } }
-        LayerSlider("Colour", l.colour, 0f, 2f, 1f, { String.format(Locale.US, "×%.2f", it) }) { v -> onLayer { it.copy(colour = v) } }
+        LayerSlider("Exposure", l.ev, -2f, 2f, 0f, "%+.1f EV") { v -> onLayer { it.copy(ev = v) } }
+        LayerSlider("Warmth", l.warmth, -1f, 1f, 0f, "%+.2f") { v -> onLayer { it.copy(warmth = v) } }
+        LayerSlider("Colour", l.colour, 0f, 2f, 1f, "×%.2f") { v -> onLayer { it.copy(colour = v) } }
         Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(top = 2.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
             PrintChip("reset layer", on = false, enabled = abs(l.ev) + abs(l.warmth) + abs(l.colour - 1f) > 1e-4f) { onLayer { it.copy(ev = 0f, warmth = 0f, colour = 1f) } }
         }
@@ -470,35 +473,25 @@ private fun AdjustRows(l: Layer, onLayer: ((Layer) -> Layer) -> Unit) {
  * 3% of the range; double-tap goes back to it.
  */
 @Composable
-private fun LayerSlider(name: String, value: Float, min: Float, max: Float, neutral: Float, label: (Float) -> String, onDone: (Float) -> Unit) {
+private fun LayerSlider(name: String, value: Float, min: Float, max: Float, neutral: Float, fmt: String, onDone: (Float) -> Unit) {
     // 109b: one state for the slider's life, following [value] when it changes from outside (undo, reset),
-    // and the newest onDone: the gestures are set up once and would otherwise keep the first ones
+    // and the newest onDone
     var live by remember { mutableStateOf(value) }
     LaunchedEffect(value) { live = value }
     val done by rememberUpdatedState(onDone)
-    fun snap(v: Float) = v.coerceIn(min, max).let { if (abs(it - neutral) < (max - min) * 0.03f) neutral else (it * 100f).roundToInt() / 100f }
+    val context = androidx.compose.ui.platform.LocalContext.current
+    // 111c: the darkroom's one living slider and number format; double-tap the name or value for neutral
+    val kind = Num.kindOf(fmt, min, max)
     Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 4.dp)) {
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+        Row(Modifier.fillMaxWidth().pointerInput(neutral) { detectTapGestures(onDoubleTap = { Haptics.tick(context); live = neutral; done(neutral) }) },
+            horizontalArrangement = Arrangement.SpaceBetween) {
             Text(name, color = LatentColors.Text, fontSize = 11.sp)
-            Text(label(live), color = LatentColors.Text, fontSize = 11.sp)
+            Text(Num.format(fmt, live, min, max), color = LatentColors.Text, fontSize = 11.sp)
         }
-        val fill = LatentColors.SliderFill; val track = LatentColors.SliderTrackDim; val thumb = LatentColors.Amber
-        Canvas(Modifier.fillMaxWidth().height(28.dp)
-            .pointerInput(min, max) {
-                detectTapGestures(onDoubleTap = { live = neutral; done(neutral) },
-                    onTap = { p -> live = snap(min + (max - min) * (p.x / size.width)); done(live) })
-            }
-            .pointerInput(min, max) {
-                detectHorizontalDragGestures(onDragEnd = { done(live) }, onDragCancel = { done(live) }) { ch, _ ->
-                    live = snap(min + (max - min) * (ch.position.x / size.width)); ch.consume()
-                }
-            }) {
-            val y = size.height / 2f; val r = 8.dp.toPx(); val x0 = r; val x1 = size.width - r
-            fun at(v: Float) = x0 + (x1 - x0) * (v - min) / (max - min)
-            drawLine(track, Offset(x0, y), Offset(x1, y), 3.dp.toPx())
-            drawLine(fill, Offset(at(neutral), y), Offset(at(live), y), 3.dp.toPx())
-            drawCircle(fill, 2.dp.toPx(), Offset(at(neutral), y))
-            drawCircle(thumb, r, Offset(at(live), y))
-        }
+        LivingSlider(
+            value = live, onValueChange = { live = (it * 100f).roundToInt() / 100f }, onValueChangeFinished = { done(live) },
+            valueRange = min..max, kind = kind, label = { Num.format(fmt, it, min, max) },
+            detents = (Num.detents(min, max, kind) + neutral).distinct(),
+        )
     }
 }
