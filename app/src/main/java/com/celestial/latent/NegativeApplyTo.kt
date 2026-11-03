@@ -43,12 +43,12 @@ import com.celestial.latent.ui.raised
  * [LayerLooks.MAX_EXTRA] layers have their own, another can only be chosen when it already has some
  * (each costs one more develop of the photo).
  *
- * 110a: always shown, layers or not, because "start fresh" lives at its right end (alone when the
- * photo has no layers). Start fresh takes the photo back to no film at all: exactly the Before. While
- * the photo has no film ([noFilm]) the caption says so and how to go on.
+ * 110a: always shown, layers or not. While the photo has no film ([noFilm], the NO FILM card) the
+ * caption says so and how to go on. 110b: undo and redo live at its right end (where 110a's start
+ * fresh was; the NO FILM card does that), alone when the photo has no layers.
  */
 @Composable
-internal fun ApplyToRow(layers: List<Layer>, applyTo: Int?, noFilm: Boolean, onStartFresh: () -> Unit, onPick: (Int?) -> Unit) {
+internal fun ApplyToRow(layers: List<Layer>, applyTo: Int?, noFilm: Boolean, history: NegHistory, onUndo: () -> Unit, onRedo: () -> Unit, onPick: (Int?) -> Unit) {
     val chosen = layers.firstOrNull { it.id == applyTo }
     // 109e: hidden ones too: showing one again must not go past the most there can be
     val owning = layers.count { it.recipe != null }
@@ -69,8 +69,9 @@ internal fun ApplyToRow(layers: List<Layer>, applyTo: Int?, noFilm: Boolean, onS
                     }
                 }
             }
-            Box(Modifier.padding(start = 6.dp)) {
-                TargetChip("↺ start fresh", null, on = false, enabled = !noFilm, own = false) { onStartFresh() }
+            Row(Modifier.padding(start = 6.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                TargetChip("↶", null, on = false, enabled = history.canUndo, own = false) { onUndo() }
+                TargetChip("↷", null, on = false, enabled = history.canRedo, own = false) { onRedo() }
             }
         }
         val dot = if (owning > 0) " The dot marks a layer with its own settings." else ""
