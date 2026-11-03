@@ -46,7 +46,12 @@ import kotlinx.coroutines.launch
  * and reads its words' colour from [Glide.ink]. A toggle in the same row (on, but not the row's choice)
  * keeps its own accent, so a row can mix a choice and a switch.
  */
-class Glide {
+class Glide(
+    /** 112: a pill of another colour (the camera's lens circle is white over the picture), else the accent. */
+    internal val pillColour: Color? = null,
+    /** 112: the words' colour under that pill, else the accent's ink. */
+    internal val pillInk: Color? = null,
+) {
     internal var host: LayoutCoordinates? = null
     internal val rects = mutableStateMapOf<Any, Rect>()
     internal var selected: Any? by mutableStateOf(null)
@@ -79,7 +84,7 @@ class Glide {
     /** The words' colour for [key]: [off] where uncovered, the accent's ink under the pill; a toggle that is [on]
      *  but not the row's choice keeps the ink. */
     fun ink(key: Any, off: Color, on: Boolean = false): Color =
-        if (on && key != selected) LatentColors.AmberInk else lerp(off, LatentColors.AmberInk, coverage(key))
+        if (on && key != selected) (pillInk ?: LatentColors.AmberInk) else lerp(off, pillInk ?: LatentColors.AmberInk, coverage(key))
 }
 
 val LocalGlide = compositionLocalOf<Glide?> { null }
@@ -92,9 +97,11 @@ fun GlideRow(
     horizontalArrangement: Arrangement.Horizontal = Arrangement.Start,
     verticalAlignment: Alignment.Vertical = Alignment.Top,
     corner: Dp = 999.dp,
+    pillColour: Color? = null,
+    pillInk: Color? = null,
     content: @Composable RowScope.() -> Unit,
 ) {
-    val g = remember { Glide() }
+    val g = remember(pillColour, pillInk) { Glide(pillColour, pillInk) }
     CompositionLocalProvider(LocalGlide provides g) {
         Row(modifier.glideHost(g, selected, corner), horizontalArrangement, verticalAlignment, content)
     }
@@ -112,6 +119,7 @@ fun Modifier.glideHost(g: Glide, selected: Any?, corner: Dp = 999.dp): Modifier 
             val w = g.right.value - l; val h = g.bottom.value - t
             if (w <= 0f || h <= 0f) return@drawBehind
             val rad = minOf(corner.toPx(), h / 2f)
+            g.pillColour?.let { drawRoundRect(it, Offset(l, t), Size(w, h), CornerRadius(rad), alpha = a); return@drawBehind }
             val p = LatentColors.palette
             val brush = p.accentTop?.let { Brush.verticalGradient(listOf(it, p.amber), startY = t, endY = t + h) }
             if (brush != null) drawRoundRect(brush, Offset(l, t), Size(w, h), CornerRadius(rad), alpha = a)

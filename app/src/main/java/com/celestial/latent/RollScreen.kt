@@ -68,6 +68,10 @@ import com.celestial.latent.ui.accentFill
 import com.celestial.latent.ui.glow
 import com.celestial.latent.ui.OnPhoto
 import kotlinx.coroutines.launch
+import com.celestial.latent.ui.pressIn
+import com.celestial.latent.ui.glideItem
+import com.celestial.latent.ui.afterPill
+import com.celestial.latent.ui.waveHost
 
 private data class Frame(
     val uri: Uri, val name: String, val isRaw: Boolean, val developed: Boolean, val date: Long = 0, val isBurst: Boolean = false,
@@ -249,7 +253,7 @@ fun RollScreen(
     }
     val selecting = selected.isNotEmpty()
 
-    Column(Modifier.fillMaxSize().background(LatentColors.Background).glow().statusBarsPadding().navigationBarsPadding().padding(horizontal = 14.dp)) {
+    Column(Modifier.fillMaxSize().background(LatentColors.Background).glow().waveHost().statusBarsPadding().navigationBarsPadding().padding(horizontal = 14.dp)) {
         if (selecting) Row(Modifier.fillMaxWidth().padding(vertical = 10.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             GlyphIcon(Glyph.CLOSE, LatentColors.Text, Modifier.combinedClickable(onClick = { selected = emptySet(); deleteAsk = false }).padding(horizontal = 6.dp), 20.dp)
             Text("${selected.size} SELECTED", color = LatentColors.Text, fontSize = 12.sp, letterSpacing = 3.sp)
@@ -272,24 +276,33 @@ fun RollScreen(
                     importer.launch(arrayOf("image/*", "image/x-adobe-dng", "application/octet-stream")) }).padding(5.dp), 20.dp)
             }
         }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(bottom = 10.dp)) {
+        // 112: one pill glides between the filters (approved proof touch-motion/screens2/8-roll-touch.mp4)
+        val filterScope = rememberCoroutineScope()
+        com.celestial.latent.ui.GlideRow(filter, Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(bottom = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            val glide = com.celestial.latent.ui.LocalGlide.current!!
+            val pickFilter: (String) -> Unit = { id ->
+                if (id != filter) {
+                    Haptics.tick(context); glide.pick(id)
+                    if (motionOn()) filterScope.launch { glide.afterPill(); filter = id } else filter = id
+                }
+            }
             (listOfNotNull(monthName?.let { "month" to "${it.uppercase()} ${own.count(inMonth)}" }) + listOf("all" to "ALL ${own.size}", "developed" to "DEVELOPED ${own.count { it.developed }}", "latent" to "LATENT ${own.count { it.isRaw && !it.developed && !it.isBurst }}",
                 "bursts" to "BURSTS ${own.count { it.isBurst }}")).forEach { (id, label) ->
                 val on = id == filter
-                Text(label, color = if (on) LatentColors.AmberInk else LatentColors.Text, fontSize = 11.sp, letterSpacing = 1.sp,
-                    modifier = Modifier.clip(RoundedCornerShape(999.dp)).accentFill(on, LatentColors.Surface)
-                        .combinedClickable(onClick = { filter = id }).padding(horizontal = 10.dp, vertical = 5.dp))
+                Text(label, color = glide.ink(id, LatentColors.Text), fontSize = 11.sp, letterSpacing = 1.sp,
+                    modifier = Modifier.pressIn().clip(RoundedCornerShape(999.dp)).glideItem(glide, id, LatentColors.Surface)
+                        .combinedClickable(onClick = { pickFilter(id) }).padding(horizontal = 10.dp, vertical = 5.dp))
             }
             // 73a: each added folder has its own chip; long-press to stop showing it
             folders.forEach { tree ->
                 val id = "folder:$tree"; val on = id == filter
-                Text("${RollFolders.label(tree).uppercase()} ${frames.count { it.folder == tree.toString() }}", color = if (on) LatentColors.AmberInk else LatentColors.Text, fontSize = 11.sp, letterSpacing = 1.sp,
-                    modifier = Modifier.clip(RoundedCornerShape(999.dp)).accentFill(on, LatentColors.Surface)
-                        .combinedClickable(onClick = { filter = id }, onLongClick = { Haptics.click(context); removeFolderAsk = tree })
+                Text("${RollFolders.label(tree).uppercase()} ${frames.count { it.folder == tree.toString() }}", color = glide.ink(id, LatentColors.Text), fontSize = 11.sp, letterSpacing = 1.sp,
+                    modifier = Modifier.pressIn().clip(RoundedCornerShape(999.dp)).glideItem(glide, id, LatentColors.Surface)
+                        .combinedClickable(onClick = { pickFilter(id) }, onLongClick = { Haptics.click(context); removeFolderAsk = tree })
                         .padding(horizontal = 10.dp, vertical = 5.dp))
             }
             Text("+ FOLDER", color = LatentColors.Amber, fontSize = 11.sp, letterSpacing = 1.sp,
-                modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(LatentColors.Surface)
+                modifier = Modifier.pressIn().clip(RoundedCornerShape(999.dp)).background(LatentColors.Surface)
                     .combinedClickable(onClick = { Haptics.tick(context); folderPicker.launch(null) }).padding(horizontal = 10.dp, vertical = 5.dp))
         }
         val removing = removeFolderAsk
@@ -435,7 +448,7 @@ fun RollScreen(
                     val lands = k in landing
                     Box(Modifier.animateItem().then(if (lands) Modifier.zIndex(1f) else Modifier)
                         .landing(lands, shown.indexOfFirst { it.uri.toString() == k }.coerceAtLeast(0)) { landing = landing - k }
-                        .aspectRatio(3f / 4f).clip(RoundedCornerShape(4.dp)).background(LatentColors.Surface)
+                        .aspectRatio(3f / 4f).pressIn().clip(RoundedCornerShape(4.dp)).background(LatentColors.Surface)
                         .then(if (picked) Modifier.border(2.dp, LatentColors.Amber, RoundedCornerShape(4.dp)) else Modifier)
                         .combinedClickable(onClick = { open(frame) }, onLongClick = { Haptics.click(context); toggle(frame) })) {
                         FrameFace(frame, big = false)
@@ -494,9 +507,11 @@ fun RollScreen(
             Text(if (queued > 0) "$queued DEVELOPING · $filmLabel" else "$filmLabel · TAP A FRAME FOR THE DARKROOM", color = LatentColors.Line, fontSize = 9.sp, letterSpacing = 1.5.sp)
             val undeveloped = own.filter { it.isRaw && !it.developed && !it.isBurst }
             Text("Develop all", color = if (undeveloped.isEmpty()) LatentColors.TextDim else LatentColors.AmberInk, fontSize = 12.sp,
-                modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(if (undeveloped.isEmpty()) LatentColors.Surface else LatentColors.Amber)
+                modifier = Modifier.pressIn(undeveloped.isNotEmpty()).clip(RoundedCornerShape(999.dp)).background(if (undeveloped.isEmpty()) LatentColors.Surface else LatentColors.Amber)
                     .combinedClickable(enabled = undeveloped.isNotEmpty(), onClick = {
                         Haptics.click(context)
+                        // 112: a big moment: the light wave crosses the frames
+                        com.celestial.latent.ui.Wave.start()
                         val r = com.celestial.latent.develop.Recipes.current(context).copy(film = settings.film)
                         undeveloped.forEach { DevelopQueue.submit(context, DevelopQueue.Job(it.uri, r, isRaw = true)) }
                     }).padding(horizontal = 14.dp, vertical = 8.dp))

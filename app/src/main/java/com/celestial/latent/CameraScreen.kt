@@ -20,6 +20,12 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.foundation.layout.defaultMinSize
+import com.celestial.latent.ui.pressIn
+import com.celestial.latent.ui.waveHost
+import com.celestial.latent.ui.glideItem
+import com.celestial.latent.ui.afterPill
+import kotlinx.coroutines.launch
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -436,7 +442,7 @@ fun CameraScreen(
     }
 
     // 87a: the dock at the bottom keeps clear of the navigation bar itself, so its colour runs to the screen's edge
-    Column(Modifier.fillMaxSize().background(LatentColors.Background).glow().statusBarsPadding()) {
+    Column(Modifier.fillMaxSize().background(LatentColors.Background).glow().waveHost().statusBarsPadding()) {
 
         // ---- Top bar: wordmark · chevron · gear ----
         Row(
@@ -653,14 +659,18 @@ fun CameraScreen(
             if (settings.fastShot) Row(Modifier.align(Alignment.BottomCenter).padding(bottom = 52.dp + filmsLift).clip(RoundedCornerShape(999.dp)).background(PICTURE_PILL)
                 .padding(horizontal = 4.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                 // 79a: the focal lengths instead of the lenses, the chosen one in a light circle, then snap focus
-                FastShot.available().forEach { f ->
-                    val on = f == settings.fastFocal
-                    Text("$f", color = if (on) OnPhoto.Background else OnPhoto.TextBright, fontSize = if (on) 13.sp else 12.sp,
-                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                        modifier = Modifier.then(if (on) Modifier.clip(CircleShape).background(OnPhoto.TextBright).size(36.dp).wrapContentHeight(Alignment.CenterVertically) else Modifier)
-                            .combinedClickable(onClick = {
-                                if (!on) { Haptics.tick(context); onSettingsChange(settings.copy(fastFocal = f)); goFocal(f) }
-                            }).then(if (on) Modifier else Modifier.padding(horizontal = 8.dp, vertical = 6.dp)))
+                // 112: the light circle glides to the new focal length (it moves on the tap, the camera follows)
+                com.celestial.latent.ui.GlideRow(settings.fastFocal, verticalAlignment = Alignment.CenterVertically,
+                    pillColour = OnPhoto.TextBright, pillInk = OnPhoto.Background) {
+                    val glide = com.celestial.latent.ui.LocalGlide.current!!
+                    val scope = rememberCoroutineScope()
+                    FastShot.available().forEach { f ->
+                        val on = f == settings.fastFocal
+                        LensChoice("$f", on, glide, f) {
+                            Haptics.tick(context); glide.pick(f)
+                            scope.launch { glide.afterPill(); onSettingsChange(settings.copy(fastFocal = f)); goFocal(f) }
+                        }
+                    }
                 }
                 Spacer(Modifier.width(6.dp))
                 val snapOn = controls.focusDiopters != null
@@ -677,15 +687,19 @@ fun CameraScreen(
                         }).padding(horizontal = 9.dp, vertical = 3.dp))
             } else Row(Modifier.align(Alignment.BottomCenter).padding(bottom = 52.dp + filmsLift).clip(RoundedCornerShape(999.dp)).background(PICTURE_PILL)
                 .padding(horizontal = 4.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                Lenses.ALL.forEach { l ->
-                    val on = l == lens
-                    Text(if (on) l.label + "×" else l.label, color = if (on) OnPhoto.Background else OnPhoto.TextBright, fontSize = if (on) 14.sp else 12.sp,
-                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                        modifier = Modifier.then(if (on) Modifier.clip(CircleShape).background(OnPhoto.TextBright).size(38.dp).wrapContentHeight(Alignment.CenterVertically) else Modifier)
-                            .combinedClickable(onClick = {
+                // 112: the light circle glides to the new lens (it moves on the tap, the camera follows)
+                com.celestial.latent.ui.GlideRow(lens.label, verticalAlignment = Alignment.CenterVertically,
+                    pillColour = OnPhoto.TextBright, pillInk = OnPhoto.Background) {
+                    val glide = com.celestial.latent.ui.LocalGlide.current!!
+                    val scope = rememberCoroutineScope()
+                    Lenses.ALL.forEach { l ->
+                        val on = l == lens
+                        LensChoice(if (on) l.label + "×" else l.label, on, glide, l.label) {
                             // ×4 exists only on the periscope: leaving it turns ×4 off rather than becoming a digital ×4
-                            if (l != lens) { Haptics.tick(context); lens = l; push(controls.copy(shutterNs = null, iso = null, focusDiopters = null, zoom = if (controls.zoom > 2.5f) 1f else controls.zoom)); onLensChanged(l); reopen() }
-                        }).then(if (on) Modifier else Modifier.padding(horizontal = 11.dp, vertical = 6.dp)))
+                            Haptics.tick(context); glide.pick(l.label)
+                            scope.launch { glide.afterPill(); lens = l; push(controls.copy(shutterNs = null, iso = null, focusDiopters = null, zoom = if (controls.zoom > 2.5f) 1f else controls.zoom)); onLensChanged(l); reopen() }
+                        }
+                    }
                 }
                 Spacer(Modifier.width(6.dp))
                 // ×2 multiplies the current lens. Where the sensor has its own crop (the 15 Ultra's
@@ -839,7 +853,7 @@ fun CameraScreen(
         // 87a: the dock, lifted above the settings row in Midnight and Clay
         Column(Modifier.fillMaxWidth().weight(1f).shutterDock()) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 30.dp, vertical = 6.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-            Box(Modifier.size(46.dp).floating(RoundedCornerShape(10.dp)).clip(RoundedCornerShape(10.dp)).background(LatentColors.Surface)
+            Box(Modifier.size(46.dp).pressIn().floating(RoundedCornerShape(10.dp)).clip(RoundedCornerShape(10.dp)).background(LatentColors.Surface)
                 .combinedClickable(onClick = { Haptics.tick(context); onOpenRoll() })) {
                 thumb?.let { Image(it.asImageBitmap(), contentDescription = "Last photo", contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize()) }
                 // 87c: the count rolls like a film counter as each shot joins the queue
@@ -867,7 +881,7 @@ fun CameraScreen(
             ) { Box(Modifier.size(62.dp).clip(CircleShape).accentFill(multi, shutterFace()).auraFace(aura)) }
             // Tap cycles: off → 16 (burst) → FS (focus stack, 69a) → HDR (bracket, 86b) → off.
             // Hold: HDR with its bracket card open (86b).
-            Box(Modifier.size(46.dp).then(if (LatentColors.palette.depth) Modifier.floating(CircleShape, 5.dp).background(LatentColors.Surface, CircleShape) else Modifier)
+            Box(Modifier.size(46.dp).pressIn().then(if (LatentColors.palette.depth) Modifier.floating(CircleShape, 5.dp).background(LatentColors.Surface, CircleShape) else Modifier)
                 .clip(CircleShape).border(if (settings.hdrStack) 1.dp else 0.5.dp, if (multi) LatentColors.Amber else LatentColors.Line, CircleShape)
                 .combinedClickable(onClick = {
                     Haptics.tick(context)
@@ -932,10 +946,23 @@ internal fun focusLabel(d: Float): String = when { d <= 0.05f -> "∞"; d < 1f -
 
 @Composable
 internal fun StripCell(label: String, value: String, auto: Boolean, selected: Boolean, dim: Boolean, modifier: Modifier, onClick: () -> Unit) {
-    Column(modifier.combinedClickable(onClick = onClick).padding(vertical = 6.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+    // 112: a dial sinks under the finger, with the touch ring
+    Column(modifier.pressIn().combinedClickable(onClick = onClick).padding(vertical = 6.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Text(value, color = if (dim) LatentColors.Line else if (selected) LatentColors.Amber else LatentColors.TextBright, fontSize = 16.sp, fontWeight = FontWeight.Light)
         Text(if (auto) "$label · A" else label, color = LatentColors.TextDim, fontSize = 9.sp, letterSpacing = 1.5.sp, modifier = Modifier.padding(top = 2.dp))
     }
+}
+
+
+/** 112: one lens / focal length in the lens row: a fixed 36 dp target, so the circle glides between equal steps. */
+@Composable
+private fun LensChoice(label: String, on: Boolean, glide: com.celestial.latent.ui.Glide, key: Any, onPick: () -> Unit) {
+    val tapNow by rememberUpdatedState(onPick)
+    Text(label, color = glide.ink(key, OnPhoto.TextBright), fontSize = if (on) 13.sp else 12.sp,
+        textAlign = androidx.compose.ui.text.style.TextAlign.Center, maxLines = 1,
+        modifier = Modifier.pressIn().clip(CircleShape).glideItem(glide, key, Color.Transparent)
+            .combinedClickable(onClick = { if (!on) tapNow() })
+            .defaultMinSize(minWidth = 36.dp, minHeight = 36.dp).wrapContentHeight(Alignment.CenterVertically).padding(horizontal = 6.dp))
 }
 
 @Composable

@@ -56,6 +56,9 @@ import com.celestial.latent.ui.Glyph
 import com.celestial.latent.ui.GlyphIcon
 import com.celestial.latent.ui.LatentColors
 import kotlinx.coroutines.launch
+import com.celestial.latent.ui.pressIn
+import com.celestial.latent.ui.glideItem
+import com.celestial.latent.ui.afterPill
 import kotlin.math.abs
 import kotlin.math.exp
 
@@ -85,12 +88,22 @@ private fun Modifier.lifted(shape: Shape, lift: Dp): Modifier {
 @Composable
 internal fun RollViewToggle(view: String, onView: (String) -> Unit) {
     val context = LocalContext.current
-    Row(verticalAlignment = Alignment.CenterVertically) {
+    // 112: a soft highlight glides to the chosen view, which lights as it arrives
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    com.celestial.latent.ui.GlideRow(view, verticalAlignment = Alignment.CenterVertically, corner = 8.dp,
+        pillColour = LatentColors.Surface, pillInk = LatentColors.Amber) {
+        val glide = com.celestial.latent.ui.LocalGlide.current!!
         RollViews.ALL.forEach { v ->
             val on = v == view
             val g = when (v) { RollViews.CAROUSEL -> Glyph.CAROUSEL; RollViews.PRINTS -> Glyph.PRINTS; RollViews.SHEET -> Glyph.SHEET; else -> Glyph.GRID }
-            GlyphIcon(g, if (on) LatentColors.Amber else LatentColors.TextDim,
-                Modifier.clip(RoundedCornerShape(6.dp)).combinedClickable(onClick = { if (!on) { Haptics.tick(context); onView(v) } }).padding(5.dp), 18.dp)
+            GlyphIcon(g, glide.ink(v, LatentColors.TextDim),
+                Modifier.pressIn().clip(RoundedCornerShape(8.dp)).glideItem(glide, v, androidx.compose.ui.graphics.Color.Transparent)
+                    .combinedClickable(onClick = {
+                        if (!on) {
+                            Haptics.tick(context); glide.pick(v)
+                            if (com.celestial.latent.motionOn()) scope.launch { glide.afterPill(); onView(v) } else onView(v)
+                        }
+                    }).padding(5.dp), 18.dp)
         }
     }
 }

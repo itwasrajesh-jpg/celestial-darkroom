@@ -111,6 +111,21 @@ internal fun FrostCapture(view: View?, active: Boolean) {
  * A film card's glass: the blurred camera picture behind it under the theme's tint at about half
  * strength. The chosen card keeps its accent fill; Darkroom (no depth) and a missing picture keep the tint.
  */
+/** 112: the film cards' glass, faded where the gliding light card covers it ([cover] 0..1). */
+internal fun Modifier.frostUnder(cover: Float): Modifier = composed {
+    var me by remember { mutableStateOf(Offset.Zero) }
+    val pic = FrostBackdrop.picture
+    val k = (1f - cover).coerceIn(0f, 1f)
+    if (pic == null || !LatentColors.palette.depth) return@composed background(LatentColors.Frost.copy(alpha = LatentColors.Frost.alpha * k))
+    onGloballyPositioned { me = it.positionInWindow() }
+        .drawBehind {
+            if (k <= 0f) return@drawBehind
+            val s = FrostBackdrop.size
+            drawImage(pic, dstOffset = IntOffset((FrostBackdrop.at.x - me.x).toInt(), (FrostBackdrop.at.y - me.y).toInt()), dstSize = s, alpha = k)
+        }
+        .background(LatentColors.Frost.copy(alpha = (if (LatentColors.Light) 0.55f else 0.42f) * k))
+}
+
 internal fun Modifier.frost(on: Boolean): Modifier = composed {
     var me by remember { mutableStateOf(Offset.Zero) }
     val pic = FrostBackdrop.picture
