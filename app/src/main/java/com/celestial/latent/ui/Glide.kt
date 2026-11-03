@@ -30,7 +30,9 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.celestial.latent.motionOn
+import androidx.compose.runtime.withFrameNanos
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
@@ -48,12 +50,21 @@ class Glide {
     internal var host: LayoutCoordinates? = null
     internal val rects = mutableStateMapOf<Any, Rect>()
     internal var selected: Any? by mutableStateOf(null)
+    /** 111e: a choice just tapped whose work has not landed yet: the pill already heads there. */
+    internal var pending: Any? by mutableStateOf(null)
     internal val left = Animatable(0f)
     internal val right = Animatable(0f)
     internal val top = Animatable(0f)
     internal val bottom = Animatable(0f)
     internal val shown = Animatable(0f)
     internal var radius: Float = -1f
+
+    /**
+     * 111e: send the pill to [key] now, before the tap's work recomposes the row (APPLY TO swaps NEGATIVE to the
+     * layer's settings, which took a frame or more before the pill learned of the new choice). Pair it with
+     * [afterPill] around the work. Reverts by itself if the choice never arrives.
+     */
+    fun pick(key: Any) { if (motionOn() && key != selected) pending = key }
 
     /** How much of [key] the pill covers, 0..1. */
     fun coverage(key: Any): Float {
@@ -111,9 +122,17 @@ fun Modifier.glideHost(g: Glide, selected: Any?, corner: Dp = 999.dp): Modifier 
 @Composable
 private fun GlideMoverEffect(g: Glide, selected: Any?) {
     if (g.selected != selected) g.selected = selected
-    val target = selected?.let { g.rects[it] }
-    LaunchedEffect(selected, target) {
-        if (target == null) { if (selected == null) g.shown.animateTo(0f, tween(Touch.ms(150))); return@LaunchedEffect }
+    // 111e: a tapped choice leads; it is dropped once the real one catches up (or did not come)
+    val pending = g.pending
+    LaunchedEffect(pending, selected) {
+        if (pending == null) return@LaunchedEffect
+        if (pending != selected) delay(600)
+        g.pending = null
+    }
+    val want = pending ?: selected
+    val target = want?.let { g.rects[it] }
+    LaunchedEffect(want, target) {
+        if (target == null) { if (want == null) g.shown.animateTo(0f, tween(Touch.ms(150))); return@LaunchedEffect }
         val fresh = g.shown.value <= 0f
         if (fresh || !motionOn()) {
             g.left.snapTo(target.left); g.right.snapTo(target.right); g.top.snapTo(target.top); g.bottom.snapTo(target.bottom)
@@ -129,6 +148,9 @@ private fun GlideMoverEffect(g: Glide, selected: Any?) {
         }
     }
 }
+
+/** 111e: wait until the pill has had a clean frame to start moving, then do the tap's (heavier) work. */
+suspend fun afterPill() { withFrameNanos { }; withFrameNanos { } }
 
 /** The moving part of [glideHost], as a composed modifier (it needs a coroutine to run the springs). */
 private fun GlideMover(g: Glide, selected: Any?): Modifier = Modifier.composed {

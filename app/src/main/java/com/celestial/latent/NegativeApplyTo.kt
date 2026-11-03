@@ -34,6 +34,9 @@ import com.celestial.latent.ui.waveHost
 import com.celestial.latent.ui.Wave
 import com.celestial.latent.ui.glideItem
 import com.celestial.latent.ui.LocalGlide
+import com.celestial.latent.ui.afterPill
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
 import com.celestial.latent.ui.GlideRow
 import com.celestial.latent.ui.accentFill
 import com.celestial.latent.ui.raised
@@ -104,10 +107,16 @@ internal fun TargetChip(label: String, tint: Int?, on: Boolean, enabled: Boolean
     val glide = LocalGlide.current
     val off = if (enabled) LatentColors.TextBright else LatentColors.Line
     val tapNow by rememberUpdatedState(onTap)
+    val scope = rememberCoroutineScope()
     Row(
         Modifier.pressIn().raised(RoundedCornerShape(999.dp), 2.dp).clip(RoundedCornerShape(999.dp))
             .then(if (glide != null) Modifier.glideItem(glide, key, LatentColors.Surface, on) else Modifier.accentFill(on, LatentColors.Surface))
-            .pointerInput(label, on, enabled) { detectTapGestures(onTap = { if (enabled) { Haptics.tick(context); tapNow() } }) }
+            .pointerInput(label, on, enabled) { detectTapGestures(onTap = {
+                if (!enabled) return@detectTapGestures
+                Haptics.tick(context)
+                // 111e: the pill moves first; the layer switch (and its wave) follows once it is under way
+                if (glide != null && motionOn()) { glide.pick(key); scope.launch { afterPill(); tapNow() } } else tapNow()
+            }) }
             .padding(horizontal = 10.dp, vertical = 5.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {

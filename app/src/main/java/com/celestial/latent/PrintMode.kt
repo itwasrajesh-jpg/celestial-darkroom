@@ -92,6 +92,7 @@ import com.celestial.latent.ui.SliderOrder
 import com.celestial.latent.ui.LivingSlider
 import com.celestial.latent.ui.glideItem
 import com.celestial.latent.ui.LocalGlide
+import com.celestial.latent.ui.afterPill
 import com.celestial.latent.ui.GlideRow
 import com.celestial.latent.ui.accentFill
 import com.celestial.latent.ui.OnPhoto
@@ -1474,7 +1475,7 @@ private fun RaysLightTab(
         Row(Modifier.fillMaxWidth().padding(bottom = 6.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             GlideRow("${selected + 1}", horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text("light", color = LatentColors.TextDim, fontSize = 11.sp, modifier = Modifier.padding(end = 2.dp))
-                for (i in 0 until count) Chip("${i + 1}", on = i == selected) { onSelect(i) }
+                for (i in 0 until count) Chip("${i + 1}", on = i == selected, choice = true) { onSelect(i) }
                 if (count < 1 + com.celestial.latent.develop.ExtraLights.MAX) Chip("+", on = false) { onAdd() }
             }
             if (selected >= 1 || look.placed) Chip("remove", on = false) { onRemove() }
@@ -1483,7 +1484,7 @@ private fun RaysLightTab(
         // picture, so another kind comes back to the nearest edge)
         GlideRow(look.type, Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
             listOf("point", "sun", "spot", "area").forEach { t ->
-                Chip(t, on = look.type == t) {
+                Chip(t, on = look.type == t, choice = true) {
                     val at = if (t == "sun") look.u to look.v else keep(look.u, look.v)
                     onLook(look.copy(type = t, u = at.first, v = at.second, u2 = Float.NaN, v2 = Float.NaN).withDefaults())
                 }
@@ -1491,8 +1492,8 @@ private fun RaysLightTab(
         }
         Row(Modifier.fillMaxWidth().padding(top = 6.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             GlideRow(when (look.mode) { "add" -> "add light"; "gaps" -> "through gaps"; else -> null }, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                Chip("add light", on = look.mode == "add") { onLook(look.copy(mode = "add")) }
-                Chip("through gaps", on = look.mode == "gaps") { onLook(look.copy(mode = "gaps")) }
+                Chip("add light", on = look.mode == "add", choice = true) { onLook(look.copy(mode = "add")) }
+                Chip("through gaps", on = look.mode == "gaps", choice = true) { onLook(look.copy(mode = "gaps")) }
                 // a sun can shine in through a window: a rectangle to fit over it, the sun placed beyond
                 if (look.type == "sun" && look.placed) Chip("opening", on = look.hasOpening) {
                     onLook(if (look.hasOpening) look.copy(ox0 = Float.NaN, oy0 = Float.NaN, ox1 = Float.NaN, oy1 = Float.NaN)
@@ -1718,9 +1719,9 @@ private fun FogColourRow(look: FogLook, picking: Boolean, onLook: (FogLook) -> U
         // seven choices: wider than a phone, so they scroll; switching keeps warmth, amount, hue, tint
         GlideRow(if (picking) "tap photo" else if (look.mode == "picked") "from photo" else look.mode,
             Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            Chip("auto", on = look.mode == "auto") { onLook(look.copy(mode = "auto")) }
-            Fog.PRESETS.forEach { (name, _) -> Chip(name, on = look.mode == name) { onLook(look.copy(mode = name)) } }
-            Chip("colour", on = look.mode == "colour") { onLook(look.copy(mode = "colour")) }
+            Chip("auto", on = look.mode == "auto", choice = true) { onLook(look.copy(mode = "auto")) }
+            Fog.PRESETS.forEach { (name, _) -> Chip(name, on = look.mode == name, choice = true) { onLook(look.copy(mode = name)) } }
+            Chip("colour", on = look.mode == "colour", choice = true) { onLook(look.copy(mode = "colour")) }
             Chip(if (picking) "tap photo" else "from photo", on = picking || look.mode == "picked") { onPick() }
         }
         // your own colour: a hue strip, and how strongly tinted
@@ -2449,7 +2450,7 @@ internal fun PaintStep(
             horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically,
         ) {
             GlideRow(if (plus) spec.plusLabel else spec.minusLabel, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                listOf(false to spec.minusLabel, true to spec.plusLabel).forEach { (b, label) -> Chip(label, on = plus == b) { plus = b } }
+                listOf(false to spec.minusLabel, true to spec.plusLabel).forEach { (b, label) -> Chip(label, on = plus == b, choice = true) { plus = b } }
                 if (spec.gradientAmount != null) Chip("gradient", on = gradientTool) { gradientTool = !gradientTool }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -2469,7 +2470,7 @@ internal fun PaintStep(
             horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically,
         ) {
             GlideRow((spec.strengths?.map { it.first } ?: listOf("gentle", "medium", "strong")).getOrNull(strength), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                (spec.strengths?.map { it.first } ?: listOf("gentle", "medium", "strong")).forEachIndexed { i, label -> Chip(label, on = strength == i) { strength = i } }
+                (spec.strengths?.map { it.first } ?: listOf("gentle", "medium", "strong")).forEachIndexed { i, label -> Chip(label, on = strength == i, choice = true) { strength = i } }
             }
             Chip("mask", on = showMask) { showMask = !showMask }
         }
@@ -3042,7 +3043,7 @@ internal class SelectPicture {
 /** A small rounded choice, amber when on. */
 /** 109a: the painting steps' chip, for LAYERS (its own file); CollageScreen has a private Chip of its own. */
 @Composable
-internal fun PrintChip(label: String, on: Boolean, enabled: Boolean = true, onTap: () -> Unit) = Chip(label, on, enabled, onTap)
+internal fun PrintChip(label: String, on: Boolean, enabled: Boolean = true, onTap: () -> Unit) = Chip(label, on, enabled, onTap = onTap)
 
 /** 110a: a chip that is on but not the main action: amber outline and words, no fill. */
 @Composable
@@ -3058,7 +3059,7 @@ private fun OutlinedChip(label: String, onTap: () -> Unit) {
 }
 
 @Composable
-private fun Chip(label: String, on: Boolean, enabled: Boolean = true, onTap: () -> Unit) {
+private fun Chip(label: String, on: Boolean, enabled: Boolean = true, choice: Boolean = false, onTap: () -> Unit) {
     val context = LocalContext.current
     // 111b: inside a gliding row the pill is the row's; the chip fades its own background under it
     val glide = LocalGlide.current
@@ -3066,12 +3067,18 @@ private fun Chip(label: String, on: Boolean, enabled: Boolean = true, onTap: () 
     // 109b: the newest action (the gesture below is set up once per label/state; LAYERS' copy, move and
     // delete chips would otherwise act on the list of layers as it was when the menu opened)
     val tapNow by rememberUpdatedState(onTap)
+    val scope = rememberCoroutineScope()
     Text(
         label, fontSize = 11.sp,
         color = glide?.ink(label, off, on) ?: if (on) LatentColors.AmberInk else off,
         modifier = Modifier.pressIn().raised(RoundedCornerShape(999.dp), 2.dp).clip(RoundedCornerShape(999.dp))
             .then(if (glide != null) Modifier.glideItem(glide, label, LatentColors.Surface, on) else Modifier.accentFill(on, LatentColors.Surface))
-            .pointerInput(label, on, enabled) { detectTapGestures(onTap = { if (enabled) { Haptics.tick(context); tapNow() } }) }
+            .pointerInput(label, on, enabled) { detectTapGestures(onTap = {
+                if (!enabled) return@detectTapGestures
+                Haptics.tick(context)
+                // 111e: in a row of choices the pill moves first, then the (re-rendering) change follows
+                if (choice && glide != null && motionOn()) { glide.pick(label); scope.launch { afterPill(); tapNow() } } else tapNow()
+            }) }
             .padding(horizontal = 10.dp, vertical = 5.dp),
     )
 }

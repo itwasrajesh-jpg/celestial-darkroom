@@ -26,6 +26,7 @@ import androidx.compose.ui.draw.drawWithContent
 import com.celestial.latent.motionOn
 import kotlinx.coroutines.launch
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.withFrameNanos
@@ -100,8 +101,13 @@ fun Modifier.pressIn(enabled: Boolean = true, ring: Color? = null): Modifier = i
     val slop = LocalViewConfiguration.current.touchSlop
     val tint = ring ?: Touch.ring
     var bounds by remember { mutableStateOf(Rect.Zero) }
+    // 111e: the LIGHT wave's lit edge is drawn by the panel ([waveHost]) from this list, so a passing wave
+    // redraws the panel once a frame instead of every control in it
+    val me = remember { Wave.Edge() }
+    DisposableEffect(Unit) { Wave.edges.add(me); onDispose { Wave.edges.remove(me) } }
+    me.colour = ring
     this
-        .onGloballyPositioned { bounds = it.boundsInRoot() }
+        .onGloballyPositioned { bounds = it.boundsInRoot(); me.rect = bounds }
         .pointerInput(Unit) {
             awaitEachGesture {
                 val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
@@ -130,13 +136,6 @@ fun Modifier.pressIn(enabled: Boolean = true, ring: Color? = null): Modifier = i
         }
         .drawWithContent {
             drawContent()
-            // 111d LIGHT: the edge lights as the band crosses it (in Clay, in the thing's own colour)
-            val lit = Wave.rim(bounds, density)
-            if (lit > 0.03f) {
-                val rad = minOf(size.height / 2f, 16f * density)
-                drawRoundRect((ring ?: Wave.tint), cornerRadius = CornerRadius(rad), style = Stroke(width = 1.5f * density), alpha = 0.95f * lit)
-                drawRoundRect((ring ?: Wave.tint), cornerRadius = CornerRadius(rad), style = Stroke(width = 5f * density), alpha = 0.22f * lit)
-            }
             val a = ringAge.value
             if (a < 1f) {
                 val r = 12f * density + 40f * density * a
@@ -170,6 +169,10 @@ object Wave {
         style = s
         runCatching { ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString("wave", s.id).apply() }
     }
+
+    /** 111e: a control the LIGHT wave lights the edge of: where it is (root px) and its own colour, if any. */
+    internal class Edge { var rect: Rect = Rect.Zero; var colour: Color? = null }
+    internal val edges = LinkedHashSet<Edge>()
 
     internal var lastAt = Offset.Zero
     internal var lastTint = Color.Unspecified
@@ -223,9 +226,9 @@ fun Modifier.waveHost(): Modifier = composed {
     }
     this
         .onGloballyPositioned { at = it.positionInRoot() }
-        .drawBehind {
+        .drawWithContent {
             val age = Wave.age
-            if (age > 1.2f) return@drawBehind
+            if (age > 1.2f) { drawContent(); return@drawWithContent }
             val o = Wave.origin - at
             val r = 870f * density * age
             when (Wave.style) {
@@ -249,6 +252,22 @@ fun Modifier.waveHost(): Modifier = composed {
                     }
                 }
                 else -> {}
+            }
+            drawContent()
+            // 111d LIGHT: each control's edge lights as the band crosses it (in Clay, in the thing's own colour)
+            if (Wave.style == Wave.Style.LIGHT) {
+                val mine = Rect(at, size)
+                for (e in Wave.edges) {
+                    val r = e.rect
+                    if (r.width <= 0f || r.height <= 0f || !r.overlaps(mine)) continue
+                    val lit = Wave.rim(r, density)
+                    if (lit <= 0.03f) continue
+                    val c = e.colour ?: Wave.tint
+                    val rad = CornerRadius(minOf(r.height / 2f, 16f * density))
+                    val tl = r.topLeft - at
+                    drawRoundRect(c, tl, r.size, rad, style = Stroke(width = 1.5f * density), alpha = 0.95f * lit)
+                    drawRoundRect(c, tl, r.size, rad, style = Stroke(width = 5f * density), alpha = 0.22f * lit)
+                }
             }
         }
 }
