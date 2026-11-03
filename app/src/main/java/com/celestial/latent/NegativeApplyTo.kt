@@ -30,6 +30,8 @@ import com.celestial.latent.develop.LayerLooks
 import com.celestial.latent.develop.Layers
 import com.celestial.latent.ui.LatentColors
 import com.celestial.latent.ui.pressIn
+import com.celestial.latent.ui.waveHost
+import com.celestial.latent.ui.Wave
 import com.celestial.latent.ui.glideItem
 import com.celestial.latent.ui.LocalGlide
 import com.celestial.latent.ui.GlideRow
@@ -65,11 +67,11 @@ internal fun ApplyToRow(layers: List<Layer>, applyTo: Int?, noFilm: Boolean, his
                 horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 if (layers.isNotEmpty()) {
                     Text("APPLY TO", color = LatentColors.TextDim, fontSize = 9.sp, letterSpacing = 1.5.sp, modifier = Modifier.padding(end = 2.dp))
-                    TargetChip("ALL", null, on = chosen == null, enabled = true, own = false) { onPick(null) }
+                    TargetChip("ALL", null, on = chosen == null, enabled = true, own = false) { if (chosen != null) Wave.start(); onPick(null) }
                     for (l in layers) {
                         val can = l.recipe != null || owning < LayerLooks.MAX_EXTRA
                         TargetChip(l.name, Layers.COLOURS[Math.floorMod(l.tint, Layers.COLOURS.size)], on = l.id == chosen?.id, enabled = can, own = l.recipe != null, key = l.id) {
-                            if (can) onPick(l.id)
+                            if (can) { if (l.id != chosen?.id) Wave.start(); onPick(l.id) }
                         }
                     }
                 }

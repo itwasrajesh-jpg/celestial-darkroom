@@ -40,6 +40,8 @@ import com.celestial.latent.camera.Lenses
 import com.celestial.latent.ui.AppTheme
 import com.celestial.latent.ui.LatentColors
 import com.celestial.latent.ui.pressIn
+import com.celestial.latent.ui.waveHost
+import com.celestial.latent.ui.Wave
 import com.celestial.latent.ui.glideItem
 import com.celestial.latent.ui.LocalGlide
 import com.celestial.latent.ui.GlideRow
@@ -51,7 +53,7 @@ import com.celestial.latent.ui.raised
 fun SettingsScreen(settings: AppSettings, onChange: (AppSettings) -> Unit, onOpenReport: () -> Unit, onOpenVendor: () -> Unit, onOpenProbe: () -> Unit, onOpenDepth: () -> Unit, onOpenLogs: () -> Unit, onOpenExtension: () -> Unit, onOpenAbout: () -> Unit, onBack: () -> Unit, onOpenHelp: () -> Unit = {}, onOpenRecipeExport: () -> Unit = {}, onOpenRecipeImport: () -> Unit = {}) {
     Column(
         Modifier.fillMaxSize().background(LatentColors.Background).glow().statusBarsPadding().navigationBarsPadding()
-            .verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 12.dp),
+            .verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 12.dp).waveHost(),
     ) {
         Text("‹ back", color = LatentColors.Text, fontSize = 14.sp, modifier = Modifier.combinedClickable(onClick = onBack).padding(vertical = 6.dp))
         Spacer(Modifier.height(8.dp))
@@ -78,6 +80,13 @@ fun SettingsScreen(settings: AppSettings, onChange: (AppSettings) -> Unit, onOpe
         // 111a: the pace of every touch motion (press-in, the gliding pill, sliders, the panel waves). 100% is
         // the approved proofs' pace and the fastest; it can only be slowed, to half speed at most.
         SpeedRow()
+        // 111d: what the big moments do to the panel (approved proofs touch-motion/4-6); tapping one shows it
+        OptionRow(
+            title = "Panel wave",
+            subtitle = "On a big moment (a look picked, APPLY TO changed, Auto level, Start fresh, a print made) a wave spreads from your finger. Light: a band of light lights each control's edge. Water: the controls bob as the ripple passes. Wash: a faint tint of what you touched spreads and fades.",
+            options = com.celestial.latent.ui.Wave.Style.entries.map { it.label to it },
+            selected = com.celestial.latent.ui.Wave.style,
+        ) { com.celestial.latent.ui.Wave.set(uiContext, it); com.celestial.latent.ui.Wave.start() }
         // 105c
         ToggleRow("Breathing shutter", "In manual, when the meter reads 0 the shutter wakes, glows in the theme's colours and breathes, with small lights circling it. Turn off for a plain shutter.", settings.breathingShutter) { onChange(settings.copy(breathingShutter = it)) }
 

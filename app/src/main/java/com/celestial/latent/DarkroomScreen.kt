@@ -74,6 +74,8 @@ import com.celestial.latent.ui.Glyph
 import com.celestial.latent.ui.GlyphIcon
 import com.celestial.latent.ui.LatentColors
 import com.celestial.latent.ui.pressIn
+import com.celestial.latent.ui.waveHost
+import com.celestial.latent.ui.Wave
 import com.celestial.latent.ui.NumKind
 import com.celestial.latent.ui.Num
 import com.celestial.latent.ui.SliderOrder
@@ -734,6 +736,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
      */
     fun startFresh() {
         if (op.noFilm) return
+        Wave.start()   // 111d: a big moment
         asks.freshUndo = FreshSnap(recipe, lookId, op.layers, op.applyTo,
             PaintedEffects(exposureMap, softenMap, fogMap, fogLook, raysMap, raysLook, extraLights, saturationMap, lithLook, wetMap, wetLook, rainMap), ageLook)
         asks.beforeReset = null; asks.resetTo = null; asks.beforeClear = null; asks.clearAsk = false
@@ -791,6 +794,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
     }
 
     fun pickLook(id: String, look: Recipe) {
+        Wave.start()   // 111d: a big moment
         // 110a: picking a film after NO FILM develops it as it comes. 110c: where APPLY TO says: on
         // a layer, that layer takes the look and the rest of the photo its own film as it comes (a photo
         // cannot be part without film); it used to jump back to ALL and give the whole photo the look.
@@ -864,6 +868,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                 fullRunning = false; fullJob = null
                 if (out != null) {
                     fullError = null
+                    Wave.start()   // 111d: the print is made
                     com.celestial.latent.develop.DevelopedFrom.record(context, source, madeFrom)
                     PhotoRecipes.saveEdited(context, source, madeWith)
                     status = "saved to DCIM/Latent" + com.celestial.latent.develop.Develop.lastFullNote.let { if (it.isEmpty()) "" else " · $it" }
@@ -1184,7 +1189,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                     renderWithMasks = { r, edge, mk -> renderStill(r, edge, mk) },
                     paintedKey = { mk -> paintedKey(mk) },
                     renderRegionWithMasks = { r, edge, mk, reg -> renderDetail(r, reg, edge, mk) },
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier.fillMaxSize().waveHost(),
                 )
             } else Column(Modifier.fillMaxSize().onSizeChanged { roomHeight = it.height.coerceAtLeast(1) }) {
                 // Photo shrinks as the sheet is dragged up; it never disappears entirely.
@@ -1382,7 +1387,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                     edgeSample = edgeSample,
                     frameNumber = { com.celestial.latent.develop.FilmEdge.frameNumber(context, source) },
                 ) else Column(
-                    Modifier.fillMaxWidth().weight(1f - photoWeight).liftedTop(rim = false).clip(RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)).background(LatentColors.Panel)
+                    Modifier.fillMaxWidth().weight(1f - photoWeight).liftedTop(rim = false).clip(RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)).background(LatentColors.Panel).waveHost()
                         // 105b: and falling on the top of the sheet
                         .drawBehind { LatentColors.ambient?.let { a -> drawRect(androidx.compose.ui.graphics.Brush.verticalGradient(
                             0f to a.copy(alpha = 0.38f * a.alpha), 0.35f to a.copy(alpha = 0.13f * a.alpha), 1f to a.copy(alpha = 0f), startY = 0f, endY = 110.dp.toPx())) } }
@@ -1450,7 +1455,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                             val on = !op.noFilm && nl == "stock:" + name
                             Box(Modifier.showLookOnOpen(on, asks, lookRow, developScope)) { Column(
                                 // 87a-2: in Clay each film has its own pastel card, as in the approved proof
-                                Modifier.pressIn().floating(RoundedCornerShape(6.dp), 3.dp).clip(RoundedCornerShape(6.dp)).accentFill(on, LatentColors.card(n))
+                                Modifier.pressIn(ring = if (LatentColors.palette.cardTints.isNotEmpty()) LatentColors.card(n) else null).floating(RoundedCornerShape(6.dp), 3.dp).clip(RoundedCornerShape(6.dp)).accentFill(on, LatentColors.card(n))
                                     .combinedClickable(
                                         onClick = { Haptics.tick(context); pickLook("stock:" + name, saved) },
                                         onLongClick = { Haptics.click(context); asks.managing = name; asks.manageName = name; asks.deleteAsk = false },
@@ -1591,7 +1596,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                                         modifier = Modifier.pressIn().clip(RoundedCornerShape(999.dp)).accentFill()
                                             .combinedClickable(onClick = {
                                                 if (!asks.levelling && !rendering) {
-                                                    Haptics.tick(context); asks.levelling = true
+                                                    Haptics.tick(context); asks.levelling = true; Wave.start()
                                                     // 109e: what it levels is fixed as it is tapped; the answer lands only if that is still what NEGATIVE points at
                                                     val target = op.applyTo; val start = op.neg
                                                     Thread {

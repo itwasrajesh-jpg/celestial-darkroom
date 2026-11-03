@@ -25,6 +25,20 @@ import androidx.compose.ui.platform.LocalViewConfiguration
 import androidx.compose.ui.draw.drawWithContent
 import com.celestial.latent.motionOn
 import kotlinx.coroutines.launch
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.withFrameNanos
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
+import kotlin.math.exp
+import kotlin.math.hypot
+import kotlin.math.sin
 
 /**
  * 111a: how the app answers a finger (approved proofs touch-motion/1-press-in.mp4 and 3b/4-6): whatever is
@@ -85,10 +99,14 @@ fun Modifier.pressIn(enabled: Boolean = true, ring: Color? = null): Modifier = i
     val scope = rememberCoroutineScope()
     val slop = LocalViewConfiguration.current.touchSlop
     val tint = ring ?: Touch.ring
+    var bounds by remember { mutableStateOf(Rect.Zero) }
     this
+        .onGloballyPositioned { bounds = it.boundsInRoot() }
         .pointerInput(Unit) {
             awaitEachGesture {
                 val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                // 111d: where the last touch was and its colour, for a panel wave that this touch may start
+                Wave.lastAt = bounds.topLeft + down.position; Wave.lastTint = tint
                 if (!motionOn()) return@awaitEachGesture
                 ringAt = down.position
                 scope.launch { scale.animateTo(0.96f, Touch.spring(1f, 1500f)) }
@@ -104,15 +122,133 @@ fun Modifier.pressIn(enabled: Boolean = true, ring: Color? = null): Modifier = i
         // a wide row sinks by the same few dp as a button, not 4% of the screen
         .graphicsLayer {
             val k = if (size.width > 0f) minOf(1f, 150f * density / size.width) else 1f
-            val s = 1f - (1f - scale.value) * k
+            var s = 1f - (1f - scale.value) * k
+            // 111d WATER: bob up a hair as the wave passes
+            val b = Wave.bob(bounds, density)
+            if (b != 0f) { s *= 1f + 0.018f * b; translationY = -3.3f * density * b }
             scaleX = s; scaleY = s
         }
         .drawWithContent {
             drawContent()
+            // 111d LIGHT: the edge lights as the band crosses it (in Clay, in the thing's own colour)
+            val lit = Wave.rim(bounds, density)
+            if (lit > 0.03f) {
+                val rad = minOf(size.height / 2f, 16f * density)
+                drawRoundRect((ring ?: Wave.tint), cornerRadius = CornerRadius(rad), style = Stroke(width = 1.5f * density), alpha = 0.95f * lit)
+                drawRoundRect((ring ?: Wave.tint), cornerRadius = CornerRadius(rad), style = Stroke(width = 5f * density), alpha = 0.22f * lit)
+            }
             val a = ringAge.value
             if (a < 1f) {
                 val r = 12f * density + 40f * density * a
                 drawCircle(tint.copy(alpha = 0.65f * (1f - a) * (1f - a)), radius = r, center = ringAt, style = Stroke(width = 2f * density))
+            }
+        }
+}
+
+/**
+ * 111d: the panel wave (approved proofs touch-motion/4-ripple-on-water, 5-light-wave, 6-colour-wash). On a big
+ * moment — a look picked, APPLY TO changed, Auto level, Start fresh, a print developed — a wave spreads from
+ * the touch across the panel, in the style chosen in Settings → Look:
+ *  - LIGHT: a soft band of light sweeps out and lights each control's edge as it crosses;
+ *  - WATER: each control bobs up a hair and settles as the ring passes, nearest first;
+ *  - WASH: a faint tint of what was touched spreads over the panel and fades;
+ *  - OFF.
+ * It crosses the panel in about 0.45 s at full speed, slower with Settings' motion speed. The panel draws
+ * the light band or wash ([waveHost]); each control answers in [pressIn].
+ */
+object Wave {
+    enum class Style(val id: String, val label: String) { LIGHT("light", "Light"), WATER("water", "Water"), WASH("wash", "Wash"), OFF("off", "Off") }
+
+    private const val PREFS = "latent_ui_motion"
+    var style by mutableStateOf(Style.LIGHT)
+        private set
+    fun load(ctx: Context) {
+        val id = runCatching { ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString("wave", null) }.getOrNull()
+        style = Style.entries.firstOrNull { it.id == id } ?: Style.LIGHT
+    }
+    fun set(ctx: Context, s: Style) {
+        style = s
+        runCatching { ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString("wave", s.id).apply() }
+    }
+
+    internal var lastAt = Offset.Zero
+    internal var lastTint = Color.Unspecified
+    internal var origin = Offset.Zero
+    internal var tint by mutableStateOf(Color(0xFFFAC775))
+    /** Seconds since the wave started, at the user's pace (large when none is running). */
+    internal var age by mutableFloatStateOf(99f)
+    internal var serial by mutableIntStateOf(0)
+
+    private const val SPEED_DP = 870f   // dp per second
+    private const val BAND_DP = 55f
+
+    /** Start a wave from the last touch, in its colour; [at] (root px) for one that no finger started. */
+    fun start(at: Offset? = null) {
+        if (style == Style.OFF || !motionOn()) return
+        origin = at ?: lastAt
+        tint = if (lastTint != Color.Unspecified && at == null) lastTint else Touch.ring
+        age = 0f; serial++
+    }
+
+    private fun dist(r: Rect): Float {
+        val dx = maxOf(r.left - origin.x, 0f, origin.x - r.right); val dy = maxOf(r.top - origin.y, 0f, origin.y - r.bottom)
+        return hypot(dx, dy)
+    }
+
+    internal fun bob(r: Rect, density: Float): Float {
+        if (style != Style.WATER || age > 1.6f || r == Rect.Zero) return 0f
+        val p = age - dist(r) / (SPEED_DP * density)
+        return if (p <= 0f || p > 0.6f) 0f else exp(-p * 9f) * sin(p * 26f)
+    }
+
+    internal fun rim(r: Rect, density: Float): Float {
+        if (style != Style.LIGHT || age > 1.2f || r == Rect.Zero) return 0f
+        val front = SPEED_DP * density * age
+        val e = (dist(r) - front) / (BAND_DP * 0.7f * density)
+        return exp(-e * e) * (1f - age / 1.0f).coerceAtLeast(0f)
+    }
+}
+
+/** 111d: the panel a wave crosses: runs the wave's clock and draws its light band or wash under the controls. */
+fun Modifier.waveHost(): Modifier = composed {
+    var at by remember { mutableStateOf(Offset.Zero) }
+    LaunchedEffect(Wave.serial) {
+        if (Wave.serial == 0) return@LaunchedEffect
+        val t0 = withFrameNanos { it }
+        while (Wave.age < 1.6f) {
+            val now = withFrameNanos { it }
+            Wave.age = (now - t0) / 1e9f * Touch.speed
+        }
+        Wave.age = 99f
+    }
+    this
+        .onGloballyPositioned { at = it.positionInRoot() }
+        .drawBehind {
+            val age = Wave.age
+            if (age > 1.2f) return@drawBehind
+            val o = Wave.origin - at
+            val r = 870f * density * age
+            when (Wave.style) {
+                Wave.Style.WASH -> {
+                    val fade = (1f - age / 1.0f).coerceAtLeast(0f)
+                    val a = (if (LatentColors.palette.light) 0.27f else 0.2f) * fade
+                    if (a > 0f && r > 1f) drawCircle(
+                        Brush.radialGradient(0f to Wave.tint.copy(alpha = a), 0.75f to Wave.tint.copy(alpha = a), 1f to Color.Transparent, center = o, radius = r * 1.15f),
+                        radius = r * 1.15f, center = o)
+                }
+                Wave.Style.LIGHT -> {
+                    val fade = (1f - age / 0.9f).coerceAtLeast(0f)
+                    val band = 55f * density
+                    val a = (if (LatentColors.palette.light) 0.24f else 0.18f) * fade
+                    val outer = r + band
+                    if (a > 0f && outer > 1f) {
+                        val inner = ((r - band) / outer).coerceIn(0f, 0.999f)
+                        drawCircle(
+                            Brush.radialGradient(0f to Color.Transparent, inner to Color.Transparent, (r / outer).coerceIn(inner, 1f) to Wave.tint.copy(alpha = a), 1f to Color.Transparent, center = o, radius = outer),
+                            radius = outer, center = o)
+                    }
+                }
+                else -> {}
             }
         }
 }
