@@ -73,7 +73,7 @@ internal fun ApplyToRow(layers: List<Layer>, applyTo: Int?, onPick: (Int?) -> Un
 }
 
 @Composable
-private fun TargetChip(label: String, tint: Int?, on: Boolean, enabled: Boolean, own: Boolean, onTap: () -> Unit) {
+internal fun TargetChip(label: String, tint: Int?, on: Boolean, enabled: Boolean, own: Boolean, onTap: () -> Unit) {
     val context = LocalContext.current
     val tapNow by rememberUpdatedState(onTap)
     Row(

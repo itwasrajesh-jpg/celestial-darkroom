@@ -484,6 +484,9 @@ class PrintMemory {
     internal val step = mutableStateOf(0)
     internal var depthRanks: DepthRanks? = null
     internal val selectPicture = SelectPicture()
+    /** 109g: each painting step's IN layer (step index → layer id), kept while the photo is open. */
+    internal val paintIn = androidx.compose.runtime.mutableStateMapOf<Int, Int>()
+    internal fun pickIn(step: Int, id: Int?) { if (id == null) paintIn.remove(step) else paintIn[step] = id }
 }
 
 /**
@@ -597,6 +600,8 @@ fun PrintPanel(
     var sideSoften by remember { mutableStateOf(0) }
     var sideFog by remember { mutableStateOf(0) }
     var sideWet by remember { mutableStateOf(0) }
+    // 109g: the layers a painting step can keep its painting inside (the IN row)
+    val paintable = PaintIn.usable(layers)
     // the fog step's AIR tab: its wish (an atmosphere), carried out by the step itself (60a)
     val airAsk = remember { AirAsk() }
     // the air this photo's film carries, when it was saved from the Film Builder with an atmosphere (60b)
@@ -676,6 +681,7 @@ fun PrintPanel(
                     // the film's colour as the step began, for "hold: before" (the slider is part of this step)
                     val dirBefore = remember { recipe.dir to recipe.dirAmount }
                     PaintStep(DODGE_BURN_SPEC, recipe, exposureMap, onExposureMap, depthRanks = depthRanks, selectPicture = selectPicture,
+                        paintLayers = paintable, inLayer = memory.paintIn[3], onInLayer = { memory.pickIn(3, it) },
                         depthSide = sideDodge, onDepthSide = { sideDodge = it }, depthSplit = depthSplit, onDepthSplit = onDepthSplit, depthFix = depthFix, onDepthFix = onDepthFix,
                         renderWith = { r, e, m -> renderMasked(r, e, all.copy(dodge = m)) },
                         stepStartMap = { a -> ExposureMap.blank(a) },
@@ -696,6 +702,7 @@ fun PrintPanel(
                         renderBefore = { r, e -> renderMasked(r.copy(dir = dirBefore.first, dirAmount = dirBefore.second), e, all.copy(dodge = null, saturation = null)) })
                 }
                 4 -> PaintStep(SOFTEN_SPEC, recipe, softenMap, onSoftenMap, depthRanks = depthRanks, selectPicture = selectPicture,
+                    paintLayers = paintable, inLayer = memory.paintIn[4], onInLayer = { memory.pickIn(4, it) },
                     depthSide = sideSoften, onDepthSide = { sideSoften = it }, depthSplit = depthSplit, onDepthSplit = onDepthSplit, depthFix = depthFix, onDepthFix = onDepthFix,
                     renderWith = { r, e, m -> renderMasked(r, e, all.copy(soften = m)) },
                     // begin from what is on screen: softened everywhere if diffusion is on, else sharp
@@ -704,6 +711,7 @@ fun PrintPanel(
                     onPaintPlus = onDiffusionOn,
                     renderRegion = renderRegionWithMasks?.let { f -> { r, e, m, reg -> f(r, e, all.copy(soften = m), reg) } })
                 5 -> PaintStep(FOG_SPEC, recipe, fogMap, onFogMap, depthRanks = depthRanks, selectPicture = selectPicture,
+                    paintLayers = paintable, inLayer = memory.paintIn[5], onInLayer = { memory.pickIn(5, it) },
                     depthSide = sideFog, onDepthSide = { sideFog = it }, depthSplit = depthSplit, onDepthSplit = onDepthSplit, depthFix = depthFix, onDepthFix = onDepthFix,
                     renderWith = { r, e, m -> renderMasked(r, e, all.copy(fog = m)) },
                     stepStartMap = { a -> ExposureMap.blank(a) },
@@ -726,6 +734,7 @@ fun PrintPanel(
                     refreshKey = fogLook)
                 // wet ground (64a): painted like the fog, with its own shine; it needs the depth for the ground's shape
                 7 -> PaintStep(WET_SPEC, recipe, wetMap, onWetMap, depthRanks = depthRanks, selectPicture = selectPicture,
+                    paintLayers = paintable, inLayer = memory.paintIn[7], onInLayer = { memory.pickIn(7, it) },
                     depthSide = sideWet, onDepthSide = { sideWet = it }, depthSplit = depthSplit, onDepthSplit = onDepthSplit, depthFix = depthFix, onDepthFix = onDepthFix,
                     renderWith = { r, e, m -> renderMasked(r, e, all.copy(wet = m)) },
                     stepStartMap = { a -> ExposureMap.blank(a) },
@@ -748,7 +757,7 @@ fun PrintPanel(
                     renderBefore = { r, e -> renderMasked(r, e, all.copy(wet = null, rain = null, wetLook = wetLook.copy(window = com.celestial.latent.develop.RainLook()))) },
                     refreshKey = wetLook)
                 8 -> LithStep(recipe, lithLook, onLithLook, render = { r, e, l -> renderMasked(r, e, all.copy(lith = l)) }, modifier = Modifier.fillMaxSize())
-                else -> PaintStep(RAYS_SPEC, recipe, raysMap, onRaysMap, depthRanks = depthRanks, selectPicture = selectPicture,
+                else -> PaintStep(paintLayers = paintable, inLayer = memory.paintIn[6], onInLayer = { memory.pickIn(6, it) }, stepSpec = RAYS_SPEC, recipe = recipe, map = raysMap, onMap = onRaysMap, depthRanks = depthRanks, selectPicture = selectPicture,
                     // the light itself lands only on its chosen side; the bar sets the selected light's
                     depthSide = sel.side.roundToInt(), onDepthSide = { setSel(sel.copy(side = it.toFloat())) }, depthSplit = depthSplit, onDepthSplit = onDepthSplit, depthFix = depthFix, onDepthFix = onDepthFix,
                     renderWith = { r, e, m -> renderMasked(r, e, all.copy(rays = m)) },
@@ -1824,6 +1833,10 @@ internal fun PaintStep(
     startShowMask: Boolean = false,
     /** 109a: the print without this step's effect, each time it is made (LAYERS reads the sky and the depth from it). */
     onBefore: ((Bitmap) -> Unit)? = null,
+    /** 109g: the photo's layers, offered in the IN row: painting can be kept inside one ([PaintInRow]). */
+    paintLayers: List<com.celestial.latent.develop.Layer> = emptyList(),
+    /** 109g: the layer painting is kept in (its id), null = everywhere. */
+    inLayer: Int? = null, onInLayer: (Int?) -> Unit = {},
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -2053,6 +2066,8 @@ internal fun PaintStep(
             val t = if (len2 < 1e-8f) 0f else ((px * dx + py * dy) / len2).coerceIn(0f, 1f)
             st[j * m.width + i] = t * t * (3f - 2f * t)          // smooth at both ends
         }
+        // 109g: kept inside the layer chosen in the IN row
+        paintLayers.firstOrNull { it.id == inLayer }?.let { l -> val lw = PaintIn.weights(l, m.width, m.height); for (k in st.indices) st[k] *= lw[k] }
         strokeTick++
     }
 
@@ -2061,14 +2076,25 @@ internal fun PaintStep(
      * anything is painted, and "fill" commits it like a finished stroke (undo, plus and minus,
      * strength all as for a brush). Thicker far: it ramps up across the range.
      */
-    /** Where painting may land, per mask cell: the chosen side (thicker far, for the background, if asked). */
-    fun sideWeights(w: Int, h: Int): FloatArray? {
+    /** The chosen side of the depth, per mask cell (thicker far, for the background, if asked). */
+    fun depthWeights(w: Int, h: Int): FloatArray? {
         if (depthSide == 0) return null
         val fg = depthSplit?.takeIf { it.width == w && it.height == h }?.stops ?: depthRanks?.foreground(w, h) ?: return null
         val rk = if (depthRamp && depthSide == 2) depthRanks?.ranks(w, h) else null
         return FloatArray(w * h) { k ->
             val side = if (depthSide == 1) fg[k] else 1f - fg[k]
             side * (if (rk != null) 0.15f + 0.85f * rk[k] else 1f)
+        }
+    }
+    /** Where painting may land, per mask cell: the chosen layer and side. */
+    fun sideWeights(w: Int, h: Int): FloatArray? {
+        // 109g: a layer chosen in the IN row: painting lands only inside it (and on the depth's side, if one is chosen too)
+        val inL = paintLayers.firstOrNull { it.id == inLayer }?.let { PaintIn.weights(it, w, h) }
+        val side = depthWeights(w, h)
+        return when {
+            inL == null -> side
+            side == null -> inL
+            else -> FloatArray(w * h) { k -> inL[k] * side[k] }
         }
     }
     /** The chosen side, shown in amber as the stroke being painted — "fill" commits it like a stroke. */
@@ -2381,6 +2407,8 @@ internal fun PaintStep(
     val paintNow by rememberUpdatedState(tabs == null || tab == tabs.size)
     /** The brush controls: what you paint with, how strongly, and the way back. */
     val brushRows: @Composable () -> Unit = {
+        // 109g: where painting lands, once the photo has layers
+        if (paintLayers.isNotEmpty()) PaintInRow(paintLayers, paintLayers.firstOrNull { it.id == inLayer }?.id, onInLayer)
         // Three rows, each measured to fit a phone (about 357 dp inside the margins): one row
         // would be ~410 dp and squeeze its last chips — the bug that once crushed the Develop button.
         // 1. what you paint with, and how big
@@ -2415,10 +2443,13 @@ internal fun PaintStep(
         }
         // A side chosen in the depth bar: the brush paints only there — or fill all of it at once
         // (thicker far, for the background: building up with distance, as mist does).
-        if (depthSide != 0 && depthRanks != null) Row(
+        val inL = paintLayers.firstOrNull { it.id == inLayer }
+        if ((depthSide != 0 && depthRanks != null) || inL != null) Row(
             Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 6.dp), verticalAlignment = Alignment.CenterVertically,
         ) {
-            Chip("fill the " + (if (depthSide == 1) "foreground" else "background"), on = true, enabled = depthReady || depthSplit != null) { fillByDistance(); endStroke() }
+            val sideOn = depthSide != 0 && depthRanks != null
+            Chip("fill " + (inL?.name ?: "the") + (if (!sideOn) "" else if (inL != null) " · " + (if (depthSide == 1) "near" else "far") else " " + (if (depthSide == 1) "foreground" else "background")),
+                on = true, enabled = !sideOn || depthReady || depthSplit != null) { fillByDistance(); endStroke() }
             if (depthSide == 2) Box(Modifier.padding(start = 4.dp)) { Chip("thicker far", on = depthRamp) { depthRamp = !depthRamp } }
         }
         // 3. where the mask stands, and the way back
