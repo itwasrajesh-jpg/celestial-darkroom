@@ -783,8 +783,10 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
     }
 
     fun pickLook(id: String, look: Recipe) {
-        // 110a: picking a film after start fresh develops it as it comes, on the whole photo
-        if (op.noFilm) { op.noFilm = false; op.applyTo = null }
+        // 110a: picking a film after NO FILM develops it as it comes. 110c: where APPLY TO says: on
+        // a layer, that layer takes the look and the rest of the photo its own film as it comes (a photo
+        // cannot be part without film); it used to jump back to ALL and give the whole photo the look.
+        if (op.noFilm) op.noFilm = false
         val l = op.layers.firstOrNull { it.id == op.applyTo }
         if (l != null) {
             // 109c: on the chosen layer only, from the look it was on
