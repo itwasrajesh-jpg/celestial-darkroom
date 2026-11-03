@@ -81,6 +81,7 @@ import com.celestial.latent.ui.litEdge
 import com.celestial.latent.ui.floating
 import com.celestial.latent.ui.raised
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.tween
 
@@ -742,21 +743,48 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
         android.util.Log.i("Latent", "start fresh: no film, everything off")
     }
 
-    /** 110a: start fresh's Undo: the photo exactly as it was, film and all. */
-    fun undoFresh() {
-        val s = asks.freshUndo ?: return
-        recipe = s.recipe; lookId = s.lookId; op.layers = s.layers; op.applyTo = s.applyTo
-        val e = s.effects
-        exposureMap = e.exposure; softenMap = e.soften; fogMap = e.fog; fogLook = e.fogLook
-        raysMap = e.rays; raysLook = e.raysLook; extraLights = e.extraLights
-        saturationMap = e.saturation; lithLook = e.lith; wetMap = e.wet; wetLook = e.wetLook; rainMap = e.rain
-        ageLook = s.age
-        op.noFilm = false; asks.freshUndo = null
+    /** 110b: what NEGATIVE shapes right now, for its undo history. */
+    fun negNow() = NegSnap(recipe, lookId, op.layers.associate { it.id to (it.recipe to it.lookId) }, op.noFilm, asks.freshUndo)
+
+    /**
+     * 110b: NEGATIVE put back to [to] by undo or redo. Layers keep their areas and LAYERS sliders (PRINT's);
+     * only their own NEGATIVE settings move. Crossing NO FILM backwards brings back what it switched off
+     * (from the snapshot taken as the photo had no film); crossing it forwards switches it all off again.
+     */
+    fun restoreNeg(to: NegSnap, from: NegSnap?) {
+        // judged on the photo as it is now: an undo straight after NO FILM, before it settled, still crosses it
+        val wasNoFilm = op.noFilm
+        recipe = to.recipe; lookId = to.lookId
+        val fresh = ((if (from?.noFilm == true) from.fresh else null) ?: asks.freshUndo) as? FreshSnap
+        if (wasNoFilm && !to.noFilm && fresh != null) {
+            val e = fresh.effects
+            exposureMap = e.exposure; softenMap = e.soften; fogMap = e.fog; fogLook = e.fogLook
+            raysMap = e.rays; raysLook = e.raysLook; extraLights = e.extraLights
+            saturationMap = e.saturation; lithLook = e.lith; wetMap = e.wet; wetLook = e.wetLook; rainMap = e.rain
+            ageLook = fresh.age
+            op.layers = op.layers.map { l -> fresh.layers.firstOrNull { it.id == l.id }?.let { o -> l.copy(ev = o.ev, warmth = o.warmth, colour = o.colour) } ?: l }
+        } else if (!wasNoFilm && to.noFilm) {
+            (to.fresh as? FreshSnap)?.let { asks.freshUndo = it }
+            val none = PaintedEffects.NONE
+            exposureMap = none.exposure; softenMap = none.soften; fogMap = none.fog; fogLook = none.fogLook
+            raysMap = none.rays; raysLook = none.raysLook; extraLights = none.extraLights
+            saturationMap = none.saturation; lithLook = none.lith; wetMap = none.wet; wetLook = none.wetLook; rainMap = none.rain
+            ageLook = com.celestial.latent.develop.AgeLook()
+            op.layers = op.layers.map { it.copy(ev = 0f, warmth = 0f, colour = 1f) }
+            ensureOriginal()
+        }
+        op.layers = op.layers.map { l -> to.looks[l.id]?.let { (r, id) -> l.copy(recipe = r, lookId = id) } ?: l }
+        op.noFilm = to.noFilm
+    }
+
+    // 110b: NEGATIVE's steps: each state it settles in (still for a moment) after a change made there
+    LaunchedEffect(Unit) {
+        androidx.compose.runtime.snapshotFlow { negNow() }.collectLatest { s -> delay(NegHistory.SETTLE_MS); asks.history.settle(s, record = !printing) }
     }
 
     fun pickLook(id: String, look: Recipe) {
         // 110a: picking a film after start fresh develops it as it comes, on the whole photo
-        if (op.noFilm) { op.noFilm = false; asks.freshUndo = null; op.applyTo = null }
+        if (op.noFilm) { op.noFilm = false; op.applyTo = null }
         val l = op.layers.firstOrNull { it.id == op.applyTo }
         if (l != null) {
             // 109c: on the chosen layer only, from the look it was on
@@ -1054,7 +1082,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                             .combinedClickable(onClick = {
                                 if (!on) Haptics.tick(context)
                                 // 110a: PRINT works on a film: after start fresh it takes the photo's own, as it comes
-                                if (label == "PRINT" && op.noFilm) { op.noFilm = false; asks.freshUndo = null }
+                                if (label == "PRINT" && op.noFilm) op.noFilm = false
                                 printing = label == "PRINT"
                             }).padding(horizontal = 9.dp, vertical = 3.dp))
                 }
@@ -1325,8 +1353,6 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                             ?: Develop.FILMS.firstOrNull { it.first == op.neg.film }?.second?.uppercase() ?: op.neg.film)),
                         color = Color(0xE6FFFFFF), fontSize = 10.sp, letterSpacing = 1.5.sp,
                         modifier = Modifier.align(Alignment.TopStart).padding(12.dp))
-                    // 110a: what start fresh did, and its Undo, until a film is picked
-                    if (op.noFilm && asks.freshUndo != null && !frameOpen) FreshBar(Modifier.align(Alignment.BottomCenter)) { undoFresh() }
                 }
 
                 // The sheet: drag the handle to give the controls more room. While framing, the frame
@@ -1390,8 +1416,11 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                         com.celestial.latent.develop.Recipes.saved(context)
                     }
                     // 109c: once the photo has layers, where NEGATIVE's changes go
-                    // 110a: always, for "start fresh" at its right end
-                    ApplyToRow(op.layers, op.applyTo, op.noFilm, onStartFresh = { Haptics.tick(context); startFresh() }) { id -> op.applyTo = id; asks.beforeReset = null; asks.resetTo = null }
+                    // 110a: always; 110b: with NEGATIVE's undo and redo at its right end
+                    ApplyToRow(op.layers, op.applyTo, op.noFilm, asks.history,
+                        onUndo = { asks.history.undo()?.let { (to, from) -> restoreNeg(to, from) } },
+                        onRedo = { asks.history.redo()?.let { (to, from) -> restoreNeg(to, from) } },
+                    ) { id -> op.applyTo = id; asks.beforeReset = null; asks.resetTo = null }
                     val nl = op.negLook(lookId)
                     Row(Modifier.fillMaxWidth().horizontalScroll(lookRow).padding(horizontal = 14.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         // 110a: no film at all, the photo as shot (the same as start fresh)
@@ -1973,20 +2002,6 @@ private fun Modifier.waitsForFilm(on: Boolean): Modifier = if (!on) this else th
         }
     }
 
-/** 110a: the bar over the photo after "start fresh": what went, and the way back. */
-@Composable
-private fun FreshBar(modifier: Modifier, onUndo: () -> Unit) {
-    val context = androidx.compose.ui.platform.LocalContext.current
-    Row(modifier.padding(10.dp).fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(Color(0xEE161619))
-        .padding(start = 14.dp, end = 6.dp, top = 8.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-        Text("Started fresh: no film, no effects, PRINT steps off. Same as Before.", color = Color(0xFFEBECF2), fontSize = 12.sp,
-            lineHeight = 16.sp, modifier = Modifier.weight(1f))
-        Text("UNDO", color = LatentColors.TextBright, fontSize = 12.sp, letterSpacing = 1.5.sp,
-            modifier = Modifier.clip(RoundedCornerShape(999.dp)).combinedClickable(onClick = { Haptics.tick(context); onUndo() })
-                .padding(horizontal = 12.dp, vertical = 8.dp))
-    }
-}
-
 /**
  * The film's own look for "Reset to film" (71a): the look chosen in the darkroom, else the camera's
  * look if it is this film, else this film's first look, else a film built here, else the plain film.
@@ -2164,8 +2179,10 @@ private class DarkroomAsks {
     var gpuTest by mutableStateOf("")
     var levelling by mutableStateOf(false)
     var stampFor by mutableStateOf<String?>(null)
-    /** 110a: everything as it was before "start fresh", for its Undo (shown while the photo has no film). */
+    /** 110a: everything as it was before NO FILM ("start fresh"), for undo (110b) to bring back. */
     var freshUndo by mutableStateOf<FreshSnap?>(null)
+    /** 110b: NEGATIVE's undo and redo. */
+    val history = NegHistory()
     /** 109a: the layers as they were before "Clear effects", for its Undo. */
     var layersBeforeClear: List<com.celestial.latent.develop.Layer> = emptyList()
     /** 108a: the looks row has been scrolled to the photo's look once, on opening (not again as you pick). */
