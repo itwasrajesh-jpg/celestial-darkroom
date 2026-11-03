@@ -20,6 +20,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.graphics.graphicsLayer
+import kotlinx.coroutines.launch
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -65,7 +67,19 @@ object CameraModes {
 @Composable
 fun ModeRow(current: String, onPick: (String) -> Unit, modifier: Modifier = Modifier) {
     val context = LocalContext.current
-    val i = CameraModes.ALL.indexOfFirst { it.first == current }.coerceAtLeast(0)
+    // 112: the row slides the new mode into the centre (approved proof touch-motion/screens2/7-camera-touch.mp4):
+    // it starts on the tap, and the camera switches once the row has (nearly) settled
+    var want by remember { mutableStateOf(current) }
+    LaunchedEffect(current) { want = current }
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    val pickNow by androidx.compose.runtime.rememberUpdatedState(onPick)
+    val go: (String) -> Unit = { id ->
+        want = id
+        if (com.celestial.latent.motionOn()) scope.launch { kotlinx.coroutines.delay(com.celestial.latent.ui.Touch.ms(220).toLong()); pickNow(id) } else pickNow(id)
+    }
+    val i = CameraModes.ALL.indexOfFirst { it.first == want }.coerceAtLeast(0)
+    val pos by animateFloatAsState(i.toFloat(),
+        if (com.celestial.latent.motionOn()) com.celestial.latent.ui.Touch.spring(0.8f, 400f) else androidx.compose.animation.core.snap(), label = "modes")
     val swipe = Modifier.pointerInput(current) {
         val need = 40.dp.toPx()
         var total = 0f
@@ -74,20 +88,22 @@ fun ModeRow(current: String, onPick: (String) -> Unit, modifier: Modifier = Modi
             onDragEnd = {
                 // a swipe to the left brings the next mode on the right into the centre
                 val next = if (total < -need) i + 1 else if (total > need) i - 1 else i
-                if (next != i && next in CameraModes.ALL.indices) { Haptics.tick(context); onPick(CameraModes.ALL[next].first) }
+                if (next != i && next in CameraModes.ALL.indices) { Haptics.tick(context); go(CameraModes.ALL[next].first) }
             },
         ) { change, dx -> change.consume(); total += dx }
     }
     Layout(
         content = {
-            CameraModes.ALL.forEach { (id, label) ->
-                val on = id == current
+            CameraModes.ALL.forEachIndexed { k, (id, label) ->
+                val on = id == want
+                // how near this mode is to the centre as the row slides: its words light and its dot shows
+                val near = (1f - kotlin.math.abs(pos - k)).coerceIn(0f, 1f)
                 Column(
-                    Modifier.combinedClickable(onClick = { if (!on) { Haptics.tick(context); onPick(id) } }).padding(horizontal = 13.dp, vertical = 6.dp),
+                    Modifier.combinedClickable(onClick = { if (!on) { Haptics.tick(context); go(id) } }).padding(horizontal = 13.dp, vertical = 6.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
-                    Text(label, color = if (on) LatentColors.Amber else LatentColors.Text, fontSize = 12.sp, letterSpacing = 2.sp, fontWeight = FontWeight.Medium)
-                    Box(Modifier.padding(top = 3.dp).size(4.dp).clip(CircleShape).accentFill(on, Color.Transparent))
+                    Text(label, color = androidx.compose.ui.graphics.lerp(LatentColors.Text, LatentColors.Amber, near), fontSize = 12.sp, letterSpacing = 2.sp, fontWeight = FontWeight.Medium)
+                    Box(Modifier.padding(top = 3.dp).size(4.dp).graphicsLayer { alpha = near }.clip(CircleShape).accentFill(true, Color.Transparent))
                 }
             }
         },
@@ -96,7 +112,12 @@ fun ModeRow(current: String, onPick: (String) -> Unit, modifier: Modifier = Modi
         val placeables = measurables.map { it.measure(Constraints()) }
         val h = placeables.maxOf { it.height }
         layout(c.maxWidth, h) {
-            var x = c.maxWidth / 2 - placeables[i].width / 2 - placeables.take(i).sumOf { it.width }
+            // the centre of the (fractional) mode at pos sits in the middle of the row
+            fun centreOf(k: Int) = placeables.take(k).sumOf { it.width } + placeables[k].width / 2f
+            val lo = pos.toInt().coerceIn(0, placeables.size - 1); val hi = (lo + 1).coerceAtMost(placeables.size - 1)
+            val f = (pos - lo).coerceIn(0f, 1f)
+            val centre = centreOf(lo) + (centreOf(hi) - centreOf(lo)) * f
+            var x = (c.maxWidth / 2f - centre).toInt()
             placeables.forEach { p -> p.place(x, 0); x += p.width }
         }
     }

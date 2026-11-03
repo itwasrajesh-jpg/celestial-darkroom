@@ -32,6 +32,13 @@ import com.celestial.latent.ui.LatentColors
 import com.celestial.latent.ui.accentFill
 import com.celestial.latent.ui.OnPhoto
 import com.celestial.latent.ui.floating
+import com.celestial.latent.ui.pressIn
+import com.celestial.latent.ui.glideItem
+import com.celestial.latent.ui.afterPill
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.getValue
+import kotlinx.coroutines.launch
 
 /**
  * The look selector along the bottom of the viewfinder.
@@ -102,27 +109,39 @@ fun FilmStrip(
     // the grabber: these cards can be swiped down out of the way (77a)
     Box(Modifier.align(Alignment.CenterHorizontally).padding(top = 4.dp).size(30.dp, 3.dp).clip(RoundedCornerShape(2.dp))
         .background(OnPhoto.TextBright.copy(alpha = 0.8f)))
-    Row(
+    // 112: one light card glides from the film in use to the one tapped (the glass fades where it passes);
+    // the card sinks under the finger, and a light wave crosses the camera when the film changes
+    val scope = rememberCoroutineScope()
+    val pickNow by rememberUpdatedState(onSelect)
+    com.celestial.latent.ui.GlideRow(
+        selected,
         Modifier
             .horizontalScroll(rememberScrollState())
             .padding(horizontal = 12.dp, vertical = 6.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
+        corner = 6.dp,
     ) {
+        val glide = com.celestial.latent.ui.LocalGlide.current!!
+        val choose: (String) -> Unit = { id ->
+            Haptics.tick(context); glide.pick(id)
+            if (motionOn()) scope.launch { glide.afterPill(); com.celestial.latent.ui.Wave.start(); pickNow(id) } else pickNow(id)
+        }
         ours.forEach { (name, _, kind) ->
             val id = "stock:" + name
             val on = id == selected
             androidx.compose.foundation.layout.Column(
                 // 87a/88c: frosted glass in Midnight and Clay (the blurred picture behind, a lit edge, a soft shadow)
-                modifier = Modifier.floating(RoundedCornerShape(6.dp), 4.dp).clip(RoundedCornerShape(6.dp))
-                    .frost(on)
+                modifier = Modifier.pressIn().floating(RoundedCornerShape(6.dp), 4.dp).clip(RoundedCornerShape(6.dp))
+                    .frostUnder(glide.coverage(id))
+                    .glideItem(glide, id, Color.Transparent)
                     .combinedClickable(
-                        onClick = { if (!on) { Haptics.tick(context); onSelect(id) } },
+                        onClick = { if (!on) choose(id) },
                         onLongClick = { Haptics.click(context); onLongPress() },
                     )
                     .padding(horizontal = 13.dp, vertical = 7.dp),
             ) {
-                Text(name.uppercase(), color = if (on) LatentColors.AmberInk else LatentColors.TextBright, fontSize = 11.sp, letterSpacing = 1.sp)
-                Text(kind, color = if (on) LatentColors.AmberInk.copy(alpha = 0.7f) else LatentColors.Text, fontSize = 8.sp, letterSpacing = 0.5.sp)
+                Text(name.uppercase(), color = glide.ink(id, LatentColors.TextBright), fontSize = 11.sp, letterSpacing = 1.sp)
+                Text(kind, color = glide.ink(id, LatentColors.Text).copy(alpha = 1f - 0.3f * glide.coverage(id)), fontSize = 8.sp, letterSpacing = 0.5.sp)
             }
         }
         looks.forEach { preset ->
@@ -132,18 +151,19 @@ fun FilmStrip(
             val on = id == selected
             androidx.compose.foundation.layout.Column(
                 // 87a/88c: frosted glass in Midnight and Clay (the blurred picture behind, a lit edge, a soft shadow)
-                modifier = Modifier.floating(RoundedCornerShape(6.dp), 4.dp).clip(RoundedCornerShape(6.dp))
-                    .frost(on)
+                modifier = Modifier.pressIn().floating(RoundedCornerShape(6.dp), 4.dp).clip(RoundedCornerShape(6.dp))
+                    .frostUnder(glide.coverage(id))
+                    .glideItem(glide, id, Color.Transparent)
                     .combinedClickable(
-                        onClick = { if (!on) { Haptics.tick(context); onSelect(id) } },
+                        onClick = { if (!on) choose(id) },
                         onLongClick = { Haptics.click(context); onLongPress() },
                     )
                     .padding(horizontal = 13.dp, vertical = 7.dp),
             ) {
-                Text(label.uppercase(), color = if (on) LatentColors.AmberInk else LatentColors.TextBright, fontSize = 11.sp, letterSpacing = 1.sp)
+                Text(label.uppercase(), color = glide.ink(id, LatentColors.TextBright), fontSize = 11.sp, letterSpacing = 1.sp)
                 Text(
                     preset.name.substringAfter(" — ", preset.group),
-                    color = if (on) LatentColors.AmberInk.copy(alpha = 0.7f) else LatentColors.Text,
+                    color = glide.ink(id, LatentColors.Text).copy(alpha = 1f - 0.3f * glide.coverage(id)),
                     fontSize = 8.sp, letterSpacing = 0.5.sp,
                 )
             }
