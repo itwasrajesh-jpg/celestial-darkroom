@@ -42,32 +42,48 @@ import com.celestial.latent.ui.raised
  * APPLY TO: ALL · each layer, with its colour. A layer with settings of its own is marked; once
  * [LayerLooks.MAX_EXTRA] layers have their own, another can only be chosen when it already has some
  * (each costs one more develop of the photo).
+ *
+ * 110a: always shown, layers or not, because "start fresh" lives at its right end (alone when the
+ * photo has no layers). Start fresh takes the photo back to no film at all: exactly the Before. While
+ * the photo has no film ([noFilm]) the caption says so and how to go on.
  */
 @Composable
-internal fun ApplyToRow(layers: List<Layer>, applyTo: Int?, onPick: (Int?) -> Unit) {
+internal fun ApplyToRow(layers: List<Layer>, applyTo: Int?, noFilm: Boolean, onStartFresh: () -> Unit, onPick: (Int?) -> Unit) {
     val chosen = layers.firstOrNull { it.id == applyTo }
     // 109e: hidden ones too: showing one again must not go past the most there can be
     val owning = layers.count { it.recipe != null }
     Column(Modifier.fillMaxWidth().padding(horizontal = 14.dp).padding(top = 4.dp)) {
-        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text("APPLY TO", color = LatentColors.TextDim, fontSize = 9.sp, letterSpacing = 1.5.sp, modifier = Modifier.padding(end = 2.dp))
-            TargetChip("ALL", null, on = chosen == null, enabled = true, own = false) { onPick(null) }
-            for (l in layers) {
-                val can = l.recipe != null || owning < LayerLooks.MAX_EXTRA
-                TargetChip(l.name, Layers.COLOURS[Math.floorMod(l.tint, Layers.COLOURS.size)], on = l.id == chosen?.id, enabled = can, own = l.recipe != null) {
-                    if (can) onPick(l.id)
+        val chips = rememberScrollState()
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            // the chips scroll under start fresh; their ends fade where more is hidden
+            Row(Modifier.weight(1f).fadeEnds(chips).horizontalScroll(chips), verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                if (layers.isNotEmpty()) {
+                    Text("APPLY TO", color = LatentColors.TextDim, fontSize = 9.sp, letterSpacing = 1.5.sp, modifier = Modifier.padding(end = 2.dp))
+                    TargetChip("ALL", null, on = chosen == null, enabled = true, own = false) { onPick(null) }
+                    for (l in layers) {
+                        val can = l.recipe != null || owning < LayerLooks.MAX_EXTRA
+                        TargetChip(l.name, Layers.COLOURS[Math.floorMod(l.tint, Layers.COLOURS.size)], on = l.id == chosen?.id, enabled = can, own = l.recipe != null) {
+                            if (can) onPick(l.id)
+                        }
+                    }
                 }
             }
+            Box(Modifier.padding(start = 6.dp)) {
+                TargetChip("↺ start fresh", null, on = false, enabled = !noFilm, own = false) { onStartFresh() }
+            }
         }
-        Text(
-            when {
-                chosen != null && !chosen.visible -> "${chosen.name} is hidden in LAYERS: its changes show once it is shown again."
-                chosen != null -> "Changes here go to ${chosen.name} only. ALL changes the whole photo, ${chosen.name} too."
-                owning >= LayerLooks.MAX_EXTRA -> "Changes here go to the whole photo, layers too. ${LayerLooks.MAX_EXTRA} layers have their own settings, the most there can be."
-                else -> "Changes here go to the whole photo, layers too. Pick a layer to change only that part."
-            },
-            color = LatentColors.TextDim, fontSize = 9.sp, lineHeight = 12.sp, modifier = Modifier.padding(top = 3.dp, bottom = 2.dp),
+        val dot = if (owning > 0) " The dot marks a layer with its own settings." else ""
+        val line = when {
+            noFilm -> "No film: your photo as shot, the same as Before. Pick a film to start editing."
+            layers.isEmpty() -> null
+            chosen != null && !chosen.visible -> "${chosen.name} is hidden in LAYERS: its changes show once it is shown again."
+            chosen != null -> "Changes here go to ${chosen.name} only.$dot"
+            owning >= LayerLooks.MAX_EXTRA -> "Changes here go to the whole photo, layers too. ${LayerLooks.MAX_EXTRA} layers have their own settings, the most there can be.$dot"
+            else -> "Changes here go to the whole photo, layers too. Pick a layer to change only that part.$dot"
+        }
+        if (line != null) Text(line,
+            color = if (noFilm) LatentColors.Amber else LatentColors.TextDim, fontSize = 9.sp, lineHeight = 12.sp, modifier = Modifier.padding(top = 3.dp, bottom = 2.dp),
         )
     }
 }

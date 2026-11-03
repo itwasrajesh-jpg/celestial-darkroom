@@ -52,6 +52,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
@@ -339,6 +341,21 @@ private fun stripAt(pos: Offset, areaW: Float, areaH: Float, aspect: Float): Int
     return ((pos.x - r.left) / (r.width / STRIPS)).toInt().coerceIn(0, STRIPS - 1)
 }
 
+/**
+ * 110a: a scrolling row's ends fade where there is more to scroll to (left once scrolled, right until
+ * the end), 28 dp each. Drawn through an offscreen layer so the fade takes the text's own alpha.
+ */
+internal fun Modifier.fadeEnds(scroll: androidx.compose.foundation.ScrollState): Modifier = this
+    .graphicsLayer(compositingStrategy = androidx.compose.ui.graphics.CompositingStrategy.Offscreen)
+    .drawWithContent {
+        drawContent()
+        val edge = 28.dp.toPx().coerceAtMost(size.width / 4f)
+        if (scroll.value > 0) drawRect(androidx.compose.ui.graphics.Brush.horizontalGradient(listOf(Color.Transparent, Color.Black), startX = 0f, endX = edge),
+            size = androidx.compose.ui.geometry.Size(edge, size.height), blendMode = androidx.compose.ui.graphics.BlendMode.DstIn)
+        if (scroll.value < scroll.maxValue) drawRect(androidx.compose.ui.graphics.Brush.horizontalGradient(listOf(Color.Black, Color.Transparent), startX = size.width - edge, endX = size.width),
+            topLeft = Offset(size.width - edge, 0f), size = androidx.compose.ui.geometry.Size(edge, size.height), blendMode = androidx.compose.ui.graphics.BlendMode.DstIn)
+    }
+
 /** The three steps of printing. Steps that exist are tappable; one that doesn't yet says so. */
 @Composable
 private fun StepIndicator(active: Int, available: Int, onSelect: (Int) -> Unit, modifier: Modifier = Modifier) {
@@ -362,7 +379,8 @@ private fun StepIndicator(active: Int, available: Int, onSelect: (Int) -> Unit, 
         LaunchedEffect(active, fits) {
             if (!fits) scroll.animateScrollTo((widths.take(active).sum() * k + gap * active - gap * 2).toInt().coerceAtLeast(0))
         }
-        Row(if (fits) Modifier.fillMaxWidth() else Modifier.fillMaxWidth().horizontalScroll(scroll),
+        // 110a: when the row scrolls, each end with more steps beyond it fades out, so it reads as scrollable
+        Row(if (fits) Modifier.fillMaxWidth() else Modifier.fillMaxWidth().fadeEnds(scroll).horizontalScroll(scroll),
             horizontalArrangement = if (fits) Arrangement.SpaceBetween else Arrangement.spacedBy(8.dp)) {
             steps.forEachIndexed { i, label ->
                 val on = i == active
@@ -675,7 +693,9 @@ fun PrintPanel(
                     depthSplit = depthSplit, onDepthSplit = onDepthSplit, depthFix = depthFix, onDepthFix = onDepthFix,
                     render = { r, e, ls -> renderMasked(r, e, all.copy(layers = ls)) },
                     renderRegion = renderRegionWithMasks?.let { f -> { r, e, ls, reg -> f(r, e, all.copy(layers = ls), reg) } },
-                    modifier = Modifier.fillMaxSize())
+                    modifier = Modifier.fillMaxSize(),
+                    // 110a: LITH keeps its layer; the painting steps' strokes are already cut, so nothing else holds one
+                    usedBy = { id -> if (lithLook.on && lithLook.layer == id) listOf("lith") else emptyList() })
                 // each painting step shows the print with BOTH masks: it is one print
                 3 -> {
                     // the film's colour as the step began, for "hold: before" (the slider is part of this step)
@@ -2448,7 +2468,7 @@ internal fun PaintStep(
             Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 6.dp), verticalAlignment = Alignment.CenterVertically,
         ) {
             val sideOn = depthSide != 0 && depthRanks != null
-            Chip("fill " + (inL?.name ?: "the") + (if (!sideOn) "" else if (inL != null) " · " + (if (depthSide == 1) "near" else "far") else " " + (if (depthSide == 1) "foreground" else "background")),
+            Chip("fill " + (inL?.name ?: "the") + (if (!sideOn) "" else if (inL != null) " · " + (if (depthSide == 1) "near" else "far") else " " + (if (depthSide == 1) "near" else "far")),
                 on = true, enabled = !sideOn || depthReady || depthSplit != null) { fillByDistance(); endStroke() }
             if (depthSide == 2) Box(Modifier.padding(start = 4.dp)) { Chip("thicker far", on = depthRamp) { depthRamp = !depthRamp } }
         }
@@ -2498,12 +2518,14 @@ internal fun PaintStep(
                     val can = selAnswer != null && !selBusy
                     val use = selectUse
                     if (use != null) {
-                        Chip("invert", on = selInvert, enabled = selAnswer != null) { selInvert = !selInvert }
+                        // 110a: on, invert is an outlined "✓ inverted", so the one filled chip is the main action
+                        if (selInvert) OutlinedChip("✓ inverted") { selInvert = false }
+                        else Chip("invert", on = false, enabled = selAnswer != null) { selInvert = true }
                         Chip(use.first, on = can, enabled = can) { useSelection() }
                     }
                     else {
-                        Chip("set foreground", on = can, enabled = can) { applySelection(true) }
-                        Chip("set background", on = can, enabled = can) { applySelection(false) }
+                        Chip("set near", on = can, enabled = can) { applySelection(true) }
+                        Chip("set far", on = can, enabled = can) { applySelection(false) }
                     }
                 }
             }
@@ -2531,7 +2553,7 @@ internal fun PaintStep(
                         selTakeAway -> "Tap what should not be selected."
                         selectUse != null && selInvert -> "Inverted: everything outside the outline is selected. Then ${selectUse.first}."
                         selectUse != null -> "Same spot again: another size. Other spots add. Invert flips it. Then ${selectUse.first}."
-                        else -> "Same spot again: another size. Other spots add. Then set it as foreground or background."
+                        else -> "Same spot again: another size. Other spots add. Then set it as near or far."
                     }
                     gradientTool -> spec.gradientHint
                     else -> spec.hint
@@ -2731,7 +2753,9 @@ internal fun PaintStep(
         }
         // Everything under the photo, scrolling when it needs more (61d): at most what PHOTO_SHARE
         // leaves, or (75c) exactly what the handle above it leaves — the same split as simple mode.
-        val split = LocalPanelSplit.current
+        // 110a: while selecting, the controls take only their own few rows and the photo the rest (it
+        // used to keep the panel's height, leaving the lower half of the screen empty)
+        val split = LocalPanelSplit.current.takeIf { !selOpen }
         Column(if (split != null) Modifier.fillMaxWidth().height(with(LocalDensity.current) { (roomPx * (1f - split.share)).toDp() }) else Modifier.fillMaxWidth()) {
         if (split != null) PanelHandle(split, roomPx)
         Column(Modifier.fillMaxWidth().then(if (split != null) Modifier.weight(1f) else Modifier.heightIn(max = lowerMax)).verticalScroll(rememberScrollState())) {
@@ -2766,8 +2790,9 @@ internal fun PaintStep(
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text("depth", color = LatentColors.TextDim, fontSize = 10.sp, letterSpacing = 1.sp)
-                    Chip("foreground", on = depthSide == 1) { onDepthSide(if (depthSide == 1) 0 else 1) }
-                    Chip("background", on = depthSide == 2) { onDepthSide(if (depthSide == 2) 0 else 2) }
+                    // 110a: near / far, as "+ layer" names them ("background" is also a layer's name)
+                    Chip("near", on = depthSide == 1) { onDepthSide(if (depthSide == 1) 0 else 1) }
+                    Chip("far", on = depthSide == 2) { onDepthSide(if (depthSide == 2) 0 else 2) }
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     Chip("show", on = showDepth) { showDepth = !showDepth }
@@ -2775,8 +2800,8 @@ internal fun PaintStep(
                 }
             }
             if (fixMode) Row(Modifier.fillMaxWidth().padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                Chip("make foreground", on = fixPlus) { fixPlus = true }
-                Chip("make background", on = !fixPlus) { fixPlus = false }
+                Chip("make near", on = fixPlus) { fixPlus = true }
+                Chip("make far", on = !fixPlus) { fixPlus = false }
                 Chip("clear", on = false, enabled = depthFix != null) { onDepthFix(null) }
             }
             val wanted = depthSide != 0 || showDepth || fixMode
@@ -2784,9 +2809,9 @@ internal fun PaintStep(
                 when {
                     wanted && depthFailed && depthSplit == null -> "the depth could not be worked out — is the model installed?"
                     wanted && !depthReady && depthSplit == null -> "working out the depth…"
-                    fixMode -> "paint on the photo: " + (if (fixPlus) "warm = foreground" else "cool = background") + ", on any tab"
-                    depthSide == 1 -> if (tabs != null && spec === RAYS_SPEC) "this light lands only on the foreground" else "painting only on the foreground"
-                    depthSide == 2 -> if (tabs != null && spec === RAYS_SPEC) "this light lands only on the background" else "painting only on the background"
+                    fixMode -> "paint on the photo: " + (if (fixPlus) "warm = near" else "cool = far") + ", on any tab"
+                    depthSide == 1 -> if (tabs != null && spec === RAYS_SPEC) "this light lands only on what is near" else "painting only on what is near"
+                    depthSide == 2 -> if (tabs != null && spec === RAYS_SPEC) "this light lands only on what is far" else "painting only on what is far"
                     else -> ""
                 },
                 color = if (wanted && !depthReady && depthSplit == null) LatentColors.Amber else LatentColors.TextDim, fontSize = 11.sp,
@@ -3006,6 +3031,19 @@ internal class SelectPicture {
 /** 109a: the painting steps' chip, for LAYERS (its own file); CollageScreen has a private Chip of its own. */
 @Composable
 internal fun PrintChip(label: String, on: Boolean, enabled: Boolean = true, onTap: () -> Unit) = Chip(label, on, enabled, onTap)
+
+/** 110a: a chip that is on but not the main action: amber outline and words, no fill. */
+@Composable
+private fun OutlinedChip(label: String, onTap: () -> Unit) {
+    val context = LocalContext.current
+    val tapNow by rememberUpdatedState(onTap)
+    Text(
+        label, fontSize = 11.sp, color = LatentColors.Amber,
+        modifier = Modifier.clip(RoundedCornerShape(999.dp)).border(1.dp, LatentColors.Amber, RoundedCornerShape(999.dp))
+            .pointerInput(label) { detectTapGestures(onTap = { Haptics.tick(context); tapNow() }) }
+            .padding(horizontal = 10.dp, vertical = 5.dp),
+    )
+}
 
 @Composable
 private fun Chip(label: String, on: Boolean, enabled: Boolean = true, onTap: () -> Unit) {

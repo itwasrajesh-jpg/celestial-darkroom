@@ -630,7 +630,21 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
         framing = next
         com.celestial.latent.develop.Framings.save(context, source, next)
     }
-    LaunchedEffect(framing) { zoom.reset(); detail = null; if ((src != null || op.onPrint) && previewInputs() != op.previewFrom) render(fast = false) }
+    /** 110a: the plain Before, framed as the print is, made once per framing (the hold and no film share it). */
+    fun ensureOriginal() {
+        val f = framing
+        if (originalFraming != f.key()) Thread {
+            val plain = originalPlain ?: plainBefore(context, source, isRaw)
+                ?.let { uprightBefore(context, it, source, isRaw, Develop.openedSize(source, isRaw, decodeEdge(DECODE_EDGE, framing), pairFirst)) }
+                ?.also { originalPlain = it }
+            if (plain != null) {
+                original = runCatching { com.celestial.latent.develop.Framings.frameBitmap(plain, f) }.getOrNull()
+                originalFraming = f.key()
+            }
+        }.start()
+    }
+
+    LaunchedEffect(framing) { zoom.reset(); detail = null; if (op.noFilm) ensureOriginal(); if ((src != null || op.onPrint) && previewInputs() != op.previewFrom) render(fast = false) }
     LaunchedEffect(frameOpen) { if (frameOpen) { zoom.reset(); detail = null } }
     // 92c: a small copy of the print in its film edge, for the FRAME panel while the edge is on
     val edgeSample by androidx.compose.runtime.produceState<Bitmap?>(null, preview, recipe.film, framing.edgeFrame, frameOpen) {
@@ -703,7 +717,46 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
     /** PRINT's own controls, and the settings that belong to the whole file: always the whole photo (and so its layers). */
     fun setAll(block: Recipe.() -> Recipe) { op.setAll(recipe.block()) }
     // 100b: a look changes the film, not the photo's light: the LIGHT tab is carried over
+    /**
+     * 110a: start fresh. Everything off, so the photo shows exactly its Before: no film, no LIGHT, no
+     * layer looks, no PRINT steps (dodge & burn, soften, fog, light, wet, rain, lith, age). The layers'
+     * areas and the framing stay. Underneath, the recipe goes back to this film's own look as it comes
+     * with every LIGHT slider at 0, which is what picking a film starts from. One Undo brings it all back.
+     */
+    fun startFresh() {
+        if (op.noFilm) return
+        asks.freshUndo = FreshSnap(recipe, lookId, op.layers, op.applyTo,
+            PaintedEffects(exposureMap, softenMap, fogMap, fogLook, raysMap, raysLook, extraLights, saturationMap, lithLook, wetMap, wetLook, rainMap), ageLook)
+        asks.beforeReset = null; asks.resetTo = null; asks.beforeClear = null; asks.clearAsk = false
+        op.applyTo = null
+        val look = filmLook(context, recipe, lookId, cinema).copy(lightHighlights = 0f, lightShadows = 0f, lightWhites = 0f, lightBlacks = 0f)
+        recipe = if (!look.scanFilm && !Develop.isSlideFilm(look.film)) look.copy(printExposure = 1f) else look.copy(exposureEv = 0f)
+        op.layers = op.layers.map { it.copy(recipe = null, lookId = null, ev = 0f, warmth = 0f, colour = 1f) }
+        val none = PaintedEffects.NONE
+        exposureMap = none.exposure; softenMap = none.soften; fogMap = none.fog; fogLook = none.fogLook
+        raysMap = none.rays; raysLook = none.raysLook; extraLights = none.extraLights
+        saturationMap = none.saturation; lithLook = none.lith; wetMap = none.wet; wetLook = none.wetLook; rainMap = none.rain
+        ageLook = com.celestial.latent.develop.AgeLook()
+        op.noFilm = true
+        ensureOriginal()
+        android.util.Log.i("Latent", "start fresh: no film, everything off")
+    }
+
+    /** 110a: start fresh's Undo: the photo exactly as it was, film and all. */
+    fun undoFresh() {
+        val s = asks.freshUndo ?: return
+        recipe = s.recipe; lookId = s.lookId; op.layers = s.layers; op.applyTo = s.applyTo
+        val e = s.effects
+        exposureMap = e.exposure; softenMap = e.soften; fogMap = e.fog; fogLook = e.fogLook
+        raysMap = e.rays; raysLook = e.raysLook; extraLights = e.extraLights
+        saturationMap = e.saturation; lithLook = e.lith; wetMap = e.wet; wetLook = e.wetLook; rainMap = e.rain
+        ageLook = s.age
+        op.noFilm = false; asks.freshUndo = null
+    }
+
     fun pickLook(id: String, look: Recipe) {
+        // 110a: picking a film after start fresh develops it as it comes, on the whole photo
+        if (op.noFilm) { op.noFilm = false; asks.freshUndo = null; op.applyTo = null }
         val l = op.layers.firstOrNull { it.id == op.applyTo }
         if (l != null) {
             // 109c: on the chosen layer only, from the look it was on
@@ -749,7 +802,8 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
 
     /** The full-size print (75b: started from the DEVELOP tab, in SIMPLE/FULL and in PRINT alike). */
     fun startFullDevelop() {
-        if (fullRunning) return
+        // 110a: with no film there is no print to make: pick a film first
+        if (fullRunning || op.noFilm) return
         // 107b: what this print is made from, written down once it is saved
         val madeFrom = developedKey()
         val madeWith = recipe
@@ -796,7 +850,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
             Text(if (fullRunning) "Developing… ${elapsed}s" else "Develop", color = LatentColors.AmberInk, fontSize = 13.sp, maxLines = 1, softWrap = false,
                 modifier = Modifier.clip(RoundedCornerShape(999.dp)).accentFill()
                     .combinedClickable(onClick = { if (!fullRunning) { Haptics.click(context); startFullDevelop() } }).padding(horizontal = 22.dp, vertical = 10.dp))
-            Text("Full size, saved to DCIM/Latent.", color = LatentColors.TextDim, fontSize = 10.sp, modifier = Modifier.weight(1f))
+            Text(if (op.noFilm) "No film yet: pick one in NEGATIVE first." else "Full size, saved to DCIM/Latent.", color = if (op.noFilm) LatentColors.Amber else LatentColors.TextDim, fontSize = 10.sp, modifier = Modifier.weight(1f))
         }
         Head("PRINT SIZE", null) {}
         // Print size: the film's grain is generated at the larger size, so it stays fine
@@ -999,6 +1053,8 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                         modifier = Modifier.clip(RoundedCornerShape(999.dp)).accentFill(on, Color.Transparent)
                             .combinedClickable(onClick = {
                                 if (!on) Haptics.tick(context)
+                                // 110a: PRINT works on a film: after start fresh it takes the photo's own, as it comes
+                                if (label == "PRINT" && op.noFilm) { op.noFilm = false; asks.freshUndo = null }
                                 printing = label == "PRINT"
                             }).padding(horizontal = 9.dp, vertical = 3.dp))
                 }
@@ -1015,19 +1071,11 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
             // a moment's wait, so the start of a pinch or slide never flashes the original
             val show = zoomScope.launch { delay(140); if (!pinching) comparing = true }
             // the before, framed as the print is (72a: it used to stay sideways for a turned shot)
-            val f = framing
-            if (originalFraming != f.key()) Thread {
-                val plain = originalPlain ?: plainBefore(context, source, isRaw)
-                    ?.let { uprightBefore(context, it, source, isRaw, Develop.openedSize(source, isRaw, decodeEdge(DECODE_EDGE, framing), pairFirst)) }
-                    ?.also { originalPlain = it }
-                if (plain != null) {
-                    original = runCatching { com.celestial.latent.develop.Framings.frameBitmap(plain, f) }.getOrNull()
-                    originalFraming = f.key()
-                }
-            }.start()
+            ensureOriginal()
             tryAwaitRelease(); show.cancel(); comparing = false
         }
-        val comparingNow = comparing && originalFraming == framing.key()
+        // 110a: with no film (start fresh) the photo IS the Before, held or not
+        val comparingNow = (comparing || op.noFilm) && originalFraming == framing.key()
 
         // PRINT swaps the photo and controls for the enlarger; the header, print size and develop
         // bar stay. A crossfade, so it reads as one room changing, not a new screen.
@@ -1270,11 +1318,15 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                         modifier = Modifier.align(Alignment.BottomStart).padding(12.dp).clip(RoundedCornerShape(999.dp))
                             .background(Color(0x66000000)).padding(horizontal = 10.dp, vertical = 4.dp))
                     if (!rendering && !fullRunning && preview == null) Text(if (status.isEmpty()) "no preview yet" else status, color = OnPhoto.Text, fontSize = 11.sp, modifier = Modifier.align(Alignment.Center).padding(24.dp))
-                    // 109e: with a layer chosen under APPLY TO, its name and its film
-                    Text(if (comparing) "ORIGINAL" else ((op.layers.firstOrNull { it.id == op.applyTo }?.let { it.name + " · " } ?: "") +
-                        (Develop.FILMS.firstOrNull { it.first == op.neg.film }?.second?.uppercase() ?: op.neg.film)),
+                    // 109e: with a layer chosen under APPLY TO, its name and its film; 110a: the recipe's own
+                    // name ("GOLD 200 3", as on its card), or no film at all after start fresh
+                    Text(if (comparing) "ORIGINAL" else if (op.noFilm) "NO FILM · AS SHOT" else ((op.layers.firstOrNull { it.id == op.applyTo }?.let { it.name + " · " } ?: "") +
+                        (op.negLook(lookId).takeIf { it.isNotEmpty() }?.let { com.celestial.latent.develop.LayerLooks.name(context, it) }
+                            ?: Develop.FILMS.firstOrNull { it.first == op.neg.film }?.second?.uppercase() ?: op.neg.film)),
                         color = Color(0xE6FFFFFF), fontSize = 10.sp, letterSpacing = 1.5.sp,
                         modifier = Modifier.align(Alignment.TopStart).padding(12.dp))
+                    // 110a: what start fresh did, and its Undo, until a film is picked
+                    if (op.noFilm && asks.freshUndo != null && !frameOpen) FreshBar(Modifier.align(Alignment.BottomCenter)) { undoFresh() }
                 }
 
                 // The sheet: drag the handle to give the controls more room. While framing, the frame
@@ -1338,11 +1390,21 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                         com.celestial.latent.develop.Recipes.saved(context)
                     }
                     // 109c: once the photo has layers, where NEGATIVE's changes go
-                    if (op.layers.isNotEmpty()) ApplyToRow(op.layers, op.applyTo) { id -> op.applyTo = id; asks.beforeReset = null; asks.resetTo = null }
+                    // 110a: always, for "start fresh" at its right end
+                    ApplyToRow(op.layers, op.applyTo, op.noFilm, onStartFresh = { Haptics.tick(context); startFresh() }) { id -> op.applyTo = id; asks.beforeReset = null; asks.resetTo = null }
                     val nl = op.negLook(lookId)
                     Row(Modifier.fillMaxWidth().horizontalScroll(lookRow).padding(horizontal = 14.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        // 110a: no film at all, the photo as shot (the same as start fresh)
+                        Column(
+                            Modifier.floating(RoundedCornerShape(6.dp), 3.dp).clip(RoundedCornerShape(6.dp)).accentFill(op.noFilm, LatentColors.Surface)
+                                .combinedClickable(onClick = { Haptics.tick(context); startFresh() })
+                                .padding(horizontal = 11.dp, vertical = 6.dp),
+                        ) {
+                            Text("NO FILM", color = if (op.noFilm) LatentColors.AmberInk else LatentColors.TextBright, fontSize = 10.sp, letterSpacing = 1.sp)
+                            Text("as shot", color = if (op.noFilm) LatentColors.AmberInk.copy(alpha = 0.7f) else LatentColors.Text, fontSize = 8.sp)
+                        }
                         savedRecipes.forEachIndexed { n, (name, saved) ->
-                            val on = nl == "stock:" + name
+                            val on = !op.noFilm && nl == "stock:" + name
                             Box(Modifier.showLookOnOpen(on, asks, lookRow, developScope)) { Column(
                                 // 87a-2: in Clay each film has its own pastel card, as in the approved proof
                                 Modifier.floating(RoundedCornerShape(6.dp), 3.dp).clip(RoundedCornerShape(6.dp)).accentFill(on, LatentColors.card(n))
@@ -1360,7 +1422,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                             }
                         }
                         ourStocks.forEachIndexed { n, (name, saved) ->
-                            val on = nl == "stock:" + name
+                            val on = !op.noFilm && nl == "stock:" + name
                             Column(
                                 Modifier.showLookOnOpen(on, asks, lookRow, developScope)
                                     .floating(RoundedCornerShape(6.dp), 3.dp).clip(RoundedCornerShape(6.dp)).accentFill(on, LatentColors.card(savedRecipes.size + n))
@@ -1372,7 +1434,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                             }
                         }
                         looks.forEachIndexed { n, preset ->
-                            val on = preset.id == nl
+                            val on = !op.noFilm && preset.id == nl
                             Column(
                                 Modifier.showLookOnOpen(on, asks, lookRow, developScope)
                                     .floating(RoundedCornerShape(6.dp), 3.dp).clip(RoundedCornerShape(6.dp)).accentFill(on, LatentColors.card(savedRecipes.size + ourStocks.size + n))
@@ -1431,8 +1493,8 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                             }
                         }
                     }
-                    // Tabs
-                    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 14.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    // Tabs (110a: waiting, dimmed, while the photo has no film)
+                    Row(Modifier.fillMaxWidth().waitsForFilm(op.noFilm).horizontalScroll(rememberScrollState()).padding(horizontal = 14.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         TABS.forEach { (id, label) ->
                             val on = id == tab
                             // 89c: each tab its glyph over its name (approved proof visual-3/proof/4-icons-in-place.jpg)
@@ -1451,7 +1513,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                             }
                         }
                     }
-                    Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 14.dp)) {
+                    Column(Modifier.weight(1f).waitsForFilm(op.noFilm).verticalScroll(rememberScrollState()).padding(horizontal = 14.dp)) {
                         when (tab) {
                             "light" -> {
                                 // 100a: the LIGHT tab (approved proof light-tab/proof/3-layout-*.jpg).
@@ -1893,6 +1955,38 @@ private data class PaintedEffects(
     }
 }
 
+/** 110a: the photo as it was before "start fresh": its film and look, layers, painted effects and age. */
+private class FreshSnap(
+    val recipe: Recipe, val lookId: String, val layers: List<com.celestial.latent.develop.Layer>, val applyTo: Int?,
+    val effects: PaintedEffects, val age: com.celestial.latent.develop.AgeLook,
+)
+
+/**
+ * 110a: NEGATIVE's tools while the photo has no film: dimmed, and not taking touches (each of them
+ * changes how the film develops, so there is nothing for them to act on until a film is picked).
+ */
+private fun Modifier.waitsForFilm(on: Boolean): Modifier = if (!on) this else this
+    .graphicsLayer { alpha = 0.3f }
+    .pointerInput(Unit) {
+        awaitPointerEventScope {
+            while (true) awaitPointerEvent(androidx.compose.ui.input.pointer.PointerEventPass.Initial).changes.forEach { it.consume() }
+        }
+    }
+
+/** 110a: the bar over the photo after "start fresh": what went, and the way back. */
+@Composable
+private fun FreshBar(modifier: Modifier, onUndo: () -> Unit) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    Row(modifier.padding(10.dp).fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(Color(0xEE161619))
+        .padding(start = 14.dp, end = 6.dp, top = 8.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text("Started fresh: no film, no effects, PRINT steps off. Same as Before.", color = Color(0xFFEBECF2), fontSize = 12.sp,
+            lineHeight = 16.sp, modifier = Modifier.weight(1f))
+        Text("UNDO", color = LatentColors.TextBright, fontSize = 12.sp, letterSpacing = 1.5.sp,
+            modifier = Modifier.clip(RoundedCornerShape(999.dp)).combinedClickable(onClick = { Haptics.tick(context); onUndo() })
+                .padding(horizontal = 12.dp, vertical = 8.dp))
+    }
+}
+
 /**
  * The film's own look for "Reset to film" (71a): the look chosen in the darkroom, else the camera's
  * look if it is this film, else this film's first look, else a film built here, else the plain film.
@@ -2022,6 +2116,11 @@ private class OpenState(start: Recipe) {
     var layers by mutableStateOf<List<com.celestial.latent.develop.Layer>>(emptyList())
     /** 109c: where NEGATIVE's changes go: a layer's id, or null for the whole photo (ALL). */
     var applyTo by mutableStateOf<Int?>(null)
+    /**
+     * 110a: "start fresh" took the photo back to no film at all: the photo shows exactly its Before
+     * until a film is picked. Kept only while the photo is open: reopened, it shows its film as it comes.
+     */
+    var noFilm by mutableStateOf(false)
     /** 109c: the look NEGATIVE shows as picked: the chosen layer's, else the photo's [photoLook]. */
     /**
      * 109c: what NEGATIVE shows and changes: the layer chosen under APPLY TO (its own settings, or the
@@ -2065,6 +2164,8 @@ private class DarkroomAsks {
     var gpuTest by mutableStateOf("")
     var levelling by mutableStateOf(false)
     var stampFor by mutableStateOf<String?>(null)
+    /** 110a: everything as it was before "start fresh", for its Undo (shown while the photo has no film). */
+    var freshUndo by mutableStateOf<FreshSnap?>(null)
     /** 109a: the layers as they were before "Clear effects", for its Undo. */
     var layersBeforeClear: List<com.celestial.latent.develop.Layer> = emptyList()
     /** 108a: the looks row has been scrolled to the photo's look once, on opening (not again as you pick). */

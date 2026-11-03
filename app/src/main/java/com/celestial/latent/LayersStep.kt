@@ -91,7 +91,17 @@ private class LayersUi {
     var latestFrom: List<Layer>? = null
     /** "+ layer → Tap to select" chosen: the selection, once used, becomes a new layer (not the chosen one). */
     var newBySelect by mutableStateOf(false)
+    /** 110a: delete asked about this layer (another step uses it), waiting for an answer. */
+    var deleteAsk by mutableStateOf(false)
 }
+
+/**
+ * 110a: what uses a layer, for its card's second line and delete's question: its own NEGATIVE look,
+ * its own light (ADJUST), and the PRINT steps that keep it ([others], e.g. LITH).
+ */
+private fun usesOf(context: android.content.Context, l: Layer, others: List<String>): List<String> =
+    listOfNotNull(if (l.recipe == null) null else l.lookId?.let { com.celestial.latent.develop.LayerLooks.name(context, it) } ?: "OWN NEGATIVE") +
+        l.summary().split(" · ").filter { it != "no changes" } + others
 
 /** The brush paints a layer's area in: 0 outside … 1 inside, its colour on the photo. */
 private fun layerSpec(l: Layer?): PaintSpec = PaintSpec(
@@ -164,6 +174,8 @@ internal fun LayersStep(
     render: (Recipe, Int, List<Layer>) -> Bitmap?,
     renderRegion: ((Recipe, Int, List<Layer>, Region) -> Bitmap?)?,
     modifier: Modifier = Modifier,
+    /** 110a: the other PRINT steps that keep a layer (by id), e.g. "lith", for the cards and delete's question. */
+    usedBy: (Int) -> List<String> = { emptyList() },
 ) {
     val context = LocalContext.current
     val ui = remember { LayersUi() }
@@ -249,7 +261,7 @@ internal fun LayersStep(
                 }
             },
             strip = @Composable { LayersStrip(layers, sel, ui, tints, onLayers, { n, m, p -> add(n, m, p) }, aspect = { aspect() }, hasDepth = depthRanks != null,
-                byDepth = { near -> byDepth(near) }) },
+                byDepth = { near -> byDepth(near) }, usedBy = usedBy) },
         )
     }
 }
@@ -259,7 +271,7 @@ internal fun LayersStep(
 private fun LayersStrip(
     layers: List<Layer>, sel: Layer?, ui: LayersUi, tints: Map<Int, Bitmap>,
     onLayers: (List<Layer>) -> Unit, add: (String, ExposureMap, Int?) -> Unit, aspect: () -> Float, hasDepth: Boolean,
-    byDepth: (Boolean) -> Unit,
+    byDepth: (Boolean) -> Unit, usedBy: (Int) -> List<String>,
 ) {
     val context = LocalContext.current
     Column(Modifier.fillMaxWidth().padding(bottom = 8.dp)) {
@@ -270,10 +282,10 @@ private fun LayersStrip(
         }
         // Card widths: 92 dp each + 8 dp gaps; four cards and "+" (56 dp) ≈ 408 dp, so the row scrolls on a phone.
         Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 18.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            for (l in layers) LayerCard(l, chosen = l.id == sel?.id, picture = ui.picture, tint = tints[l.id],
+            for (l in layers) LayerCard(l, usesOf(context, l, usedBy(l.id)), chosen = l.id == sel?.id, picture = ui.picture, tint = tints[l.id],
                 onTap = { ui.selected = l.id; ui.menuFor = null; ui.adding = false; ui.newBySelect = false },
                 onEye = { onLayers(layers.map { if (it.id == l.id) it.copy(visible = !it.visible) else it }) },
-                onHold = { ui.menuFor = l.id; ui.adding = false; ui.renaming = null })
+                onHold = { ui.menuFor = l.id; ui.adding = false; ui.renaming = null; ui.deleteAsk = false })
             Box(Modifier.width(56.dp).height(120.dp).clip(RoundedCornerShape(10.dp)).border(1.dp, if (ui.adding) LatentColors.Amber else LatentColors.Line, RoundedCornerShape(10.dp))
                 .pointerInput(layers.size) { detectTapGestures(onTap = { Haptics.tick(context); ui.adding = !ui.adding; ui.menuFor = null }) },
                 contentAlignment = Alignment.Center) {
@@ -285,7 +297,10 @@ private fun LayersStrip(
         }
         if (ui.adding) AddMenu(layers, ui, add, aspect, hasDepth, byDepth)
         val menu = ui.menuFor?.let { id -> layers.firstOrNull { it.id == id } }
-        if (menu != null) CardMenu(menu, layers, ui, onLayers)
+        // delete asks only about what lives outside LAYERS: the layer's NEGATIVE look and other PRINT steps
+        if (menu != null) CardMenu(menu, layers, ui, onLayers,
+            listOfNotNull(if (menu.recipe == null) null else "its NEGATIVE look (" + (menu.lookId?.let { com.celestial.latent.develop.LayerLooks.name(context, it) } ?: "own settings") + ")") +
+                usedBy(menu.id).map { it.uppercase(Locale.US) })
     }
 }
 
@@ -294,7 +309,7 @@ private fun LayersStrip(
  * its changes in two lines. 92 × 120 dp: thumbnail 92 × 60, name 11 sp, two 9 sp lines.
  */
 @Composable
-private fun LayerCard(l: Layer, chosen: Boolean, picture: Bitmap?, tint: Bitmap?, onTap: () -> Unit, onEye: () -> Unit, onHold: () -> Unit) {
+private fun LayerCard(l: Layer, uses: List<String>, chosen: Boolean, picture: Bitmap?, tint: Bitmap?, onTap: () -> Unit, onEye: () -> Unit, onHold: () -> Unit) {
     val context = LocalContext.current
     val colour = Color(Layers.COLOURS[Math.floorMod(l.tint, Layers.COLOURS.size)])
     // 109b: the gesture is set up once per card, so it must read the newest actions (an old onEye
@@ -329,14 +344,14 @@ private fun LayerCard(l: Layer, chosen: Boolean, picture: Bitmap?, tint: Bitmap?
         }
         Row(Modifier.padding(top = 5.dp), verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.size(7.dp).clip(RoundedCornerShape(999.dp)).background(colour))
-            Text(l.name, color = if (chosen) LatentColors.Amber else LatentColors.Text, fontSize = 11.sp, letterSpacing = 0.8.sp,
+            // 110a: the whole name, one size smaller (BACKGROUND was cut to "BACKGRO…"); a long one a size smaller again
+            Text(l.name, color = if (chosen) LatentColors.Amber else LatentColors.Text, fontSize = if (l.name.length > 10) 9.sp else 10.sp, letterSpacing = 0.3.sp,
                 maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(start = 5.dp))
         }
-        // 109c: a layer with NEGATIVE settings of its own says so first: its look, or just that it has its own
-        val parts = (listOfNotNull(if (l.recipe == null) null else l.lookId?.let { com.celestial.latent.develop.LayerLooks.name(context, it) } ?: "OWN NEGATIVE") +
-            l.summary().split(" · ").filter { l.recipe == null || it != "no changes" })
-        Text(if (!l.visible) "hidden" else parts.getOrElse(0) { "" }, color = LatentColors.TextDim, fontSize = 9.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        if (l.visible && parts.size > 1) Text(parts.drop(1).joinToString(" · "), color = LatentColors.TextDim, fontSize = 9.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        // 109c/110a: what uses the layer (its own look, its own light, LITH…), or that nothing does yet
+        val parts = uses.ifEmpty { listOf("not used yet") }
+        Text(if (!l.visible) "hidden" else parts.joinToString(" · "), color = LatentColors.TextDim, fontSize = 9.sp, lineHeight = 11.sp,
+            maxLines = 2, overflow = TextOverflow.Ellipsis)
     }
 }
 
@@ -381,11 +396,22 @@ private fun AddMenu(layers: List<Layer>, ui: LayersUi, add: (String, ExposureMap
 
 /** Hold a card: rename, copy, move left or right, delete; 109d: opposite, invert (second row). Widths: rename 62 + copy 48 + ‹ 30 + › 30 + delete 56 + done 50 ≈ 296 dp. */
 @Composable
-private fun CardMenu(l: Layer, layers: List<Layer>, ui: LayersUi, onLayers: (List<Layer>) -> Unit) {
+private fun CardMenu(l: Layer, layers: List<Layer>, ui: LayersUi, onLayers: (List<Layer>) -> Unit, uses: List<String>) {
     val i = layers.indexOfFirst { it.id == l.id }
+    fun delete() { onLayers(layers.filter { it.id != l.id }); ui.menuFor = null; ui.deleteAsk = false; if (ui.selected == l.id) ui.selected = -1 }
     Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(top = 8.dp)) {
         val naming = ui.renaming
-        if (naming != null) {
+        // 110a: a layer something else uses asks once before it goes (it used to vanish silently, and
+        // a lith kept in it spread over the whole print)
+        if (ui.deleteAsk) {
+            Text("${l.name} is used by ${uses.joinToString(", ")}. Delete it? " +
+                (if (uses.any { it == "LITH" }) "LITH goes back to the whole print." else "Those changes go with it."),
+                color = LatentColors.Text, fontSize = 11.sp, modifier = Modifier.padding(bottom = 6.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                PrintChip("delete", on = true) { delete() }
+                PrintChip("keep it", on = false) { ui.deleteAsk = false }
+            }
+        } else if (naming != null) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 BasicTextField(naming, onValueChange = { ui.renaming = it.uppercase(Locale.getDefault()).take(12) }, singleLine = true,
                     textStyle = TextStyle(color = LatentColors.Text, fontSize = 13.sp, letterSpacing = 1.sp), cursorBrush = SolidColor(LatentColors.Amber),
@@ -406,7 +432,7 @@ private fun CardMenu(l: Layer, layers: List<Layer>, ui: LayersUi, onLayers: (Lis
             }
             PrintChip("‹", on = false, enabled = i > 0) { onLayers(layers.toMutableList().also { java.util.Collections.swap(it, i, i - 1) }) }
             PrintChip("›", on = false, enabled = i < layers.size - 1) { onLayers(layers.toMutableList().also { java.util.Collections.swap(it, i, i + 1) }) }
-            PrintChip("delete", on = false) { onLayers(layers.filter { it.id != l.id }); ui.menuFor = null; if (ui.selected == l.id) ui.selected = -1 }
+            PrintChip("delete", on = false) { if (uses.isEmpty()) delete() else ui.deleteAsk = true }
             PrintChip("done", on = false) { ui.menuFor = null }
           }
           // 109d: the other side of this layer. Snapping is linear in the area, so the opposite's snapped
@@ -421,7 +447,7 @@ private fun CardMenu(l: Layer, layers: List<Layer>, ui: LayersUi, onLayers: (Lis
             }
           }
         }
-        Text("${l.name}: opposite makes a new layer of everything outside it; invert flips its own area. Overlaps add up, so order changes only the strip.", color = LatentColors.TextDim, fontSize = 11.sp, modifier = Modifier.padding(top = 6.dp))
+        if (!ui.deleteAsk) Text("${l.name}: opposite makes a new layer of everything outside it; invert flips its own area. Overlaps add up, so order changes only the strip.", color = LatentColors.TextDim, fontSize = 11.sp, modifier = Modifier.padding(top = 6.dp))
     }
 }
 
