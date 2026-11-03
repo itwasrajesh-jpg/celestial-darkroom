@@ -52,6 +52,7 @@ import com.celestial.latent.develop.Layers
 import com.celestial.latent.develop.Recipe
 import com.celestial.latent.develop.Region
 import com.celestial.latent.ui.LatentColors
+import com.celestial.latent.ui.pressIn
 import com.celestial.latent.ui.accentFill
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -286,7 +287,7 @@ private fun LayersStrip(
                 onTap = { ui.selected = l.id; ui.menuFor = null; ui.adding = false; ui.newBySelect = false },
                 onEye = { onLayers(layers.map { if (it.id == l.id) it.copy(visible = !it.visible) else it }) },
                 onHold = { ui.menuFor = l.id; ui.adding = false; ui.renaming = null; ui.deleteAsk = false })
-            Box(Modifier.width(56.dp).height(120.dp).clip(RoundedCornerShape(10.dp)).border(1.dp, if (ui.adding) LatentColors.Amber else LatentColors.Line, RoundedCornerShape(10.dp))
+            Box(Modifier.pressIn().width(56.dp).height(120.dp).clip(RoundedCornerShape(10.dp)).border(1.dp, if (ui.adding) LatentColors.Amber else LatentColors.Line, RoundedCornerShape(10.dp))
                 .pointerInput(layers.size) { detectTapGestures(onTap = { Haptics.tick(context); ui.adding = !ui.adding; ui.menuFor = null }) },
                 contentAlignment = Alignment.Center) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -316,7 +317,7 @@ private fun LayerCard(l: Layer, uses: List<String>, chosen: Boolean, picture: Bi
     // would hand back the list of layers as it was when the card first appeared)
     val tapNow by rememberUpdatedState(onTap); val eyeNow by rememberUpdatedState(onEye); val holdNow by rememberUpdatedState(onHold)
     val shape = RoundedCornerShape(10.dp)
-    Column(Modifier.width(92.dp).height(120.dp).clip(shape).background(LatentColors.Surface)
+    Column(Modifier.pressIn().width(92.dp).height(120.dp).clip(shape).background(LatentColors.Surface)
         .border(if (chosen) 1.5.dp else 0.dp, if (chosen) LatentColors.Amber else Color.Transparent, shape)
         .pointerInput(l.id) {
             detectTapGestures(

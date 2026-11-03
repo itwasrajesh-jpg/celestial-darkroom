@@ -85,6 +85,7 @@ import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateCentroid
 import com.celestial.latent.develop.Region
 import com.celestial.latent.ui.LatentColors
+import com.celestial.latent.ui.pressIn
 import com.celestial.latent.ui.accentFill
 import com.celestial.latent.ui.OnPhoto
 import com.celestial.latent.ui.raised
@@ -272,7 +273,7 @@ private fun TestStripStep(
                 "test around it", color = if (canRetest) LatentColors.AmberInk else LatentColors.TextDim, fontSize = 11.sp,
                 modifier = Modifier.clip(RoundedCornerShape(999.dp))
                     .accentFill(canRetest, LatentColors.Surface)
-                    .then(if (canRetest) Modifier.pointerInput(selected) {
+                    .then(if (canRetest) Modifier.pressIn().pointerInput(selected) {
                         detectTapGestures(onTap = {
                             Haptics.tick(context)
                             val chosen = exposures[selected]
@@ -385,7 +386,7 @@ private fun StepIndicator(active: Int, available: Int, onSelect: (Int) -> Unit, 
             steps.forEachIndexed { i, label ->
                 val on = i == active
                 val bar by animateFloatAsState(if (on) 1f else 0f, tween(260), label = "step")
-                Column(Modifier.pointerInput(i) { detectTapGestures(onTap = { onSelect(i) }) }) {
+                Column(Modifier.pressIn().pointerInput(i) { detectTapGestures(onTap = { onSelect(i) }) }) {
                     Text("${i + 1}  $label", color = when { on -> LatentColors.Amber; i < available -> LatentColors.TextDim; else -> LatentColors.Line },
                         fontSize = (10f * k).sp, letterSpacing = (1.2f * k).sp, maxLines = 1, softWrap = false)
                     Box(Modifier.padding(top = 4.dp).height(2.dp).width((40 * bar).dp).clip(RoundedCornerShape(1.dp)).accentFill())
@@ -1043,7 +1044,7 @@ private fun RingAroundStep(
                     val on = sz == stepSize
                     Text(
                         String.format(Locale.US, "%.0f", sz), color = if (on) LatentColors.AmberInk else LatentColors.TextDim, fontSize = 11.sp,
-                        modifier = Modifier.clip(RoundedCornerShape(999.dp)).accentFill(on, LatentColors.Surface)
+                        modifier = Modifier.pressIn().clip(RoundedCornerShape(999.dp)).accentFill(on, LatentColors.Surface)
                             .pointerInput(sz, on) { detectTapGestures(onTap = { if (!on && !gliding) { Haptics.tick(context); stepSize = sz } }) }
                             .padding(horizontal = 10.dp, vertical = 5.dp),
                     )
@@ -2444,7 +2445,7 @@ internal fun PaintStep(
                 for (i in 0..2) {
                     val on = brush == i
                     val d = (10 + i * 6).dp
-                    Box(Modifier.size(28.dp).pointerInput(i) { detectTapGestures(onTap = { Haptics.tick(context); brush = i }) },
+                    Box(Modifier.pressIn().size(28.dp).pointerInput(i) { detectTapGestures(onTap = { Haptics.tick(context); brush = i }) },
                         contentAlignment = Alignment.Center) {
                         Box(Modifier.size(d).clip(RoundedCornerShape(999.dp)).accentFill(on, LatentColors.Surface))
                     }
@@ -2563,7 +2564,7 @@ internal fun PaintStep(
                 modifier = Modifier.weight(1f).pointerInput(Unit) { detectTapGestures(onTap = { hintOpen = !hintOpen }) },
             )
             if (!selOpen) Text(if (hintOpen) "×" else "?", color = LatentColors.TextDim, fontSize = 11.sp,
-                modifier = Modifier.padding(start = 6.dp).size(22.dp).clip(RoundedCornerShape(999.dp))
+                modifier = Modifier.pressIn().padding(start = 6.dp).size(22.dp).clip(RoundedCornerShape(999.dp))
                     .border(1.dp, LatentColors.Line, RoundedCornerShape(999.dp))
                     .pointerInput(Unit) { detectTapGestures(onTap = { hintOpen = !hintOpen }) }
                     .wrapContentHeight(Alignment.CenterVertically), textAlign = TextAlign.Center)
@@ -2741,13 +2742,13 @@ internal fun PaintStep(
             Text(
                 when { comparing && before == null -> "developing…"; comparing -> "BEFORE"; else -> "hold: before" },
                 color = if (comparing) OnPhoto.AmberInk else OnPhoto.Text, fontSize = 10.sp, letterSpacing = 1.sp,
-                modifier = Modifier.align(Alignment.TopEnd).padding(8.dp).clip(RoundedCornerShape(999.dp))
+                modifier = Modifier.pressIn().align(Alignment.TopEnd).padding(8.dp).clip(RoundedCornerShape(999.dp))
                     .background(if (comparing) OnPhoto.Amber else Color(0xCC161615))
                     .pointerInput(Unit) { detectTapGestures(onPress = { comparing = true; tryAwaitRelease(); comparing = false }) }
                     .padding(horizontal = 10.dp, vertical = 5.dp),
             )
             if (zoom.zoomed) Text("${String.format(Locale.US, "%.1f", zoom.scale)}×  · " + (if (sharpening) "sharpening… · fit" else "fit"), color = LatentColors.AmberInk, fontSize = 10.sp,
-                modifier = Modifier.align(Alignment.TopStart).padding(6.dp).clip(RoundedCornerShape(999.dp)).accentFill()
+                modifier = Modifier.pressIn().align(Alignment.TopStart).padding(6.dp).clip(RoundedCornerShape(999.dp)).accentFill()
                     .pointerInput(Unit) { detectTapGestures(onTap = { Haptics.tick(context); zoom.reset(); detail = null }) }
                     .padding(horizontal = 10.dp, vertical = 4.dp))
         }
@@ -2770,7 +2771,7 @@ internal fun PaintStep(
                 listOf(false to layer.chips.first, true to layer.chips.second).forEach { (on, name) ->
                     val chosen = on == layerOn
                     val bar by animateFloatAsState(if (chosen) 1f else 0f, tween(220), label = "layer")
-                    Column(Modifier.pointerInput(on, chosen) { detectTapGestures(onTap = { if (!chosen) { Haptics.tick(context); chooseLayer(on) } }) }) {
+                    Column(Modifier.pressIn().pointerInput(on, chosen) { detectTapGestures(onTap = { if (!chosen) { Haptics.tick(context); chooseLayer(on) } }) }) {
                         Text(name, color = if (chosen) LatentColors.Amber else LatentColors.TextDim, fontSize = 11.sp, letterSpacing = 1.5.sp)
                         Box(Modifier.padding(top = 3.dp).height(2.dp).width((28 * bar).dp).clip(RoundedCornerShape(1.dp)).accentFill())
                     }
@@ -2834,7 +2835,7 @@ internal fun PaintStep(
                 (tabs.mapIndexed { i, t -> if (i == 0 && layerOn && layer?.tabName != null) layer.tabName else t.first } + "BRUSH").forEachIndexed { i, name ->
                     val on = i == tab
                     val bar by animateFloatAsState(if (on) 1f else 0f, tween(220), label = "tab")
-                    Column(Modifier.pointerInput(i) { detectTapGestures(onTap = { if (i != tab) Haptics.tick(context); tab = i }) }) {
+                    Column(Modifier.pressIn().pointerInput(i) { detectTapGestures(onTap = { if (i != tab) Haptics.tick(context); tab = i }) }) {
                         Text(name, color = if (on) LatentColors.Amber else LatentColors.TextDim, fontSize = 11.sp, letterSpacing = 1.5.sp, maxLines = 1, softWrap = false)
                         Box(Modifier.padding(top = 3.dp).height(2.dp).width((28 * bar).dp).clip(RoundedCornerShape(1.dp)).accentFill())
                     }
@@ -2844,9 +2845,9 @@ internal fun PaintStep(
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 key(historyTick) {
                     Text("undo", color = if (undo.isNotEmpty()) LatentColors.Amber else LatentColors.TextDim, fontSize = 11.sp,
-                        modifier = Modifier.pointerInput(Unit) { detectTapGestures(onTap = { undoStep() }) })
+                        modifier = Modifier.pressIn().pointerInput(Unit) { detectTapGestures(onTap = { undoStep() }) })
                     Text("redo", color = if (redo.isNotEmpty()) LatentColors.Amber else LatentColors.TextDim, fontSize = 11.sp,
-                        modifier = Modifier.pointerInput(Unit) { detectTapGestures(onTap = { redoStep() }) })
+                        modifier = Modifier.pressIn().pointerInput(Unit) { detectTapGestures(onTap = { redoStep() }) })
                 }
             }
             }
@@ -3039,7 +3040,7 @@ private fun OutlinedChip(label: String, onTap: () -> Unit) {
     val tapNow by rememberUpdatedState(onTap)
     Text(
         label, fontSize = 11.sp, color = LatentColors.Amber,
-        modifier = Modifier.clip(RoundedCornerShape(999.dp)).border(1.dp, LatentColors.Amber, RoundedCornerShape(999.dp))
+        modifier = Modifier.pressIn().clip(RoundedCornerShape(999.dp)).border(1.dp, LatentColors.Amber, RoundedCornerShape(999.dp))
             .pointerInput(label) { detectTapGestures(onTap = { Haptics.tick(context); tapNow() }) }
             .padding(horizontal = 10.dp, vertical = 5.dp),
     )
@@ -3054,7 +3055,7 @@ private fun Chip(label: String, on: Boolean, enabled: Boolean = true, onTap: () 
     Text(
         label, fontSize = 11.sp,
         color = when { on -> LatentColors.AmberInk; enabled -> LatentColors.Text; else -> LatentColors.Line },
-        modifier = Modifier.raised(RoundedCornerShape(999.dp), 2.dp).clip(RoundedCornerShape(999.dp)).accentFill(on, LatentColors.Surface)
+        modifier = Modifier.pressIn().raised(RoundedCornerShape(999.dp), 2.dp).clip(RoundedCornerShape(999.dp)).accentFill(on, LatentColors.Surface)
             .pointerInput(label, on, enabled) { detectTapGestures(onTap = { if (enabled) { Haptics.tick(context); tapNow() } }) }
             .padding(horizontal = 10.dp, vertical = 5.dp),
     )

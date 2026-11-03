@@ -90,7 +90,8 @@ private val MIDNIGHT = Palette(
     bar = Color(0xFF1E263B), dock = Color(0xFF303D59), panel = Color(0xFF273248), mat = Color(0xFF1E243A),
     frost = Color(0xB8303D59),
     shadow = Color(0xFF05070D), rim = Color(0xFF536684), glow = Color(0xFF98A9C4),
-    sliderFill = Color(0xFF98A9C4), sliderTrack = Color(0xFF536684),
+    // 111a: Midnight's sliders are blue (approved proof touch-motion/3b), no longer the pale grey-blue
+    sliderFill = Color(0xFF5C89EB), sliderTrack = Color(0xFF425070),
     depth = true, light = false,
 )
 

@@ -54,6 +54,7 @@ open class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         // 87a: the chosen theme, read before the first frame
         LatentColors.load(this)
+        com.celestial.latent.ui.Touch.load(this)
         // 88b: the window behind the first frame in the theme's own colour
         window.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(LatentColors.Background.toArgb()))
         setContent {

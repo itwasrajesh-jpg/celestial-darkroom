@@ -73,6 +73,7 @@ import com.celestial.latent.develop.Recipes
 import com.celestial.latent.ui.Glyph
 import com.celestial.latent.ui.GlyphIcon
 import com.celestial.latent.ui.LatentColors
+import com.celestial.latent.ui.pressIn
 import com.celestial.latent.ui.accentFill
 import com.celestial.latent.ui.OnPhoto
 import com.celestial.latent.ui.glow
@@ -876,7 +877,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
         Column(Modifier.fillMaxWidth()) {
         Row(Modifier.fillMaxWidth().padding(top = 10.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             Text(if (fullRunning) "Developing… ${elapsed}s" else "Develop", color = LatentColors.AmberInk, fontSize = 13.sp, maxLines = 1, softWrap = false,
-                modifier = Modifier.clip(RoundedCornerShape(999.dp)).accentFill()
+                modifier = Modifier.pressIn().clip(RoundedCornerShape(999.dp)).accentFill()
                     .combinedClickable(onClick = { if (!fullRunning) { Haptics.click(context); startFullDevelop() } }).padding(horizontal = 22.dp, vertical = 10.dp))
             Text(if (op.noFilm) "No film yet: pick one in NEGATIVE first." else "Full size, saved to DCIM/Latent.", color = if (op.noFilm) LatentColors.Amber else LatentColors.TextDim, fontSize = 10.sp, modifier = Modifier.weight(1f))
         }
@@ -888,7 +889,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                 val on = printSize == size
                 Text(com.celestial.latent.develop.DarkroomPrefs.label(size),
                     color = if (on) LatentColors.AmberInk else LatentColors.Text, fontSize = 11.sp,
-                    modifier = Modifier.clip(RoundedCornerShape(999.dp)).accentFill(on, LatentColors.Surface)
+                    modifier = Modifier.pressIn().clip(RoundedCornerShape(999.dp)).accentFill(on, LatentColors.Surface)
                         .combinedClickable(onClick = {
                             if (!fullRunning) {
                                 Haptics.tick(context); printSize = size
@@ -905,7 +906,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
             com.celestial.latent.develop.DarkroomPrefs.fileFormats().forEach { (id, label) ->
                 val on = fileFormat == id
                 Text(label, color = if (on) LatentColors.AmberInk else LatentColors.Text, fontSize = 11.sp,
-                    modifier = Modifier.clip(RoundedCornerShape(999.dp)).accentFill(on, LatentColors.Surface)
+                    modifier = Modifier.pressIn().clip(RoundedCornerShape(999.dp)).accentFill(on, LatentColors.Surface)
                         .combinedClickable(onClick = { if (!fullRunning) { Haptics.tick(context); fileFormat = id } }).padding(horizontal = 12.dp, vertical = 6.dp))
             }
         }
@@ -955,7 +956,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
         // the living photo (66a): this edit as a short loop, only what the darkroom added moving
         Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             Text("Live", color = LatentColors.TextBright, fontSize = 12.sp,
-                modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(LatentColors.Surface)
+                modifier = Modifier.pressIn().clip(RoundedCornerShape(999.dp)).background(LatentColors.Surface)
                     .combinedClickable(onClick = { Haptics.click(context); liveOpen = true }).padding(horizontal = 16.dp, vertical = 8.dp))
             Text("A short clip of this edit: rain running, fog drifting, lamps flickering.", color = LatentColors.TextDim, fontSize = 10.sp, modifier = Modifier.weight(1f))
         }
@@ -964,7 +965,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
             // 71a: back to this film's own look (its grain, glow and the rest), not the engine's bare
             // defaults, which gave every film Portra 400's grain. One Undo brings the edit back.
             Text("Reset to film", color = LatentColors.Text, fontSize = 11.sp,
-                modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(LatentColors.Surface)
+                modifier = Modifier.pressIn().clip(RoundedCornerShape(999.dp)).background(LatentColors.Surface)
                     .combinedClickable(onClick = {
                         Haptics.tick(context)
                         // 100b: the film's own look again, but your LIGHT tab stays (Reset light clears it)
@@ -975,10 +976,10 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                         if (fresh != now) { asks.beforeReset = now; asks.resetTo = fresh; op.neg = fresh }
                     }).padding(horizontal = 12.dp, vertical = 7.dp))
             Text("Clear effects", color = LatentColors.Text, fontSize = 11.sp,
-                modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(LatentColors.Surface)
+                modifier = Modifier.pressIn().clip(RoundedCornerShape(999.dp)).background(LatentColors.Surface)
                     .combinedClickable(onClick = { Haptics.tick(context); asks.clearAsk = true }).padding(horizontal = 12.dp, vertical = 7.dp))
             Text("Save recipe", color = LatentColors.Text, fontSize = 11.sp,
-                modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(LatentColors.Surface)
+                modifier = Modifier.pressIn().clip(RoundedCornerShape(999.dp)).background(LatentColors.Surface)
                     .combinedClickable(onClick = {
                         // 72a: asks for a name first, offering the film's
                         Haptics.tick(context); asks.saveName = ""
@@ -992,7 +993,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
             NameField(draft, "name this recipe") { asks.naming = it }
             Row(Modifier.padding(bottom = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text(if (taken) "Replace" else "Save", color = if (clean.isNotEmpty()) LatentColors.AmberInk else LatentColors.TextDim, fontSize = 11.sp,
-                    modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(if (clean.isNotEmpty()) LatentColors.Amber else LatentColors.Surface)
+                    modifier = Modifier.pressIn().clip(RoundedCornerShape(999.dp)).background(if (clean.isNotEmpty()) LatentColors.Amber else LatentColors.Surface)
                         .combinedClickable(onClick = {
                             if (clean.isEmpty()) return@combinedClickable
                             Haptics.tick(context)
@@ -1005,7 +1006,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                             asks.stampFor = clean; developScope.launch { lookRow.animateScrollTo(0) }
                         }).padding(horizontal = 12.dp, vertical = 7.dp))
                 Text("Cancel", color = LatentColors.Text, fontSize = 11.sp,
-                    modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(LatentColors.Surface)
+                    modifier = Modifier.pressIn().clip(RoundedCornerShape(999.dp)).background(LatentColors.Surface)
                         .combinedClickable(onClick = { asks.naming = null }).padding(horizontal = 12.dp, vertical = 7.dp))
                 if (taken) Text("a recipe has this name", color = LatentColors.TextDim, fontSize = 10.sp)
             }
@@ -1018,7 +1019,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
             Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("Back to the film's own look.", color = LatentColors.TextDim, fontSize = 11.sp, modifier = Modifier.weight(1f))
                 Text("Undo", color = LatentColors.AmberInk, fontSize = 11.sp,
-                    modifier = Modifier.clip(RoundedCornerShape(999.dp)).accentFill()
+                    modifier = Modifier.pressIn().clip(RoundedCornerShape(999.dp)).accentFill()
                         .combinedClickable(onClick = { Haptics.tick(context); op.neg = undoReset; asks.beforeReset = null; asks.resetTo = null })
                         .padding(horizontal = 12.dp, vertical = 7.dp))
             }
@@ -1029,7 +1030,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                 color = LatentColors.Text, fontSize = 11.sp, modifier = Modifier.padding(top = 4.dp))
             Row(Modifier.padding(vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("Clear", color = LatentColors.AmberInk, fontSize = 11.sp,
-                    modifier = Modifier.clip(RoundedCornerShape(999.dp)).accentFill()
+                    modifier = Modifier.pressIn().clip(RoundedCornerShape(999.dp)).accentFill()
                         .combinedClickable(onClick = {
                             Haptics.tick(context)
                             asks.beforeClear = PaintedEffects(exposureMap, softenMap, fogMap, fogLook, raysMap, raysLook, extraLights,
@@ -1042,7 +1043,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                             asks.clearAsk = false
                         }).padding(horizontal = 12.dp, vertical = 7.dp))
                 Text("Keep them", color = LatentColors.Text, fontSize = 11.sp,
-                    modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(LatentColors.Surface)
+                    modifier = Modifier.pressIn().clip(RoundedCornerShape(999.dp)).background(LatentColors.Surface)
                         .combinedClickable(onClick = { asks.clearAsk = false }).padding(horizontal = 12.dp, vertical = 7.dp))
             }
         }
@@ -1052,7 +1053,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
             Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("Effects cleared.", color = LatentColors.TextDim, fontSize = 11.sp, modifier = Modifier.weight(1f))
                 Text("Undo", color = LatentColors.AmberInk, fontSize = 11.sp,
-                    modifier = Modifier.clip(RoundedCornerShape(999.dp)).accentFill()
+                    modifier = Modifier.pressIn().clip(RoundedCornerShape(999.dp)).accentFill()
                         .combinedClickable(onClick = {
                             Haptics.tick(context)
                             exposureMap = undoClear.exposure; softenMap = undoClear.soften; fogMap = undoClear.fog; fogLook = undoClear.fogLook
@@ -1070,7 +1071,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
     Box(Modifier.fillMaxSize()) {
     Column(Modifier.fillMaxSize().background(LatentColors.Background).glow().statusBarsPadding().navigationBarsPadding()) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 10.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-            GlyphIcon(Glyph.BACK, LatentColors.Text, Modifier.combinedClickable(onClick = onBack).padding(horizontal = 6.dp), 22.dp)
+            GlyphIcon(Glyph.BACK, LatentColors.Text, Modifier.pressIn().combinedClickable(onClick = onBack).padding(horizontal = 6.dp), 22.dp)
             Text("DARKROOM", color = LatentColors.Text, fontSize = 12.sp, letterSpacing = 4.sp)
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 // 108a: SIMPLE and FULL showed the same tabs (FULL added three FILM controls), so they are one
@@ -1078,7 +1079,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                 listOf("NEGATIVE", "PRINT").forEach { label ->
                     val on = if (label == "PRINT") printing else !printing
                     Text(label, color = if (on) LatentColors.AmberInk else LatentColors.TextDim, fontSize = 10.sp, letterSpacing = 1.5.sp,
-                        modifier = Modifier.clip(RoundedCornerShape(999.dp)).accentFill(on, Color.Transparent)
+                        modifier = Modifier.pressIn().clip(RoundedCornerShape(999.dp)).accentFill(on, Color.Transparent)
                             .combinedClickable(onClick = {
                                 if (!on) Haptics.tick(context)
                                 // 110a: PRINT works on a film: after start fresh it takes the photo's own, as it comes
@@ -1088,7 +1089,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                 }
                 // 74a: what the controls on screen do
                 GlyphIcon(Glyph.HELP, LatentColors.Amber,
-                    Modifier.clip(RoundedCornerShape(999.dp))
+                    Modifier.pressIn().clip(RoundedCornerShape(999.dp))
                         .combinedClickable(onClick = { Haptics.tick(context); asks.helpTopic = if (printing) "print" else tab }).padding(horizontal = 4.dp, vertical = 2.dp), 20.dp)
             }
         }
@@ -1310,12 +1311,12 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                     Row(Modifier.align(Alignment.TopEnd).padding(10.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         // 78a: see the Ultra HDR glow while editing (Android 14+): the window turns HDR only while this is on
                         if (com.celestial.latent.develop.HdrGlow.supported && !frameOpen) Text("HDR", color = if (hdrView) LatentColors.AmberInk else Color(0xE6FFFFFF), fontSize = 10.sp, letterSpacing = 1.5.sp,
-                            modifier = Modifier.clip(RoundedCornerShape(999.dp))
+                            modifier = Modifier.pressIn().clip(RoundedCornerShape(999.dp))
                                 .accentFill(hdrView, Color(0x66000000))
                                 .combinedClickable(onClick = { Haptics.tick(context); hdrView = !hdrView })
                                 .padding(horizontal = 10.dp, vertical = 4.dp))
                         Text(if (frameOpen) "FRAMING" else "FRAME", color = if (frameOpen) LatentColors.AmberInk else Color(0xE6FFFFFF), fontSize = 10.sp, letterSpacing = 1.5.sp,
-                            modifier = Modifier.clip(RoundedCornerShape(999.dp))
+                            modifier = Modifier.pressIn().clip(RoundedCornerShape(999.dp))
                                 .accentFill(frameOpen, Color(0x66000000))
                                 .combinedClickable(onClick = { Haptics.tick(context); frameOpen = !frameOpen })
                                 .padding(horizontal = 10.dp, vertical = 4.dp))
@@ -1397,7 +1398,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                                     if (fullRunning) Text("${elapsed}s", color = LatentColors.Text, fontSize = 10.sp)
                                     else if (lastRenderMs > 0) Text("${lastRenderMs} ms", color = LatentColors.TextDim, fontSize = 10.sp)
                                     if (fullRunning) GlyphIcon(Glyph.CLOSE, LatentColors.Text,
-                                        Modifier.combinedClickable(onClick = {
+                                        Modifier.pressIn().combinedClickable(onClick = {
                                             Haptics.tick(context); fullJob?.cancel(); fullJob = null; fullRunning = false; status = "cancelled"
                                         }).padding(start = 12.dp, end = 4.dp), 16.dp)
                                 }
@@ -1425,7 +1426,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                     Row(Modifier.fillMaxWidth().horizontalScroll(lookRow).padding(horizontal = 14.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         // 110a: no film at all, the photo as shot (the same as start fresh)
                         Column(
-                            Modifier.floating(RoundedCornerShape(6.dp), 3.dp).clip(RoundedCornerShape(6.dp)).accentFill(op.noFilm, LatentColors.Surface)
+                            Modifier.pressIn().floating(RoundedCornerShape(6.dp), 3.dp).clip(RoundedCornerShape(6.dp)).accentFill(op.noFilm, LatentColors.Surface)
                                 .combinedClickable(onClick = { Haptics.tick(context); startFresh() })
                                 .padding(horizontal = 11.dp, vertical = 6.dp),
                         ) {
@@ -1436,7 +1437,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                             val on = !op.noFilm && nl == "stock:" + name
                             Box(Modifier.showLookOnOpen(on, asks, lookRow, developScope)) { Column(
                                 // 87a-2: in Clay each film has its own pastel card, as in the approved proof
-                                Modifier.floating(RoundedCornerShape(6.dp), 3.dp).clip(RoundedCornerShape(6.dp)).accentFill(on, LatentColors.card(n))
+                                Modifier.pressIn().floating(RoundedCornerShape(6.dp), 3.dp).clip(RoundedCornerShape(6.dp)).accentFill(on, LatentColors.card(n))
                                     .combinedClickable(
                                         onClick = { Haptics.tick(context); pickLook("stock:" + name, saved) },
                                         onLongClick = { Haptics.click(context); asks.managing = name; asks.manageName = name; asks.deleteAsk = false },
@@ -1453,7 +1454,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                         ourStocks.forEachIndexed { n, (name, saved) ->
                             val on = !op.noFilm && nl == "stock:" + name
                             Column(
-                                Modifier.showLookOnOpen(on, asks, lookRow, developScope)
+                                Modifier.pressIn().showLookOnOpen(on, asks, lookRow, developScope)
                                     .floating(RoundedCornerShape(6.dp), 3.dp).clip(RoundedCornerShape(6.dp)).accentFill(on, LatentColors.card(savedRecipes.size + n))
                                     .combinedClickable(onClick = { Haptics.tick(context); pickLook("stock:" + name, saved) })
                                     .padding(horizontal = 11.dp, vertical = 6.dp),
@@ -1465,7 +1466,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                         looks.forEachIndexed { n, preset ->
                             val on = !op.noFilm && preset.id == nl
                             Column(
-                                Modifier.showLookOnOpen(on, asks, lookRow, developScope)
+                                Modifier.pressIn().showLookOnOpen(on, asks, lookRow, developScope)
                                     .floating(RoundedCornerShape(6.dp), 3.dp).clip(RoundedCornerShape(6.dp)).accentFill(on, LatentColors.card(savedRecipes.size + ourStocks.size + n))
                                     .combinedClickable(onClick = { Haptics.tick(context); pickLook(preset.id, preset.recipe) })
                                     .padding(horizontal = 11.dp, vertical = 6.dp),
@@ -1489,7 +1490,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                             }
                             if (!asks.deleteAsk) Row(Modifier.horizontalScroll(rememberScrollState()).padding(vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 Text("Rename", color = if (canRename) LatentColors.AmberInk else LatentColors.TextDim, fontSize = 11.sp,
-                                    modifier = Modifier.clip(RoundedCornerShape(999.dp)).accentFill(canRename, LatentColors.Surface)
+                                    modifier = Modifier.pressIn().clip(RoundedCornerShape(999.dp)).accentFill(canRename, LatentColors.Surface)
                                         .combinedClickable(onClick = {
                                             if (canRename && Recipes.rename(context, held, clean)) {
                                                 Haptics.tick(context); cameraFollows(clean)
@@ -1499,16 +1500,16 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                                             }
                                         }).padding(horizontal = 12.dp, vertical = 7.dp))
                                 Text("Delete", color = LatentColors.Text, fontSize = 11.sp,
-                                    modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(LatentColors.Surface)
+                                    modifier = Modifier.pressIn().clip(RoundedCornerShape(999.dp)).background(LatentColors.Surface)
                                         .combinedClickable(onClick = { Haptics.tick(context); asks.deleteAsk = true }).padding(horizontal = 12.dp, vertical = 7.dp))
                                 Text("Done", color = LatentColors.Text, fontSize = 11.sp,
-                                    modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(LatentColors.Surface)
+                                    modifier = Modifier.pressIn().clip(RoundedCornerShape(999.dp)).background(LatentColors.Surface)
                                         .combinedClickable(onClick = { asks.managing = null }).padding(horizontal = 12.dp, vertical = 7.dp))
                             } else {
                                 Text("Delete the recipe “$held”? Photos already developed with it keep their look.", color = LatentColors.Text, fontSize = 11.sp, modifier = Modifier.padding(top = 4.dp))
                                 Row(Modifier.padding(vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                     Text("Delete", color = LatentColors.AmberInk, fontSize = 11.sp,
-                                        modifier = Modifier.clip(RoundedCornerShape(999.dp)).accentFill()
+                                        modifier = Modifier.pressIn().clip(RoundedCornerShape(999.dp)).accentFill()
                                             .combinedClickable(onClick = {
                                                 Haptics.tick(context); Recipes.delete(context, held); cameraFollows(null)
                                                 if (lookId == "stock:" + held) lookId = ""
@@ -1516,7 +1517,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                                                 asks.managing = null; asks.deleteAsk = false; asks.recipesRevision++
                                             }).padding(horizontal = 12.dp, vertical = 7.dp))
                                     Text("Keep it", color = LatentColors.Text, fontSize = 11.sp,
-                                        modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(LatentColors.Surface)
+                                        modifier = Modifier.pressIn().clip(RoundedCornerShape(999.dp)).background(LatentColors.Surface)
                                             .combinedClickable(onClick = { asks.deleteAsk = false }).padding(horizontal = 12.dp, vertical = 7.dp))
                                 }
                             }
@@ -1529,7 +1530,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                             // 89c: each tab its glyph over its name (approved proof visual-3/proof/4-icons-in-place.jpg)
                             val ink = if (on) LatentColors.AmberInk else LatentColors.Text
                             Column(
-                                Modifier.clip(RoundedCornerShape(12.dp))
+                                Modifier.pressIn().clip(RoundedCornerShape(12.dp))
                                     .accentFill(on, Color.Transparent)
                                     .then(if (on) Modifier else Modifier.border(0.5.dp, LatentColors.Line, RoundedCornerShape(12.dp)))
                                     .combinedClickable(onClick = { Haptics.tick(context); tab = id }).widthIn(min = 52.dp).padding(horizontal = 7.dp, vertical = 5.dp),
@@ -1571,7 +1572,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                                     // The photo opens at the brightness it was shot at. This asks the film
                                     // what it would have chosen — a starting point, not a correction.
                                     Text(if (asks.levelling) "levelling…" else "Auto level", color = LatentColors.AmberInk, fontSize = 11.sp,
-                                        modifier = Modifier.clip(RoundedCornerShape(999.dp)).accentFill()
+                                        modifier = Modifier.pressIn().clip(RoundedCornerShape(999.dp)).accentFill()
                                             .combinedClickable(onClick = {
                                                 if (!asks.levelling && !rendering) {
                                                     Haptics.tick(context); asks.levelling = true
@@ -1598,7 +1599,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                                             }).padding(horizontal = 12.dp, vertical = 7.dp))
                                     // back to the brightness it was shot at, and the four tones untouched
                                     Text("Reset light", color = LatentColors.Text, fontSize = 11.sp,
-                                        modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(LatentColors.Surface)
+                                        modifier = Modifier.pressIn().clip(RoundedCornerShape(999.dp)).background(LatentColors.Surface)
                                             .combinedClickable(onClick = {
                                                 Haptics.tick(context)
                                                 val toned = op.neg.copy(lightHighlights = 0f, lightShadows = 0f, lightWhites = 0f, lightBlacks = 0f)
@@ -1628,7 +1629,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                                 val auto = op.neg.chromaDenoise < 0f
                                 Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                     Text(if (auto) "AUTO · FROM ISO" else "MANUAL", color = if (auto) LatentColors.AmberInk else LatentColors.Text, fontSize = 10.sp,
-                                        modifier = Modifier.clip(RoundedCornerShape(999.dp)).accentFill(auto, LatentColors.Surface)
+                                        modifier = Modifier.pressIn().clip(RoundedCornerShape(999.dp)).accentFill(auto, LatentColors.Surface)
                                             .combinedClickable(onClick = { Haptics.tick(context); set { copy(chromaDenoise = if (auto) 0.4f else -1f) } })
                                             .padding(horizontal = 10.dp, vertical = 5.dp))
                                 }
@@ -1638,7 +1639,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                                 val lumaAuto = op.neg.lumaDenoise < 0f
                                 Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                     Text(if (lumaAuto) "AUTO · FROM ISO" else "MANUAL", color = if (lumaAuto) LatentColors.AmberInk else LatentColors.Text, fontSize = 10.sp,
-                                        modifier = Modifier.clip(RoundedCornerShape(999.dp)).accentFill(lumaAuto, LatentColors.Surface)
+                                        modifier = Modifier.pressIn().clip(RoundedCornerShape(999.dp)).accentFill(lumaAuto, LatentColors.Surface)
                                             .combinedClickable(onClick = { Haptics.tick(context); set { copy(lumaDenoise = if (lumaAuto) 0.4f else -1f) } })
                                             .padding(horizontal = 10.dp, vertical = 5.dp))
                                 }
@@ -1743,7 +1744,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                                     Develop.PAPERS.forEach { (id, label) ->
                                         val on = id == op.neg.paper
                                         Text(label, color = if (on) LatentColors.AmberInk else LatentColors.Text, fontSize = 10.sp,
-                                            modifier = Modifier.clip(RoundedCornerShape(999.dp)).accentFill(on, LatentColors.Surface)
+                                            modifier = Modifier.pressIn().clip(RoundedCornerShape(999.dp)).accentFill(on, LatentColors.Surface)
                                                 .combinedClickable(onClick = { Haptics.tick(context); set { copy(paper = id) } }).padding(horizontal = 10.dp, vertical = 5.dp))
                                     }
                                 }
@@ -1809,7 +1810,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                                 Toggle("GPU preview (experimental)", recipe.gpuPreview) { setAll { copy(gpuPreview = it) } }
                                 Note("GPU is for previews only, by the engine's design: its maths is not identical across chip makers, so exports stay on the CPU. It covers the scan stage, and self-checks against the CPU on this device before it is used.")
                                 Text(if (asks.gpuTest.isEmpty()) "Measure GPU vs CPU" else asks.gpuTest, color = LatentColors.AmberInk, fontSize = 11.sp,
-                                    modifier = Modifier.clip(RoundedCornerShape(999.dp)).accentFill().combinedClickable(onClick = {
+                                    modifier = Modifier.pressIn().clip(RoundedCornerShape(999.dp)).accentFill().combinedClickable(onClick = {
                                         val busy = com.celestial.latent.develop.DevelopQueue.queued > 0
                                         if (rendering || fullRunning || busy) {
                                             asks.gpuTest = "wait until nothing is developing, and give the phone a minute to cool"
@@ -1846,7 +1847,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
         // A failed full-size develop says so, here, until it is tapped away or the next one starts.
         fullError?.let { e ->
             Text(e, color = LatentColors.AmberInk, fontSize = 11.sp,
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(top = 6.dp).clip(RoundedCornerShape(8.dp))
+                modifier = Modifier.pressIn().fillMaxWidth().padding(horizontal = 18.dp).padding(top = 6.dp).clip(RoundedCornerShape(8.dp))
                     .accentFill().combinedClickable(onClick = { fullError = null })
                     .padding(horizontal = 12.dp, vertical = 8.dp))
         }
@@ -1923,7 +1924,7 @@ private fun Head(title: String, active: Boolean?, onActive: (Boolean) -> Unit) {
         // 108a: a section's switch stays a word (ON / OFF) — a setting inside it is a small switch, see Toggle.
         // OFF is TextDim, not Line, so it can be read.
         if (active != null) Text(if (active) "ON" else "OFF", color = if (active) LatentColors.Amber else LatentColors.TextDim, fontSize = 10.sp, letterSpacing = 1.5.sp,
-            modifier = Modifier.combinedClickable(onClick = { Haptics.tick(context); onActive(!active) }).padding(horizontal = 6.dp, vertical = 2.dp))
+            modifier = Modifier.pressIn().combinedClickable(onClick = { Haptics.tick(context); onActive(!active) }).padding(horizontal = 6.dp, vertical = 2.dp))
     }
 }
 
@@ -1939,7 +1940,7 @@ private fun Note(text: String) {
 @Composable
 private fun Toggle(label: String, value: Boolean, onChange: (Boolean) -> Unit) {
     val context = LocalContext.current
-    Row(Modifier.fillMaxWidth().combinedClickable(onClick = { Haptics.tick(context); onChange(!value) }).padding(vertical = 10.dp),
+    Row(Modifier.pressIn().fillMaxWidth().combinedClickable(onClick = { Haptics.tick(context); onChange(!value) }).padding(vertical = 10.dp),
         horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
         Text(label, color = LatentColors.Text, fontSize = 11.sp, modifier = Modifier.weight(1f, fill = false).padding(end = 12.dp))
         // 108a: a setting is a small switch, so it no longer looks like a section's ON / OFF (Head)
@@ -1958,7 +1959,7 @@ private fun Chips(options: List<String>, selected: String, names: Map<String, St
         options.forEach { o ->
             val on = o == selected
             Text(names[o] ?: o.replace('_', ' '), color = if (on) LatentColors.AmberInk else LatentColors.Text, fontSize = 10.sp,
-                modifier = Modifier.raised(RoundedCornerShape(999.dp), 2.dp).clip(RoundedCornerShape(999.dp)).accentFill(on, LatentColors.Surface)
+                modifier = Modifier.pressIn().raised(RoundedCornerShape(999.dp), 2.dp).clip(RoundedCornerShape(999.dp)).accentFill(on, LatentColors.Surface)
                     .combinedClickable(onClick = { Haptics.tick(context); onSelect(o) }).padding(horizontal = 10.dp, vertical = 5.dp))
         }
     }

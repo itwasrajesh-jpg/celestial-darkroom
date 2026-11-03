@@ -29,6 +29,7 @@ import com.celestial.latent.develop.Layer
 import com.celestial.latent.develop.LayerLooks
 import com.celestial.latent.develop.Layers
 import com.celestial.latent.ui.LatentColors
+import com.celestial.latent.ui.pressIn
 import com.celestial.latent.ui.accentFill
 import com.celestial.latent.ui.raised
 
@@ -94,7 +95,7 @@ internal fun TargetChip(label: String, tint: Int?, on: Boolean, enabled: Boolean
     val context = LocalContext.current
     val tapNow by rememberUpdatedState(onTap)
     Row(
-        Modifier.raised(RoundedCornerShape(999.dp), 2.dp).clip(RoundedCornerShape(999.dp)).accentFill(on, LatentColors.Surface)
+        Modifier.pressIn().raised(RoundedCornerShape(999.dp), 2.dp).clip(RoundedCornerShape(999.dp)).accentFill(on, LatentColors.Surface)
             .pointerInput(label, on, enabled) { detectTapGestures(onTap = { if (enabled) { Haptics.tick(context); tapNow() } }) }
             .padding(horizontal = 10.dp, vertical = 5.dp),
         verticalAlignment = Alignment.CenterVertically,
