@@ -3077,7 +3077,7 @@ private fun Chip(label: String, on: Boolean, enabled: Boolean = true, choice: Bo
                 if (!enabled) return@detectTapGestures
                 Haptics.tick(context)
                 // 111e: in a row of choices the pill moves first, then the (re-rendering) change follows
-                if (choice && glide != null && motionOn()) { glide.pick(label); scope.launch { afterPill(); tapNow() } } else tapNow()
+                if (choice && glide != null && motionOn()) { glide.pick(label); scope.launch { glide.afterPill(); tapNow() } } else tapNow()
             }) }
             .padding(horizontal = 10.dp, vertical = 5.dp),
     )

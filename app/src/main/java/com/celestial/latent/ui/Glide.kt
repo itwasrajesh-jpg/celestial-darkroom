@@ -126,7 +126,7 @@ private fun GlideMoverEffect(g: Glide, selected: Any?) {
     val pending = g.pending
     LaunchedEffect(pending, selected) {
         if (pending == null) return@LaunchedEffect
-        if (pending != selected) delay(600)
+        if (pending != selected) delay(1000)
         g.pending = null
     }
     val want = pending ?: selected
@@ -149,8 +149,25 @@ private fun GlideMoverEffect(g: Glide, selected: Any?) {
     }
 }
 
-/** 111e: wait until the pill has had a clean frame to start moving, then do the tap's (heavier) work. */
-suspend fun afterPill() { withFrameNanos { }; withFrameNanos { } }
+/**
+ * 111f: wait until the pill has (nearly) landed on the tapped choice, then let the tap's work run. 111e waited only
+ * two frames, and APPLY TO's layer switch froze the screen with the pill hardly moved, so it still seemed to wait
+ * for the layer. Gives up after ~0.35 s (at the user's pace), or at once when the pill never starts.
+ */
+suspend fun Glide.afterPill() {
+    val t0 = withFrameNanos { it }
+    var started = false
+    while (true) {
+        val t = withFrameNanos { it }
+        val ms = (t - t0) / 1_000_000L
+        val running = left.isRunning || right.isRunning
+        if (running) started = true
+        if (ms > Touch.ms(350)) return
+        if (!started) { if (ms > 120) return else continue }
+        val near = kotlin.math.abs(left.value - left.targetValue) < 3f && kotlin.math.abs(right.value - right.targetValue) < 3f
+        if (!running || near) return
+    }
+}
 
 /** The moving part of [glideHost], as a composed modifier (it needs a coroutine to run the springs). */
 private fun GlideMover(g: Glide, selected: Any?): Modifier = Modifier.composed {
