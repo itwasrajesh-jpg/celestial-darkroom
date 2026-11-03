@@ -236,8 +236,8 @@ internal fun LayersStep(
             depthRanks = depthRanks, selectPicture = selectPicture,
             depthSplit = depthSplit, onDepthSplit = onDepthSplit, depthFix = depthFix, onDepthFix = onDepthFix,
             // 109b: for the open layer the selection goes through the brush (commit), so it shows and undoes
-            selectUse = if (sel == null || ui.newBySelect) Pair<String, ((ExposureMap) -> Unit)?>("make it a layer") { m -> ui.newBySelect = false; add("SUBJECT", m) }
-                        else Pair<String, ((ExposureMap) -> Unit)?>("use for ${sel.name}", null),
+            selectUse = if (sel == null || ui.newBySelect) Pair<String, ((ExposureMap, Boolean) -> Unit)?>("make it a layer") { m, inverted -> ui.newBySelect = false; add(if (inverted) "BACKGROUND" else "SUBJECT", m) }
+                        else Pair<String, ((ExposureMap, Boolean) -> Unit)?>("use for ${sel.name}", null),
             openSelectKey = ui.selectTick,
             startShowMask = sel != null && !ui.showAll,
             onBefore = { b -> ui.picture = b },
