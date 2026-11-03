@@ -17,6 +17,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
@@ -252,6 +253,25 @@ fun Modifier.litEdge(shape: Shape = RoundedCornerShape(12.dp), strength: Float =
 
 /** A floating thing: shadow under it, lit edge on top. */
 fun Modifier.floating(shape: Shape = RoundedCornerShape(12.dp), lift: Dp = 6.dp): Modifier = raised(shape, lift).litEdge(shape)
+
+/**
+ * 112e: [floating] for a card that a gliding pill passes under ([cover] = how much of it the pill covers, 0..1).
+ * The pill is drawn by the row, BELOW the card, and Android draws a card's shadow through a see-through card,
+ * so a covered card's own shadow greyed the pill's edges into a second, offset frame (#297). Here the card's
+ * shadow and lit edge fade out as the pill covers it; the pill brings its own shadow ([GlideRow] lift).
+ * [cover] is read in the layer block, so the glide does not recompose the card for its shadow.
+ */
+fun Modifier.floatingUnder(shape: Shape, lift: Dp, cover: () -> Float): Modifier {
+    val p = LatentColors.palette
+    if (!p.depth) return this
+    return graphicsLayer {
+        shadowElevation = lift.toPx() * (1f - cover()).coerceIn(0f, 1f)
+        this.shape = shape
+        clip = false
+        ambientShadowColor = p.shadow
+        spotShadowColor = p.shadow
+    }.litEdge(shape, (1f - cover()).coerceIn(0f, 1f))
+}
 
 /** Light falling from the top-left corner, as in the proofs. Draw it over a background. */
 fun Modifier.glow(strength: Float = 1f): Modifier {
