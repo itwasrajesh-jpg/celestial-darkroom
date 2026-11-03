@@ -784,8 +784,10 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
     }
 
     fun pickLook(id: String, look: Recipe) {
-        // 110a: picking a film after start fresh develops it as it comes, on the whole photo
-        if (op.noFilm) { op.noFilm = false; op.applyTo = null }
+        // 110a: picking a film after NO FILM develops it as it comes. 110c: where APPLY TO says: on
+        // a layer, that layer takes the look and the rest of the photo its own film as it comes (a photo
+        // cannot be part without film); it used to jump back to ALL and give the whole photo the look.
+        if (op.noFilm) op.noFilm = false
         val l = op.layers.firstOrNull { it.id == op.applyTo }
         if (l != null) {
             // 109c: on the chosen layer only, from the look it was on
@@ -1082,8 +1084,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                         modifier = Modifier.pressIn().clip(RoundedCornerShape(999.dp)).accentFill(on, Color.Transparent)
                             .combinedClickable(onClick = {
                                 if (!on) Haptics.tick(context)
-                                // 110a: PRINT works on a film: after start fresh it takes the photo's own, as it comes
-                                if (label == "PRINT" && op.noFilm) op.noFilm = false
+                                // 110d: NO FILM holds in PRINT too (110a quietly put the photo's own film back here)
                                 printing = label == "PRINT"
                             }).padding(horizontal = 9.dp, vertical = 3.dp))
                 }
@@ -1109,7 +1110,9 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
         // PRINT swaps the photo and controls for the enlarger; the header, print size and develop
         // bar stay. A crossfade, so it reads as one room changing, not a new screen.
         Crossfade(targetState = printing, animationSpec = tween(320), modifier = Modifier.fillMaxWidth().weight(1f), label = "darkroom mode") { inPrint ->
-            if (inPrint) androidx.compose.runtime.CompositionLocalProvider(LocalPanelSplit provides panelSplit) {
+            // 110d: with no film PRINT has nothing to print: the plain photo, and the way to a film
+            if (inPrint && op.noFilm) NoFilmPrint(if (originalFraming == framing.key()) original else null) { printing = false }
+            else if (inPrint) androidx.compose.runtime.CompositionLocalProvider(LocalPanelSplit provides panelSplit) {
                 PrintPanel(
                     recipe = recipe,
                     memory = printMemory,
@@ -2002,6 +2005,30 @@ private fun Modifier.waitsForFilm(on: Boolean): Modifier = if (!on) this else th
             while (true) awaitPointerEvent(androidx.compose.ui.input.pointer.PointerEventPass.Initial).changes.forEach { it.consume() }
         }
     }
+
+/**
+ * 110d: PRINT while the photo has no film (NO FILM in NEGATIVE). Every PRINT step prints a film
+ * negative on paper, so with no film they wait: the photo as shot (exactly the Before), and a way back
+ * to NEGATIVE to pick a film. Nothing is applied behind your back.
+ */
+@Composable
+private fun NoFilmPrint(plain: Bitmap?, onPickFilm: () -> Unit) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    Column(Modifier.fillMaxSize().background(LatentColors.Background)) {
+        Box(Modifier.fillMaxWidth().weight(1f).padding(horizontal = 18.dp, vertical = 10.dp).background(LatentColors.Mat), contentAlignment = Alignment.Center) {
+            if (plain != null) Image(plain.asImageBitmap(), contentDescription = "The photo as shot", contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize())
+            Text("NO FILM · AS SHOT", color = Color(0xE6FFFFFF), fontSize = 10.sp, letterSpacing = 1.5.sp, modifier = Modifier.align(Alignment.TopStart).padding(12.dp))
+        }
+        Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(top = 6.dp, bottom = 18.dp)) {
+            Text("NO FILM", color = LatentColors.Amber, fontSize = 10.sp, letterSpacing = 1.5.sp)
+            Text("PRINT makes a print from a film negative, so its steps wait until the photo has a film. Pick one in NEGATIVE and everything here is ready for it.",
+                color = LatentColors.Text, fontSize = 12.sp, lineHeight = 17.sp, modifier = Modifier.padding(top = 4.dp, bottom = 12.dp))
+            Text("Pick a film", color = LatentColors.AmberInk, fontSize = 13.sp,
+                modifier = Modifier.clip(RoundedCornerShape(999.dp)).accentFill()
+                    .combinedClickable(onClick = { Haptics.tick(context); onPickFilm() }).padding(horizontal = 22.dp, vertical = 10.dp))
+        }
+    }
+}
 
 /**
  * The film's own look for "Reset to film" (71a): the look chosen in the darkroom, else the camera's
