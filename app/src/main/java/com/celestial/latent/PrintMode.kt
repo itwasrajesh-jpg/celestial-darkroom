@@ -101,6 +101,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInParent
 import kotlinx.coroutines.withContext
 import java.util.Locale
 import kotlin.math.abs
@@ -389,15 +391,37 @@ private fun StepIndicator(active: Int, available: Int, onSelect: (Int) -> Unit, 
             if (!fits) scroll.animateScrollTo((widths.take(active).sum() * k + gap * active - gap * 2).toInt().coerceAtLeast(0))
         }
         // 110a: when the row scrolls, each end with more steps beyond it fades out, so it reads as scrollable
-        Row(if (fits) Modifier.fillMaxWidth() else Modifier.fillMaxWidth().fadeEnds(scroll).horizontalScroll(scroll),
+        // 112: one underline glides from step to step (its leading end runs ahead, so it stretches as it goes)
+        val stepX = remember { androidx.compose.runtime.mutableStateMapOf<Int, Float>() }
+        val barL = remember { androidx.compose.animation.core.Animatable(Float.NaN) }
+        val barR = remember { androidx.compose.animation.core.Animatable(Float.NaN) }
+        val barW = with(density) { 40.dp.toPx() }
+        val target = stepX[active]
+        LaunchedEffect(active, target) {
+            if (target == null) return@LaunchedEffect
+            if (barL.value.isNaN() || !com.celestial.latent.motionOn()) { barL.snapTo(target); barR.snapTo(target + barW); return@LaunchedEffect }
+            val right = target > barL.value
+            kotlinx.coroutines.coroutineScope {
+                launch { barL.animateTo(target, com.celestial.latent.ui.Touch.spring(0.8f, if (right) 350f else 800f)) }
+                launch { barR.animateTo(target + barW, com.celestial.latent.ui.Touch.spring(0.8f, if (right) 800f else 350f)) }
+            }
+        }
+        Row((if (fits) Modifier.fillMaxWidth() else Modifier.fillMaxWidth().fadeEnds(scroll).horizontalScroll(scroll))
+            .drawWithContent {
+                drawContent()
+                val l = barL.value; val r = barR.value
+                if (l.isNaN() || r.isNaN()) return@drawWithContent
+                val h = 2.dp.toPx()
+                drawRoundRect(LatentColors.Amber, androidx.compose.ui.geometry.Offset(l, size.height - h),
+                    androidx.compose.ui.geometry.Size((r - l).coerceAtLeast(h), h), androidx.compose.ui.geometry.CornerRadius(h / 2))
+            },
             horizontalArrangement = if (fits) Arrangement.SpaceBetween else Arrangement.spacedBy(8.dp)) {
             steps.forEachIndexed { i, label ->
                 val on = i == active
-                val bar by animateFloatAsState(if (on) 1f else 0f, tween(260), label = "step")
-                Column(Modifier.pressIn().pointerInput(i) { detectTapGestures(onTap = { onSelect(i) }) }) {
+                Column(Modifier.onGloballyPositioned { stepX[i] = it.positionInParent().x }.pressIn().pointerInput(i) { detectTapGestures(onTap = { onSelect(i) }) }) {
                     Text("${i + 1}  $label", color = when { on -> LatentColors.Amber; i < available -> LatentColors.TextDim; else -> LatentColors.Line },
                         fontSize = (10f * k).sp, letterSpacing = (1.2f * k).sp, maxLines = 1, softWrap = false)
-                    Box(Modifier.padding(top = 4.dp).height(2.dp).width((40 * bar).dp).clip(RoundedCornerShape(1.dp)).accentFill())
+                    Box(Modifier.padding(top = 4.dp).height(2.dp))
                 }
             }
         }
