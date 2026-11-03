@@ -108,7 +108,7 @@ object Layers {
     fun key(layers: List<Layer>?): String = if (!wanted(layers)) "-" else layers!!.filter { it.acts }.sortedBy { it.id }.joinToString(";") { it.key() }   // 109b: order changes nothing in the picture, so not the key either
 
     /** The guide: brightness as a 0..1 value (mid grey 0.5), so shadows and highlights both have edges to snap to. */
-    private fun guideOf(r: Float, g: Float, b: Float): Float {
+    internal fun guideOf(r: Float, g: Float, b: Float): Float {
         val y = LUM[0] * r + LUM[1] * g + LUM[2] * b
         // 109b: a broken pixel (NaN, infinite) must not reach the running sums, which would carry it
         // across the whole picture; it guides as black (NaN) or white (too bright)

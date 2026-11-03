@@ -33,20 +33,35 @@ data class LithLook(
     val glow: Float = 0.5f,
     /** A margin of bare paper round the picture, on the full-size print. */
     val border: Boolean = true,
+    /** 109h: the layer the lith is kept in (its id; 0: the whole print). Saved with the look. */
+    val layer: Int = 0,
+    /**
+     * 109h: that layer's area, a whole-picture mask, filled in just before developing ([within]);
+     * never saved. Null with a layer set: the layer is gone, and the lith covers the whole print.
+     */
+    val area: ExposureMap? = null,
 ) {
     val on: Boolean get() = paper in Lith.PAPERS
 
-    fun key(): String = listOf("v1", paper, "%.3f".format(Locale.US, snatch), "%.3f".format(Locale.US, grit),
-        "%.3f".format(Locale.US, burn), "%.3f".format(Locale.US, glow), if (border) "1" else "0").joinToString("|")
+    fun key(): String = listOf(if (layer != 0) "v2" else "v1", paper, "%.3f".format(Locale.US, snatch), "%.3f".format(Locale.US, grit),
+        "%.3f".format(Locale.US, burn), "%.3f".format(Locale.US, glow), if (border) "1" else "0").joinToString("|") +
+        // 109h: v2 adds the layer; a look on the whole print stays v1, so its saves read as before
+        (if (layer != 0) "|$layer" else "")
+
+    /** 109h: the look with its layer's area filled in from [layers], ready to develop. */
+    fun within(layers: List<Layer>?): LithLook =
+        if (!on || layer == 0) (if (area == null) this else copy(area = null))
+        else copy(area = layers?.firstOrNull { it.id == layer && !it.mask.isBlank }?.mask)
 
     companion object {
         fun parse(s: String?): LithLook {
             if (s.isNullOrEmpty()) return LithLook()
             return runCatching {
                 val p = s.split("|")
-                require(p[0] == "v1")
+                require(p[0] == "v1" || p[0] == "v2")
                 LithLook(p[1], p[2].toFloat().coerceIn(0f, 1f), p[3].toFloat().coerceIn(0f, 1f),
-                    p[4].toFloat().coerceIn(0f, 1f), p[5].toFloat().coerceIn(0f, 1f), p[6] == "1")
+                    p[4].toFloat().coerceIn(0f, 1f), p[5].toFloat().coerceIn(0f, 1f), p[6] == "1",
+                    layer = if (p[0] == "v2") p[7].toInt() else 0)
             }.getOrDefault(LithLook())
         }
     }
@@ -126,7 +141,13 @@ object Lith {
      * it — the paper's white is then measured, and remembered for the parts).
      */
     fun apply(data: ByteBuffer, w: Int, h: Int, cs: ColorSpace, look: LithLook, frame: Region? = null) {
+        val area = look.area
         if (!look.on || w <= 0 || h <= 0) return
+        if (area == null) { applyWhole(data, w, h, cs, look, frame); return }
+        LithArea.apply(data, w, h, frame, area) { applyWhole(data, w, h, cs, look, frame) }
+    }
+
+    private fun applyWhole(data: ByteBuffer, w: Int, h: Int, cs: ColorSpace, look: LithLook, frame: Region?) {
         val fr = frame ?: Region(0f, 0f, 1f, 1f)
         val ww = w / (fr.u1 - fr.u0); val wh = h / (fr.v1 - fr.v0)   // the whole picture, in these pixels
         val long = max(ww, wh)

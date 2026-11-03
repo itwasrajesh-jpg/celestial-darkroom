@@ -27,7 +27,12 @@ import com.celestial.latent.ui.LatentColors
 
 /** The IN row: ALL · each layer with its colour, and a line saying where painting lands. */
 @Composable
-internal fun PaintInRow(layers: List<Layer>, chosen: Int?, onPick: (Int?) -> Unit) {
+internal fun PaintInRow(
+    layers: List<Layer>, chosen: Int?,
+    everywhere: String = "Painting lands everywhere. Pick a layer to paint only inside it.",
+    inside: (String) -> String = { "Painting only in $it: strokes stop at its edges." },
+    onPick: (Int?) -> Unit,
+) {
     val on = layers.firstOrNull { it.id == chosen }
     Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 6.dp)) {
         Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically,
@@ -39,8 +44,7 @@ internal fun PaintInRow(layers: List<Layer>, chosen: Int?, onPick: (Int?) -> Uni
             }
         }
         Text(
-            if (on == null) "Painting lands everywhere. Pick a layer to paint only inside it."
-            else "Painting only in ${on.name}: strokes stop at its edges.",
+            if (on == null) everywhere else inside(on.name),
             color = LatentColors.TextDim, fontSize = 9.sp, lineHeight = 12.sp, modifier = Modifier.padding(top = 3.dp),
         )
     }
