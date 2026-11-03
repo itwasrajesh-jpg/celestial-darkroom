@@ -25,7 +25,7 @@ import com.celestial.latent.ui.LatentColors
 // mix (heavy fog IN SKY, light fog IN BACKGROUND). Proof: layers/109g-layers-in-print/.
 // ---------------------------------------------------------------------------------------------
 
-/** The IN row: ALL · each layer with its colour, and a line saying where painting lands. */
+/** The APPLY TO row (109g's IN row): ALL · each layer with its colour, and a line saying where painting lands. */
 @Composable
 internal fun PaintInRow(
     layers: List<Layer>, chosen: Int?,
@@ -37,7 +37,8 @@ internal fun PaintInRow(
     Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 6.dp)) {
         Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text("IN", color = LatentColors.TextDim, fontSize = 9.sp, letterSpacing = 1.5.sp, modifier = Modifier.padding(end = 2.dp))
+            // 110a: the same word as NEGATIVE's row (it said IN)
+            Text("APPLY TO", color = LatentColors.TextDim, fontSize = 9.sp, letterSpacing = 1.5.sp, modifier = Modifier.padding(end = 2.dp))
             TargetChip("ALL", null, on = on == null, enabled = true, own = false) { onPick(null) }
             for (l in layers) TargetChip(l.name, Layers.COLOURS[Math.floorMod(l.tint, Layers.COLOURS.size)], on = l.id == on?.id, enabled = true, own = false) {
                 onPick(if (l.id == on?.id) null else l.id)
