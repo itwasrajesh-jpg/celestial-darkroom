@@ -18,13 +18,15 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Switch
-import androidx.compose.material3.SwitchDefaults
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.material3.Text
@@ -62,7 +64,7 @@ fun SettingsScreen(settings: AppSettings, onChange: (AppSettings) -> Unit, onOpe
 
         // 74a: what every darkroom control does
         Section("App help")
-        Text("Every control explained, tab by tab ›", color = LatentColors.Amber, fontSize = 14.sp, modifier = Modifier.combinedClickable(onClick = onOpenHelp).padding(vertical = 10.dp))
+        LinkRow("Every control explained, tab by tab", onOpenHelp)
         Spacer(Modifier.height(12.dp))
 
         // 87a: the app's colours. Changes at once; photos and the darkroom's photo mat are never tinted.
@@ -189,12 +191,12 @@ fun SettingsScreen(settings: AppSettings, onChange: (AppSettings) -> Unit, onOpe
         counts?.let { (own, built) ->
             Text("$own of your ${if (own == 1) "recipe" else "recipes"} · $built ${if (built == 1) "film" else "films"} built here", color = LatentColors.Text, fontSize = 13.sp)
         }
-        Text("Export recipes ›", color = LatentColors.Amber, fontSize = 14.sp, modifier = Modifier.combinedClickable(onClick = onOpenRecipeExport).padding(vertical = 10.dp))
-        Text("Import recipes ›", color = LatentColors.Amber, fontSize = 14.sp, modifier = Modifier.combinedClickable(onClick = onOpenRecipeImport).padding(vertical = 10.dp))
+        LinkRow("Export recipes", onOpenRecipeExport)
+        LinkRow("Import recipes", onOpenRecipeImport)
         Text("Sends your darkroom recipes and the films you built, with their air and light, as one small file. Open it on the other phone with Import. Photos and per-photo edits stay here.", color = LatentColors.TextDim, fontSize = 12.sp)
 
         Section("Xiaomi processing (official extensions)")
-        Text("Portrait / Night test ›", color = LatentColors.Amber, fontSize = 14.sp, modifier = Modifier.combinedClickable(onClick = onOpenExtension).padding(vertical = 10.dp))
+        LinkRow("Portrait / Night test", onOpenExtension)
         Text("Xiaomi's own bokeh and night modes via Android's Camera Extensions. JPEG only, main camera.", color = LatentColors.TextDim, fontSize = 12.sp)
 
         Section("Diagnostics")
@@ -204,13 +206,13 @@ fun SettingsScreen(settings: AppSettings, onChange: (AppSettings) -> Unit, onOpe
             options = listOf("0" to "0", "6" to "6", "7" to "7", "Direct" to "direct"),
             selected = settings.cameraPath,
         ) { onChange(settings.copy(cameraPath = it)) }
-        Text("Vendor tags & opmode ›", color = LatentColors.Amber, fontSize = 14.sp, modifier = Modifier.combinedClickable(onClick = onOpenVendor).padding(vertical = 10.dp))
-        Text("Vendor probe (find & test keys) ›", color = LatentColors.Amber, fontSize = 14.sp, modifier = Modifier.combinedClickable(onClick = onOpenProbe).padding(vertical = 10.dp))
-        Text("Depth test (the depth model) ›", color = LatentColors.Amber, fontSize = 14.sp, modifier = Modifier.combinedClickable(onClick = onOpenDepth).padding(vertical = 10.dp))
-        Text("Logs (app logcat) ›", color = LatentColors.Amber, fontSize = 14.sp, modifier = Modifier.combinedClickable(onClick = onOpenLogs).padding(vertical = 10.dp))
-        Text("Camera report ›", color = LatentColors.Amber, fontSize = 14.sp, modifier = Modifier.combinedClickable(onClick = onOpenReport).padding(vertical = 10.dp))
+        LinkRow("Vendor tags & opmode", onOpenVendor)
+        LinkRow("Vendor probe (find & test keys)", onOpenProbe)
+        LinkRow("Depth test (the depth model)", onOpenDepth)
+        LinkRow("Logs (app logcat)", onOpenLogs)
+        LinkRow("Camera report", onOpenReport)
 
-        Text("About & credits ›", color = LatentColors.Amber, fontSize = 14.sp, modifier = Modifier.combinedClickable(onClick = onOpenAbout).padding(vertical = 10.dp))
+        LinkRow("About & credits", onOpenAbout)
         Spacer(Modifier.height(24.dp))
         Text("Celestial Darkroom v" + BuildConfig.VERSION_NAME + " · film modeling powered by spektrafilm", color = LatentColors.TextDim, fontSize = 11.sp)
     }
@@ -321,10 +323,8 @@ private fun ToggleRow(title: String, subtitle: String, value: Boolean, onChange:
             Text(title, color = LatentColors.TextBright, fontSize = 15.sp)
             Text(subtitle, color = LatentColors.TextDim, fontSize = 12.sp)
         }
-        Switch(
-            checked = value, onCheckedChange = onChange,
-            colors = SwitchDefaults.colors(checkedThumbColor = LatentColors.AmberInk, checkedTrackColor = LatentColors.Amber, uncheckedThumbColor = LatentColors.Text, uncheckedTrackColor = LatentColors.Surface),
-        )
+        Spacer(Modifier.width(12.dp))
+        LivingSwitch(value, onChange)
     }
 }
 
@@ -370,13 +370,66 @@ private fun SpeedRow() {
         }
         Text("How quickly buttons, pills and sliders answer your touch. 100% is the fastest; slow it to as little as half speed if you like it calmer. Off when the phone's animations are off.",
             color = LatentColors.TextDim, fontSize = 12.sp)
-        androidx.compose.material3.Slider(
+        // 112: the living slider (thumb grows while held, value bubble), a tick on each 10%
+        com.celestial.latent.ui.LivingSlider(
             value = speed, valueRange = com.celestial.latent.ui.Touch.SPEED_MIN..1f, steps = 4,
             onValueChange = { v ->
                 val r = Math.round(v * 10) / 10f
                 if (r != com.celestial.latent.ui.Touch.speed) { Haptics.tick(ctx); com.celestial.latent.ui.Touch.setSpeed(ctx, r) }
             },
-            colors = androidx.compose.material3.SliderDefaults.colors(thumbColor = LatentColors.Amber, activeTrackColor = LatentColors.SliderFill, inactiveTrackColor = LatentColors.SliderTrack),
+            label = { "${Math.round(it * 100)}%" }, detents = emptyList(),
         )
+    }
+}
+
+/** 112: a link row: sinks a little under the finger, and its arrow leans the way it goes. */
+@Composable
+private fun LinkRow(text: String, onClick: () -> Unit) {
+    val src = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+    val pressed by src.collectIsPressedAsState()
+    val lean by androidx.compose.animation.core.animateFloatAsState(if (pressed && com.celestial.latent.motionOn()) 1f else 0f,
+        com.celestial.latent.ui.Touch.spring(0.45f, 600f), label = "lean")
+    Row(Modifier.pressIn().combinedClickable(interactionSource = src, indication = null, onClick = onClick).padding(vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically) {
+        Text("$text ", color = LatentColors.Amber, fontSize = 14.sp)
+        Text("›", color = LatentColors.Amber, fontSize = 14.sp, modifier = Modifier.graphicsLayer { translationX = lean * 5.dp.toPx() })
+    }
+}
+
+/**
+ * 112: a living switch (approved proof touch-motion/screens2/9-settings-touch.mp4): the knob grows under the
+ * finger, stretches as it travels and settles with a spring; track, outline and knob cross over as it goes.
+ */
+@Composable
+internal fun LivingSwitch(checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
+    val ctx = LocalContext.current
+    val p = remember { androidx.compose.animation.core.Animatable(if (checked) 1f else 0f) }
+    LaunchedEffect(checked) {
+        val to = if (checked) 1f else 0f
+        if (com.celestial.latent.motionOn()) p.animateTo(to, com.celestial.latent.ui.Touch.spring(0.75f, 500f)) else p.snapTo(to)
+    }
+    val src = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+    val pressed by src.collectIsPressedAsState()
+    val press by androidx.compose.animation.core.animateFloatAsState(if (pressed && com.celestial.latent.motionOn()) 1f else 0f,
+        com.celestial.latent.ui.Touch.spring(1f, 1500f), label = "press")
+    val onNow by androidx.compose.runtime.rememberUpdatedState(onCheckedChange)
+    androidx.compose.foundation.Canvas(
+        Modifier.size(52.dp, 32.dp)
+            .combinedClickable(interactionSource = src, indication = null, onClick = { Haptics.tick(ctx); onNow(!checked) })
+    ) {
+        val v = p.value.coerceIn(0f, 1f)
+        val h = size.height; val w = size.width
+        drawRoundRect(androidx.compose.ui.graphics.lerp(LatentColors.Surface, LatentColors.Amber, v), cornerRadius = androidx.compose.ui.geometry.CornerRadius(h / 2))
+        val bw = 2.dp.toPx() * (1f - v)
+        if (bw > 0.1f) drawRoundRect(LatentColors.Line, topLeft = androidx.compose.ui.geometry.Offset(bw / 2, bw / 2),
+            size = androidx.compose.ui.geometry.Size(w - bw, h - bw), cornerRadius = androidx.compose.ui.geometry.CornerRadius(h / 2),
+            style = androidx.compose.ui.graphics.drawscope.Stroke(bw))
+        val d = (16f + 8f * v + 4f * press).dp.toPx()
+        val stretch = (kotlin.math.abs(p.velocity) * 1.5.dp.toPx()).coerceAtMost(10.dp.toPx())
+        val cx = h / 2 + (w - h) * v
+        val kw = d + stretch
+        drawRoundRect(androidx.compose.ui.graphics.lerp(LatentColors.Text, LatentColors.AmberInk, v),
+            topLeft = androidx.compose.ui.geometry.Offset(cx - kw / 2, h / 2 - d / 2), size = androidx.compose.ui.geometry.Size(kw, d),
+            cornerRadius = androidx.compose.ui.geometry.CornerRadius(d / 2))
     }
 }
