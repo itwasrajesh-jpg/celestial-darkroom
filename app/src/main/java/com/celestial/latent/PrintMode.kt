@@ -86,6 +86,10 @@ import androidx.compose.foundation.gestures.calculateCentroid
 import com.celestial.latent.develop.Region
 import com.celestial.latent.ui.LatentColors
 import com.celestial.latent.ui.pressIn
+import com.celestial.latent.ui.NumKind
+import com.celestial.latent.ui.Num
+import com.celestial.latent.ui.SliderOrder
+import com.celestial.latent.ui.LivingSlider
 import com.celestial.latent.ui.glideItem
 import com.celestial.latent.ui.LocalGlide
 import com.celestial.latent.ui.GlideRow
@@ -296,7 +300,7 @@ private fun TestStripStep(
         Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
             Chip("grain", on = recipe.grain) { onGrain(!recipe.grain, recipe.grainSizeUm2) }
             Text("finer", color = LatentColors.TextDim, fontSize = 10.sp, modifier = Modifier.padding(start = 10.dp))
-            androidx.compose.material3.Slider(
+            LivingSlider(
                 value = grainLive, onValueChange = { grainLive = it },
                 onValueChangeFinished = { onGrain(true, grainLive) }, valueRange = 0.05f..1.2f,
                 enabled = recipe.grain,
@@ -311,8 +315,8 @@ private fun TestStripStep(
         var amountLive by remember(recipe.grainAmount) { mutableStateOf(recipe.grainAmount) }
         Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("amount", color = if (recipe.grain) LatentColors.Text else LatentColors.TextDim, fontSize = 10.sp, modifier = Modifier.width(50.dp))
-            androidx.compose.material3.Slider(
-                value = amountLive, onValueChange = { amountLive = (it * 20f).roundToInt() / 20f },
+            LivingSlider(
+                value = amountLive, onValueChange = { amountLive = (it * 20f).roundToInt() / 20f }, label = { "${(it * 100f).roundToInt()}%" },
                 onValueChangeFinished = { onGrainAmount(amountLive) }, valueRange = 0f..1.5f,
                 enabled = recipe.grain,
                 colors = androidx.compose.material3.SliderDefaults.colors(thumbColor = LatentColors.Amber,
@@ -589,6 +593,8 @@ fun PrintPanel(
     onDevelopHold: (suspend androidx.compose.foundation.gestures.PressGestureScope.() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
+    // 111c: in Clay, each slider of the room takes the next pastel
+    SliderOrder.Group(Unit) {
     val context = LocalContext.current
     val cache = memory.cache
     var step by memory.step
@@ -865,6 +871,7 @@ fun PrintPanel(
             }
         }
     }
+}
 }
 
 /** Grid order: the current print, then the four straight colour moves, then the corners. */
@@ -1438,7 +1445,7 @@ private fun SettleSlider(left: String, right: String, value: Float, range: Close
     var live by remember(value) { mutableStateOf(value) }
     Row(verticalAlignment = Alignment.CenterVertically) {
         Text(left, color = LatentColors.TextDim, fontSize = 10.sp)
-        androidx.compose.material3.Slider(
+        LivingSlider(
             value = live, onValueChange = { live = it }, onValueChangeFinished = { onSettle(live) }, valueRange = range,
             colors = androidx.compose.material3.SliderDefaults.colors(thumbColor = LatentColors.Amber,
                 activeTrackColor = LatentColors.SliderFill, inactiveTrackColor = LatentColors.SliderTrackDim),
@@ -1601,7 +1608,7 @@ private fun LightColourRows(look: RaysLook, onLook: (RaysLook) -> Unit) {
                 Canvas(Modifier.fillMaxWidth().height(12.dp).padding(horizontal = 10.dp).clip(RoundedCornerShape(999.dp))) {
                     drawRect(androidx.compose.ui.graphics.Brush.horizontalGradient((0..12).map { k -> Color.hsv(k * 30f % 360f, 0.85f, 0.95f) }))
                 }
-                androidx.compose.material3.Slider(
+                LivingSlider(
                     value = hueLive, onValueChange = { hueLive = it }, onValueChangeFinished = { onLook(look.copy(hue = hueLive)) },
                     valueRange = 0f..360f,
                     colors = androidx.compose.material3.SliderDefaults.colors(thumbColor = LatentColors.Amber,
@@ -1725,7 +1732,7 @@ private fun FogColourRow(look: FogLook, picking: Boolean, onLook: (FogLook) -> U
                     val stops = (0..12).map { k -> Color.hsv(k * 30f % 360f, 0.55f, 0.95f) }
                     drawRect(androidx.compose.ui.graphics.Brush.horizontalGradient(stops))
                 }
-                androidx.compose.material3.Slider(
+                LivingSlider(
                     value = hueLive, onValueChange = { hueLive = it },
                     onValueChangeFinished = { onLook(look.copy(hue = hueLive)) }, valueRange = 0f..360f,
                     colors = androidx.compose.material3.SliderDefaults.colors(thumbColor = LatentColors.Amber,
@@ -1735,7 +1742,7 @@ private fun FogColourRow(look: FogLook, picking: Boolean, onLook: (FogLook) -> U
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("neutral", color = LatentColors.TextDim, fontSize = 10.sp)
-                androidx.compose.material3.Slider(
+                LivingSlider(
                     value = tintLive, onValueChange = { tintLive = it },
                     onValueChangeFinished = { onLook(look.copy(tint = tintLive)) }, valueRange = 0f..1f,
                     colors = sliderColours, modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
@@ -1748,7 +1755,7 @@ private fun FogColourRow(look: FogLook, picking: Boolean, onLook: (FogLook) -> U
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.size(14.dp).clip(RoundedCornerShape(999.dp)).background(Color(Fog.swatch(look.copy(warmth = warmthLive)))))
             Text("cool", color = LatentColors.TextDim, fontSize = 10.sp, modifier = Modifier.padding(start = 6.dp))
-            androidx.compose.material3.Slider(
+            LivingSlider(
                 value = warmthLive, onValueChange = { warmthLive = it },
                 onValueChangeFinished = { onLook(look.copy(warmth = warmthLive)) }, valueRange = -1f..1f,
                 colors = sliderColours, modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
@@ -1759,7 +1766,7 @@ private fun FogColourRow(look: FogLook, picking: Boolean, onLook: (FogLook) -> U
         var amountLive by remember(look.amount) { mutableStateOf(look.amount) }
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("amount", color = LatentColors.TextDim, fontSize = 10.sp)
-            androidx.compose.material3.Slider(
+            LivingSlider(
                 value = amountLive, onValueChange = { amountLive = it },
                 onValueChangeFinished = { onLook(look.copy(amount = (amountLive * 100f).roundToInt() / 100f)) },
                 valueRange = 0f..1f, colors = sliderColours, modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
@@ -1771,7 +1778,7 @@ private fun FogColourRow(look: FogLook, picking: Boolean, onLook: (FogLook) -> U
         var litLive by remember(look.lit) { mutableStateOf(look.lit) }
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("lit by lights", color = LatentColors.TextDim, fontSize = 10.sp)
-            androidx.compose.material3.Slider(
+            LivingSlider(
                 value = litLive, onValueChange = { litLive = it },
                 onValueChangeFinished = { onLook(look.copy(lit = (litLive * 20f).roundToInt() / 20f)) },
                 valueRange = 0f..1f, colors = sliderColours, modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
@@ -2970,7 +2977,7 @@ private fun AirRow(look: FogLook, ask: AirAsk, hasDepth: Boolean, filmAir: FogLo
         var scaleLive by remember(ask.scale) { mutableStateOf(ask.scale) }
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("thinner", color = LatentColors.TextDim, fontSize = 10.sp)
-            androidx.compose.material3.Slider(
+            LivingSlider(
                 value = scaleLive, onValueChange = { scaleLive = it },
                 onValueChangeFinished = { ask.scale = scaleLive; if (current != null) ask.ask(current) }, valueRange = 0.3f..2f,
                 enabled = hasDepth, colors = sliderColours, modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
@@ -3311,8 +3318,8 @@ private fun AgeSlider(name: String, what: String, value: Float, enabled: Boolean
     Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
         Text(name.uppercase(), color = if (enabled) LatentColors.Text else LatentColors.TextDim, fontSize = 10.sp, letterSpacing = 1.sp, modifier = Modifier.width(40.dp))
         Text(what, color = LatentColors.TextDim, fontSize = 9.sp, modifier = Modifier.width(40.dp))
-        androidx.compose.material3.Slider(
-            value = live, onValueChange = { live = (it * 20f).roundToInt() / 20f },
+        LivingSlider(
+            value = live, onValueChange = { live = (it * 20f).roundToInt() / 20f }, label = { "${(it * 100f).roundToInt()}%" },
             onValueChangeFinished = { onDone(live) }, valueRange = 0f..com.celestial.latent.develop.AgedPrint.MAX,
             enabled = enabled,
             colors = androidx.compose.material3.SliderDefaults.colors(thumbColor = LatentColors.Amber,
@@ -3353,9 +3360,9 @@ private fun WetSlider(name: String, value: Float, range: ClosedFloatingPointRang
     Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 2.dp), verticalAlignment = Alignment.CenterVertically) {
         Text(name, color = if (enabled) LatentColors.Text else LatentColors.TextDim, fontSize = 10.sp, modifier = Modifier.width(64.dp))
         Text(left, color = LatentColors.TextDim, fontSize = 9.sp)
-        androidx.compose.material3.Slider(
+        LivingSlider(
             value = live, onValueChange = { live = it }, onValueChangeFinished = { onDone(live) }, valueRange = range,
-            enabled = enabled,
+            enabled = enabled, label = label,
             colors = androidx.compose.material3.SliderDefaults.colors(thumbColor = LatentColors.Amber,
                 activeTrackColor = LatentColors.SliderFill, inactiveTrackColor = LatentColors.SliderTrackDim),
             modifier = Modifier.weight(1f).padding(horizontal = 6.dp),
@@ -3371,8 +3378,8 @@ private fun LithSlider(name: String, value: Float, enabled: Boolean, onDone: (Fl
     var live by remember(value) { mutableStateOf(value) }
     Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
         Text(name, color = if (enabled) LatentColors.Text else LatentColors.TextDim, fontSize = 10.sp, modifier = Modifier.width(50.dp))
-        androidx.compose.material3.Slider(
-            value = live, onValueChange = { live = (it * 20f).roundToInt() / 20f },
+        LivingSlider(
+            value = live, onValueChange = { live = (it * 20f).roundToInt() / 20f }, label = { "${(it * 100f).roundToInt()}%" },
             onValueChangeFinished = { onDone(live) }, valueRange = 0f..1f,
             enabled = enabled,
             colors = androidx.compose.material3.SliderDefaults.colors(thumbColor = LatentColors.Amber,

@@ -74,6 +74,10 @@ import com.celestial.latent.ui.Glyph
 import com.celestial.latent.ui.GlyphIcon
 import com.celestial.latent.ui.LatentColors
 import com.celestial.latent.ui.pressIn
+import com.celestial.latent.ui.NumKind
+import com.celestial.latent.ui.Num
+import com.celestial.latent.ui.SliderOrder
+import com.celestial.latent.ui.LivingSlider
 import com.celestial.latent.ui.glideItem
 import com.celestial.latent.ui.LocalGlide
 import com.celestial.latent.ui.GlideRow
@@ -930,8 +934,9 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                 Text(if (!glowOn) "Off · lith" else com.celestial.latent.develop.HdrGlow.label(hdrGlow) + (if (hdrGlow >= 0.125f) " stops" else ""),
                     color = if (glowOn) LatentColors.TextBright else LatentColors.Line, fontSize = 11.sp)
             }
-            Slider(
-                value = hdrGlow.coerceIn(0f, com.celestial.latent.develop.HdrGlow.MAX_STOPS),
+            LivingSlider(
+                value = hdrGlow.coerceIn(0f, com.celestial.latent.develop.HdrGlow.MAX_STOPS), detents = emptyList(),
+                label = { com.celestial.latent.develop.HdrGlow.label(Math.round(it * 4) / 4f) },
                 onValueChange = { v ->
                     val snapped = Math.round(v * 4) / 4f
                     if (snapped != hdrGlow) {
@@ -1554,7 +1559,8 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                         }
                     }
                     Column(Modifier.weight(1f).waitsForFilm(op.noFilm).verticalScroll(rememberScrollState()).padding(horizontal = 14.dp)) {
-                        when (tab) {
+                        // 111c: in Clay, each slider of a tab takes the next pastel
+                        SliderOrder.Group(tab) { when (tab) {
                             "light" -> {
                                 // 100a: the LIGHT tab (approved proof light-tab/proof/3-layout-*.jpg).
                                 // Exposure, meaning what you expect it to mean (moved here from FILM).
@@ -1844,7 +1850,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                                     }).padding(horizontal = 12.dp, vertical = 7.dp))
                                 Note("A hot phone downclocks hard, so measure when it is cool and idle — otherwise both numbers are just throttling.")
                             }
-                        }
+                        } }
                         Spacer(Modifier.height(8.dp))
                         Text(status + (if (lastRenderMs > 0) " · last ${lastRenderMs} ms" else ""), color = LatentColors.TextDim, fontSize = 10.sp)
                         if (tab == "develop") developPage()
@@ -1871,7 +1877,6 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
 }
 
 /** 102a: how close to 0 a [S] with snap pulls the value onto 0, as a share of its range. */
-private const val SNAP_ZONE = 0.025f
 
 /**
  * A slider with its name and value. [snap] (102a, the LIGHT tab): near 0 the value clicks onto 0 with
@@ -1880,49 +1885,20 @@ private const val SNAP_ZONE = 0.025f
  */
 @Composable
 private fun S(label: String, value: Float, min: Float, max: Float, fmt: String, enabled: Boolean = true,
-              snap: Boolean = false, onHold: ((Boolean) -> Unit)? = null, onChange: (Float) -> Unit) {
-    val context = LocalContext.current
-    var last by remember { mutableStateOf(value) }
-    val snaps = snap && min < 0f && max > 0f
-    var snapped by remember { mutableStateOf(false) }
-    val snapGlow = remember { androidx.compose.animation.core.Animatable(0f) }
-    val scope = rememberCoroutineScope()
+              @Suppress("UNUSED_PARAMETER") snap: Boolean = false, onHold: ((Boolean) -> Unit)? = null, onChange: (Float) -> Unit) {
+    // 111c: one living slider (knob grows, value bubble, click points) and one way of writing numbers (Num)
+    val kind = if (fmt.contains('%')) Num.kindOf(fmt, min, max) else if (min < 0f) NumKind.SIGNED else NumKind.AMOUNT
     Column(Modifier.padding(vertical = 6.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Text(label, color = if (enabled) LatentColors.Text else LatentColors.Line, fontSize = 11.sp)
-            RollingText(String.format(fmt, value), color = if (enabled) LatentColors.TextBright else LatentColors.Line, fontSize = 11.sp)
+            RollingText(Num.format(fmt, value, min, max), color = if (enabled) LatentColors.TextBright else LatentColors.Line, fontSize = 11.sp)
         }
-        Box {
-            Slider(
-                value = value.coerceIn(min, max), onValueChange = { raw ->
-                    var v = raw
-                    if (snaps) {
-                        if (Math.abs(v) < (max - min) * SNAP_ZONE) {
-                            v = 0f
-                            if (!snapped) {
-                                snapped = true; Haptics.tick(context); last = 0f
-                                if (motionOn()) scope.launch { snapGlow.snapTo(1f); snapGlow.animateTo(0f, tween(450)) }
-                            }
-                        } else snapped = false
-                    }
-                    if (Math.abs(v - last) > (max - min) / 40f) { Haptics.tick(context); last = v }
-                    onHold?.invoke(true)
-                    onChange(v)
-                },
-                onValueChangeFinished = { onHold?.invoke(false) },
-                valueRange = min..max, enabled = enabled,
-                colors = SliderDefaults.colors(thumbColor = LatentColors.Amber, activeTrackColor = LatentColors.SliderFill, inactiveTrackColor = LatentColors.SliderTrack),
-            )
-            // where 0 is, as a small dot on the track, lit for a moment as the value clicks onto it
-            if (snaps) androidx.compose.foundation.Canvas(Modifier.matchParentSize()) {
-                val inset = 2.dp.toPx()
-                val x = inset + (-min / (max - min)) * (size.width - 2 * inset)
-                val c = androidx.compose.ui.geometry.Offset(x, size.height / 2f)
-                val g = snapGlow.value
-                if (g > 0f) drawCircle(LatentColors.Amber.copy(alpha = 0.35f * g), radius = 6.dp.toPx() + 6.dp.toPx() * (1f - g), center = c)
-                if (Math.abs(value) > 1e-4f) drawCircle(LatentColors.TextBright.copy(alpha = 0.7f), radius = 2.dp.toPx(), center = c)
-            }
-        }
+        LivingSlider(
+            value = value, onValueChange = { onHold?.invoke(true); onChange(it) },
+            onValueChangeFinished = { onHold?.invoke(false) },
+            valueRange = min..max, enabled = enabled, kind = kind,
+            label = { Num.format(fmt, it, min, max) },
+        )
     }
 }
 
