@@ -86,6 +86,9 @@ import androidx.compose.foundation.gestures.calculateCentroid
 import com.celestial.latent.develop.Region
 import com.celestial.latent.ui.LatentColors
 import com.celestial.latent.ui.pressIn
+import com.celestial.latent.ui.glideItem
+import com.celestial.latent.ui.LocalGlide
+import com.celestial.latent.ui.GlideRow
 import com.celestial.latent.ui.accentFill
 import com.celestial.latent.ui.OnPhoto
 import com.celestial.latent.ui.raised
@@ -1462,7 +1465,7 @@ private fun RaysLightTab(
         }
         // which light: a few lights per photo, chosen to enhance — not one on every lamp
         Row(Modifier.fillMaxWidth().padding(bottom = 6.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-            Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+            GlideRow("${selected + 1}", horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text("light", color = LatentColors.TextDim, fontSize = 11.sp, modifier = Modifier.padding(end = 2.dp))
                 for (i in 0 until count) Chip("${i + 1}", on = i == selected) { onSelect(i) }
                 if (count < 1 + com.celestial.latent.develop.ExtraLights.MAX) Chip("+", on = false) { onAdd() }
@@ -1471,7 +1474,7 @@ private fun RaysLightTab(
         }
         // the kind of light, as in 3D software; switching keeps where it is (only a sun may be off the
         // picture, so another kind comes back to the nearest edge)
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+        GlideRow(look.type, Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
             listOf("point", "sun", "spot", "area").forEach { t ->
                 Chip(t, on = look.type == t) {
                     val at = if (t == "sun") look.u to look.v else keep(look.u, look.v)
@@ -1480,7 +1483,7 @@ private fun RaysLightTab(
             }
         }
         Row(Modifier.fillMaxWidth().padding(top = 6.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            GlideRow(when (look.mode) { "add" -> "add light"; "gaps" -> "through gaps"; else -> null }, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 Chip("add light", on = look.mode == "add") { onLook(look.copy(mode = "add")) }
                 Chip("through gaps", on = look.mode == "gaps") { onLook(look.copy(mode = "gaps")) }
                 // a sun can shine in through a window: a rectangle to fit over it, the sun placed beyond
@@ -1706,7 +1709,8 @@ private fun FogColourRow(look: FogLook, picking: Boolean, onLook: (FogLook) -> U
         activeTrackColor = LatentColors.SliderFill, inactiveTrackColor = LatentColors.SliderTrackDim)
     Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 6.dp)) {
         // seven choices: wider than a phone, so they scroll; switching keeps warmth, amount, hue, tint
-        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+        GlideRow(if (picking) "tap photo" else if (look.mode == "picked") "from photo" else look.mode,
+            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
             Chip("auto", on = look.mode == "auto") { onLook(look.copy(mode = "auto")) }
             Fog.PRESETS.forEach { (name, _) -> Chip(name, on = look.mode == name) { onLook(look.copy(mode = name)) } }
             Chip("colour", on = look.mode == "colour") { onLook(look.copy(mode = "colour")) }
@@ -2437,7 +2441,7 @@ internal fun PaintStep(
             Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 6.dp),
             horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically,
         ) {
-            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            GlideRow(if (plus) spec.plusLabel else spec.minusLabel, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 listOf(false to spec.minusLabel, true to spec.plusLabel).forEach { (b, label) -> Chip(label, on = plus == b) { plus = b } }
                 if (spec.gradientAmount != null) Chip("gradient", on = gradientTool) { gradientTool = !gradientTool }
             }
@@ -2457,7 +2461,7 @@ internal fun PaintStep(
             Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 6.dp),
             horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically,
         ) {
-            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            GlideRow((spec.strengths?.map { it.first } ?: listOf("gentle", "medium", "strong")).getOrNull(strength), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 (spec.strengths?.map { it.first } ?: listOf("gentle", "medium", "strong")).forEachIndexed { i, label -> Chip(label, on = strength == i) { strength = i } }
             }
             Chip("mask", on = showMask) { showMask = !showMask }
@@ -2789,7 +2793,7 @@ internal fun PaintStep(
         // (foreground warm, background cool), and fix — paint on the photo to correct it, on any tab.
         if (!selOpen && (depthRanks != null || depthSplit != null)) Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 6.dp)) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+                GlideRow(when (depthSide) { 1 -> "near"; 2 -> "far"; else -> null }, horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text("depth", color = LatentColors.TextDim, fontSize = 10.sp, letterSpacing = 1.sp)
                     // 110a: near / far, as "+ layer" names them ("background" is also a layer's name)
                     Chip("near", on = depthSide == 1) { onDepthSide(if (depthSide == 1) 0 else 1) }
@@ -3049,13 +3053,17 @@ private fun OutlinedChip(label: String, onTap: () -> Unit) {
 @Composable
 private fun Chip(label: String, on: Boolean, enabled: Boolean = true, onTap: () -> Unit) {
     val context = LocalContext.current
+    // 111b: inside a gliding row the pill is the row's; the chip fades its own background under it
+    val glide = LocalGlide.current
+    val off = if (enabled) LatentColors.Text else LatentColors.Line
     // 109b: the newest action (the gesture below is set up once per label/state; LAYERS' copy, move and
     // delete chips would otherwise act on the list of layers as it was when the menu opened)
     val tapNow by rememberUpdatedState(onTap)
     Text(
         label, fontSize = 11.sp,
-        color = when { on -> LatentColors.AmberInk; enabled -> LatentColors.Text; else -> LatentColors.Line },
-        modifier = Modifier.pressIn().raised(RoundedCornerShape(999.dp), 2.dp).clip(RoundedCornerShape(999.dp)).accentFill(on, LatentColors.Surface)
+        color = glide?.ink(label, off, on) ?: if (on) LatentColors.AmberInk else off,
+        modifier = Modifier.pressIn().raised(RoundedCornerShape(999.dp), 2.dp).clip(RoundedCornerShape(999.dp))
+            .then(if (glide != null) Modifier.glideItem(glide, label, LatentColors.Surface, on) else Modifier.accentFill(on, LatentColors.Surface))
             .pointerInput(label, on, enabled) { detectTapGestures(onTap = { if (enabled) { Haptics.tick(context); tapNow() } }) }
             .padding(horizontal = 10.dp, vertical = 5.dp),
     )

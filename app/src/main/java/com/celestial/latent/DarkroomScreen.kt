@@ -74,6 +74,9 @@ import com.celestial.latent.ui.Glyph
 import com.celestial.latent.ui.GlyphIcon
 import com.celestial.latent.ui.LatentColors
 import com.celestial.latent.ui.pressIn
+import com.celestial.latent.ui.glideItem
+import com.celestial.latent.ui.LocalGlide
+import com.celestial.latent.ui.GlideRow
 import com.celestial.latent.ui.accentFill
 import com.celestial.latent.ui.OnPhoto
 import com.celestial.latent.ui.glow
@@ -1075,13 +1078,15 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
         Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 10.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             GlyphIcon(Glyph.BACK, LatentColors.Text, Modifier.pressIn().combinedClickable(onClick = onBack).padding(horizontal = 6.dp), 22.dp)
             Text("DARKROOM", color = LatentColors.Text, fontSize = 12.sp, letterSpacing = 4.sp)
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            // 111b: the pill glides between the two rooms
+            GlideRow(selected = if (printing) "PRINT" else "NEGATIVE", horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                val glide = LocalGlide.current!!
                 // 108a: SIMPLE and FULL showed the same tabs (FULL added three FILM controls), so they are one
                 // room now, NEGATIVE: the negative is shaped here, then printed in PRINT
                 listOf("NEGATIVE", "PRINT").forEach { label ->
                     val on = if (label == "PRINT") printing else !printing
-                    Text(label, color = if (on) LatentColors.AmberInk else LatentColors.TextDim, fontSize = 10.sp, letterSpacing = 1.5.sp,
-                        modifier = Modifier.pressIn().clip(RoundedCornerShape(999.dp)).accentFill(on, Color.Transparent)
+                    Text(label, color = glide.ink(label, LatentColors.TextDim), fontSize = 10.sp, letterSpacing = 1.5.sp,
+                        modifier = Modifier.pressIn().clip(RoundedCornerShape(999.dp)).glideItem(glide, label, Color.Transparent)
                             .combinedClickable(onClick = {
                                 if (!on) Haptics.tick(context)
                                 // 110d: NO FILM holds in PRINT too (110a quietly put the photo's own film back here)
@@ -1527,21 +1532,23 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                         }
                     }
                     // Tabs (110a: waiting, dimmed, while the photo has no film)
-                    Row(Modifier.fillMaxWidth().waitsForFilm(op.noFilm).horizontalScroll(rememberScrollState()).padding(horizontal = 14.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    // 111b: one pill glides between the tabs
+                    GlideRow(tab, Modifier.fillMaxWidth().waitsForFilm(op.noFilm).horizontalScroll(rememberScrollState()).padding(horizontal = 14.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), corner = 12.dp) {
+                        val glide = LocalGlide.current!!
                         TABS.forEach { (id, label) ->
-                            val on = id == tab
                             // 89c: each tab its glyph over its name (approved proof visual-3/proof/4-icons-in-place.jpg)
-                            val ink = if (on) LatentColors.AmberInk else LatentColors.Text
+                            val on = id == tab
+                            val ink = glide.ink(id, LatentColors.Text)
                             Column(
                                 Modifier.pressIn().clip(RoundedCornerShape(12.dp))
-                                    .accentFill(on, Color.Transparent)
-                                    .then(if (on) Modifier else Modifier.border(0.5.dp, LatentColors.Line, RoundedCornerShape(12.dp)))
+                                    .glideItem(glide, id, Color.Transparent)
+                                    .border(0.5.dp, LatentColors.Line.copy(alpha = 1f - glide.coverage(id)), RoundedCornerShape(12.dp))
                                     .combinedClickable(onClick = { Haptics.tick(context); tab = id }).widthIn(min = 52.dp).padding(horizontal = 7.dp, vertical = 5.dp),
                                 horizontalAlignment = Alignment.CenterHorizontally,
                             ) {
                                 // 101a: the glyph moves once as its tab is chosen (the whole chip is the button)
-                                GlyphIcon(TAB_GLYPHS[id] ?: Glyph.FILM, if (on) LatentColors.AmberInk else LatentColors.TextBright, size = 18.dp,
-                                    accent = if (on) LatentColors.AmberInk else LatentColors.Amber, tap = false, play = if (on) id else null)
+                                GlyphIcon(TAB_GLYPHS[id] ?: Glyph.FILM, glide.ink(id, LatentColors.TextBright), size = 18.dp,
+                                    accent = glide.ink(id, LatentColors.Amber), tap = false, play = if (on) id else null)
                                 Text(label, color = ink, fontSize = 8.sp, letterSpacing = 0.6.sp, modifier = Modifier.padding(top = 3.dp))
                             }
                         }
@@ -1958,11 +1965,12 @@ private fun Toggle(label: String, value: Boolean, onChange: (Boolean) -> Unit) {
 @Composable
 private fun Chips(options: List<String>, selected: String, names: Map<String, String> = emptyMap(), onSelect: (String) -> Unit) {
     val context = LocalContext.current
-    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+    // 111b: the pill glides to the new choice
+    GlideRow(selected, Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        val glide = LocalGlide.current!!
         options.forEach { o ->
-            val on = o == selected
-            Text(names[o] ?: o.replace('_', ' '), color = if (on) LatentColors.AmberInk else LatentColors.Text, fontSize = 10.sp,
-                modifier = Modifier.pressIn().raised(RoundedCornerShape(999.dp), 2.dp).clip(RoundedCornerShape(999.dp)).accentFill(on, LatentColors.Surface)
+            Text(names[o] ?: o.replace('_', ' '), color = glide.ink(o, LatentColors.Text), fontSize = 10.sp,
+                modifier = Modifier.pressIn().raised(RoundedCornerShape(999.dp), 2.dp).clip(RoundedCornerShape(999.dp)).glideItem(glide, o, LatentColors.Surface)
                     .combinedClickable(onClick = { Haptics.tick(context); onSelect(o) }).padding(horizontal = 10.dp, vertical = 5.dp))
         }
     }

@@ -40,6 +40,9 @@ import com.celestial.latent.camera.Lenses
 import com.celestial.latent.ui.AppTheme
 import com.celestial.latent.ui.LatentColors
 import com.celestial.latent.ui.pressIn
+import com.celestial.latent.ui.glideItem
+import com.celestial.latent.ui.LocalGlide
+import com.celestial.latent.ui.GlideRow
 import com.celestial.latent.ui.accentFill
 import com.celestial.latent.ui.glow
 import com.celestial.latent.ui.raised
@@ -324,18 +327,20 @@ private fun <T> OptionRow(title: String, subtitle: String, options: List<Pair<St
         Text(title, color = LatentColors.TextBright, fontSize = 15.sp)
         Text(subtitle, color = LatentColors.TextDim, fontSize = 12.sp)
         Spacer(Modifier.height(8.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        // 111b: one pill glides to the new choice
+        com.celestial.latent.ui.GlideRow(options.firstOrNull { it.second == selected }?.first, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            val glide = com.celestial.latent.ui.LocalGlide.current!!
             options.forEach { (label, v) ->
                 val on = v == selected
                 Text(
                     label,
-                    color = if (on) LatentColors.AmberInk else LatentColors.Text,
+                    color = glide.ink(label, LatentColors.Text),
                     fontSize = 13.sp,
                     modifier = Modifier.pressIn()
                         .then(if (places != null) Modifier.onGloballyPositioned { places[v] = it.boundsInRoot().center } else Modifier)
                         .raised(RoundedCornerShape(999.dp), 3.dp)
                         .clip(RoundedCornerShape(999.dp))
-                        .accentFill(on, LatentColors.Surface)
+                        .glideItem(glide, label, LatentColors.Surface)
                         .combinedClickable(onClick = { if (!on) Haptics.tick(ctx); onSelect(v) })
                         .padding(horizontal = 14.dp, vertical = 7.dp),
                 )
