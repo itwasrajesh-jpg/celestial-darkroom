@@ -31,7 +31,7 @@ import com.celestial.latent.develop.Presets
 import com.celestial.latent.ui.LatentColors
 import com.celestial.latent.ui.accentFill
 import com.celestial.latent.ui.OnPhoto
-import com.celestial.latent.ui.floating
+import com.celestial.latent.ui.floatingUnder
 import com.celestial.latent.ui.pressIn
 import com.celestial.latent.ui.glideItem
 import com.celestial.latent.ui.afterPill
@@ -120,6 +120,7 @@ fun FilmStrip(
             .padding(horizontal = 12.dp, vertical = 6.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         corner = 6.dp,
+        lift = 4.dp,
     ) {
         val glide = com.celestial.latent.ui.LocalGlide.current!!
         val choose: (String) -> Unit = { id ->
@@ -131,7 +132,7 @@ fun FilmStrip(
             val on = id == selected
             androidx.compose.foundation.layout.Column(
                 // 87a/88c: frosted glass in Midnight and Clay (the blurred picture behind, a lit edge, a soft shadow)
-                modifier = Modifier.pressIn().floating(RoundedCornerShape(6.dp), 4.dp).clip(RoundedCornerShape(6.dp))
+                modifier = Modifier.pressIn().floatingUnder(RoundedCornerShape(6.dp), 4.dp) { glide.coverage(id) }.clip(RoundedCornerShape(6.dp))
                     .frostUnder(glide.coverage(id))
                     .glideItem(glide, id, Color.Transparent)
                     .combinedClickable(
@@ -151,7 +152,7 @@ fun FilmStrip(
             val on = id == selected
             androidx.compose.foundation.layout.Column(
                 // 87a/88c: frosted glass in Midnight and Clay (the blurred picture behind, a lit edge, a soft shadow)
-                modifier = Modifier.pressIn().floating(RoundedCornerShape(6.dp), 4.dp).clip(RoundedCornerShape(6.dp))
+                modifier = Modifier.pressIn().floatingUnder(RoundedCornerShape(6.dp), 4.dp) { glide.coverage(id) }.clip(RoundedCornerShape(6.dp))
                     .frostUnder(glide.coverage(id))
                     .glideItem(glide, id, Color.Transparent)
                     .combinedClickable(

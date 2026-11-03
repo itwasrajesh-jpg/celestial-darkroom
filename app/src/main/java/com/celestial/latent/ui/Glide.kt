@@ -51,6 +51,8 @@ class Glide(
     internal val pillColour: Color? = null,
     /** 112: the words' colour under that pill, else the accent's ink. */
     internal val pillInk: Color? = null,
+    /** 112e: the pill's own soft shadow, for rows of floating cards ([floatingUnder]); 0 = none. */
+    internal val lift: Dp = 0.dp,
 ) {
     internal var host: LayoutCoordinates? = null
     internal val rects = mutableStateMapOf<Any, Rect>()
@@ -99,9 +101,10 @@ fun GlideRow(
     corner: Dp = 999.dp,
     pillColour: Color? = null,
     pillInk: Color? = null,
+    lift: Dp = 0.dp,
     content: @Composable RowScope.() -> Unit,
 ) {
-    val g = remember(pillColour, pillInk) { Glide(pillColour, pillInk) }
+    val g = remember(pillColour, pillInk, lift) { Glide(pillColour, pillInk, lift) }
     CompositionLocalProvider(LocalGlide provides g) {
         Row(modifier.glideHost(g, selected, corner), horizontalArrangement, verticalAlignment, content)
     }
@@ -119,6 +122,17 @@ fun Modifier.glideHost(g: Glide, selected: Any?, corner: Dp = 999.dp): Modifier 
             val w = g.right.value - l; val h = g.bottom.value - t
             if (w <= 0f || h <= 0f) return@drawBehind
             val rad = minOf(corner.toPx(), h / 2f)
+            // 112e: a soft shadow under the pill (a few widening, fading layers, a little below it)
+            val pal = LatentColors.palette
+            if (g.lift > 0.dp && pal.depth) {
+                val lp = g.lift.toPx()
+                val base = if (pal.light) 0.10f else 0.16f
+                for (i in 1..4) {
+                    val grow = lp * i / 4f
+                    drawRoundRect(pal.shadow, Offset(l - grow, t - grow + lp * 0.5f), Size(w + 2 * grow, h + 2 * grow),
+                        CornerRadius(rad + grow), alpha = a * base * (1f - (i - 1) / 4f))
+                }
+            }
             g.pillColour?.let { drawRoundRect(it, Offset(l, t), Size(w, h), CornerRadius(rad), alpha = a); return@drawBehind }
             val p = LatentColors.palette
             val brush = p.accentTop?.let { Brush.verticalGradient(listOf(it, p.amber), startY = t, endY = t + h) }
