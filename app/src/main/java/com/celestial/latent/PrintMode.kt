@@ -1815,7 +1815,7 @@ internal fun PaintStep(
     strip: (@Composable () -> Unit)? = null,
     /** 109a: tap to select's one answer, instead of "set foreground / background": its chip's name and what it does with the selection. */
     /** 109b: a null action makes the selection this step's own mask, through the brush's undo. */
-    selectUse: Pair<String, ((ExposureMap) -> Unit)?>? = null,
+    selectUse: Pair<String, ((ExposureMap, Boolean) -> Unit)?>? = null,
     /** 109a: raised to open tap to select from outside (LAYERS' "+ layer → Tap to select"). */
     openSelectKey: Int = 0,
     /** 109a: a name before the tabs, in amber (LAYERS: the chosen layer, "SKY · ADJUST BRUSH"). */
@@ -2091,13 +2091,15 @@ internal fun PaintStep(
     val selTaps = remember { mutableStateListOf<com.celestial.latent.develop.Select.Tap>() }
     var selAnswer by remember { mutableStateOf<com.celestial.latent.develop.Select.Answer?>(null) }
     var selLevel by remember { mutableStateOf(0) }
+    // 109f: the selection flipped (everything outside the outline), before it is used
+    var selInvert by remember { mutableStateOf(false) }
     var selBusy by remember { mutableStateOf(false) }
     var selStatus by remember { mutableStateOf("") }
     /** The grid the outline is worked out on: SEL_SHOW times the mask's, so its edge is drawn finer. */
     fun selDims(): Pair<Int, Int> { val d = ExposureMap.blank(aspect); return Pair(d.width * SEL_SHOW, d.height * SEL_SHOW) }
     /** The selection is kept with the picture, so every tab opens the panel where it was left. */
     fun keepSelection() { selectPicture?.let { it.taps = selTaps.toList(); it.answer = selAnswer; it.level = selLevel } }
-    fun clearSelection() { selTaps.clear(); selAnswer = null; selLevel = 0; keepSelection() }
+    fun clearSelection() { selTaps.clear(); selAnswer = null; selLevel = 0; selInvert = false; keepSelection() }
     fun openSelect() {
         val sp = selectPicture
         val (w, h) = selDims()
@@ -2105,7 +2107,7 @@ internal fun PaintStep(
         if (sp != null && sp.answer?.let { it.width == w && it.height == h } == true) {
             selTaps.addAll(sp.taps); selAnswer = sp.answer; selLevel = sp.level
         }
-        selTakeAway = false; selStatus = ""; fixMode = false; selOpen = true
+        selTakeAway = false; selInvert = false; selStatus = ""; fixMode = false; selOpen = true
     }
     fun closeSelect() { selOpen = false; selStatus = "" }
     /** Outlines what the taps say, on its own coroutine (never inside the gesture); undo is called if it fails. */
@@ -2190,13 +2192,15 @@ internal fun PaintStep(
         val sel = FloatArray(w * h) { k ->
             val i = k % w; val j = k / w; var sum = 0f
             for (dj in 0 until SEL_SHOW) for (di in 0 until SEL_SHOW) sum += m[(j * SEL_SHOW + dj) * a.width + i * SEL_SHOW + di]
-            sum / (SEL_SHOW * SEL_SHOW)
+            val inside = sum / (SEL_SHOW * SEL_SHOW)
+            if (selInvert) 1f - inside else inside
         }
+        val inverted = selInvert
         closeSelect()
-        android.util.Log.i("Latent", "select: used for ${use.first} (${(sel.average() * 100).roundToInt()}% of the picture)")
+        android.util.Log.i("Latent", "select: used for ${use.first}" + (if (inverted) " inverted" else "") + " (${(sel.average() * 100).roundToInt()}% of the picture)")
         val picked = ExposureMap(w, h, sel)
         // 109b: onto the mask being painted, as a stroke would be (shown, undoable, kept by the next stroke)
-        use.second?.invoke(picked) ?: commit(picked)
+        use.second?.invoke(picked, inverted) ?: commit(picked)
     }
     LaunchedEffect(openSelectKey) { if (openSelectKey > 0) openSelect() }
     val selectTapNow by rememberUpdatedState<(Float, Float) -> Unit>({ u, v -> selectTap(u, v) })
@@ -2213,10 +2217,12 @@ internal fun PaintStep(
         }
     }
     /** The outline, shown: amber inside (as strong as each cell is inside), the rest dimmed, a bright edge. */
-    val selOverlay = remember(selAnswer, selLevel, selOpen) {
+    val selOverlay = remember(selAnswer, selLevel, selOpen, selInvert) {
         val a = selAnswer
         if (!selOpen || a == null) return@remember null
-        val m = a.masks[selLevel.coerceIn(0, a.masks.size - 1)]; val w = a.width; val h = a.height
+        val m0 = a.masks[selLevel.coerceIn(0, a.masks.size - 1)]; val w = a.width; val h = a.height
+        // 109f: inverted, the tint and the edge move to everything outside the outline
+        val m = if (selInvert) FloatArray(m0.size) { 1f - m0[it] } else m0
         val px = IntArray(w * h) { k ->
             val f = m[k]; val i = k % w; val j = k / w; val inside = f >= 0.5f
             val edge = inside && ((i > 0 && m[k - 1] < 0.5f) || (i < w - 1 && m[k + 1] < 0.5f) ||
@@ -2460,7 +2466,10 @@ internal fun PaintStep(
                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     val can = selAnswer != null && !selBusy
                     val use = selectUse
-                    if (use != null) Chip(use.first, on = can, enabled = can) { useSelection() }
+                    if (use != null) {
+                        Chip("invert", on = selInvert, enabled = selAnswer != null) { selInvert = !selInvert }
+                        Chip(use.first, on = can, enabled = can) { useSelection() }
+                    }
                     else {
                         Chip("set foreground", on = can, enabled = can) { applySelection(true) }
                         Chip("set background", on = can, enabled = can) { applySelection(false) }
@@ -2489,7 +2498,8 @@ internal fun PaintStep(
                         selBusy -> "Outlining…"
                         selAnswer == null -> "Tap an object to select it. Two fingers zoom."
                         selTakeAway -> "Tap what should not be selected."
-                        selectUse != null -> "Same spot again: another size. Other spots add. Then ${selectUse.first}."
+                        selectUse != null && selInvert -> "Inverted: everything outside the outline is selected. Then ${selectUse.first}."
+                        selectUse != null -> "Same spot again: another size. Other spots add. Invert flips it. Then ${selectUse.first}."
                         else -> "Same spot again: another size. Other spots add. Then set it as foreground or background."
                     }
                     gradientTool -> spec.gradientHint
