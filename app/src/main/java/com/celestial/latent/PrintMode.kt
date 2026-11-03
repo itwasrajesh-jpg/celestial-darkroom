@@ -468,7 +468,7 @@ internal class PrintCache {
         fun painted(mk: Masks, fogLook: FogLook, raysLook: RaysLook, extraLights: List<RaysLook>, depthSplit: ExposureMap?, depthReady: Boolean) =
             listOf(
                 mapKey(mk.dodge), mapKey(mk.soften), mapKey(mk.fog), mapKey(mk.rays), mk.raysOn, mapKey(mk.saturation),
-                mk.lith.hashCode(), mapKey(mk.wet), mk.wetLook.hashCode(), mapKey(mk.rain), com.celestial.latent.develop.Layers.key(mk.layers), com.celestial.latent.develop.LayerLooks.key(mk.layers),
+                mk.lith.hashCode(), mk.layers.firstOrNull { it.id == mk.lith.layer }?.maskKey(), mapKey(mk.wet), mk.wetLook.hashCode(), mapKey(mk.rain), com.celestial.latent.develop.Layers.key(mk.layers), com.celestial.latent.develop.LayerLooks.key(mk.layers),
                 fogLook.hashCode(), raysLook.hashCode(), extraLights.hashCode(), mapKey(depthSplit), depthReady,
             ).joinToString("|")
     }
@@ -756,7 +756,7 @@ fun PrintPanel(
                     lookState = wetLook, onRestoreLook = { onWetLook(it as com.celestial.latent.develop.WetLook) },
                     renderBefore = { r, e -> renderMasked(r, e, all.copy(wet = null, rain = null, wetLook = wetLook.copy(window = com.celestial.latent.develop.RainLook()))) },
                     refreshKey = wetLook)
-                8 -> LithStep(recipe, lithLook, onLithLook, render = { r, e, l -> renderMasked(r, e, all.copy(lith = l)) }, modifier = Modifier.fillMaxSize())
+                8 -> LithStep(recipe, lithLook, onLithLook, render = { r, e, l -> renderMasked(r, e, all.copy(lith = l)) }, modifier = Modifier.fillMaxSize(), layers = paintable)
                 else -> PaintStep(paintLayers = paintable, inLayer = memory.paintIn[6], onInLayer = { memory.pickIn(6, it) }, stepSpec = RAYS_SPEC, recipe = recipe, map = raysMap, onMap = onRaysMap, depthRanks = depthRanks, selectPicture = selectPicture,
                     // the light itself lands only on its chosen side; the bar sets the selected light's
                     depthSide = sel.side.roundToInt(), onDepthSide = { setSel(sel.copy(side = it.toFloat())) }, depthSplit = depthSplit, onDepthSplit = onDepthSplit, depthFix = depthFix, onDepthFix = onDepthFix,
@@ -2408,7 +2408,7 @@ internal fun PaintStep(
     /** The brush controls: what you paint with, how strongly, and the way back. */
     val brushRows: @Composable () -> Unit = {
         // 109g: where painting lands, once the photo has layers
-        if (paintLayers.isNotEmpty()) PaintInRow(paintLayers, paintLayers.firstOrNull { it.id == inLayer }?.id, onInLayer)
+        if (paintLayers.isNotEmpty()) PaintInRow(paintLayers, paintLayers.firstOrNull { it.id == inLayer }?.id, onPick = onInLayer)
         // Three rows, each measured to fit a phone (about 357 dp inside the margins): one row
         // would be ~410 dp and squeeze its last chips — the bug that once crushed the Develop button.
         // 1. what you paint with, and how big
@@ -3045,6 +3045,8 @@ private fun LithStep(
     onLook: (com.celestial.latent.develop.LithLook) -> Unit,
     render: (Recipe, Int, com.celestial.latent.develop.LithLook) -> Bitmap?,
     modifier: Modifier = Modifier,
+    /** 109h: the photo's layers: the lith can be kept inside one (IN row). */
+    layers: List<com.celestial.latent.develop.Layer> = emptyList(),
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -3165,6 +3167,11 @@ private fun LithStep(
             Spacer(Modifier.weight(1f))
             Chip("border", on = look.on && look.border, enabled = look.on) { onLook(look.copy(border = !look.border)) }
         }
+        // 109h: lith IN a layer (subject in colour, the rest on lith paper, or the other way round)
+        if (layers.isNotEmpty() && look.on) PaintInRow(layers, layers.firstOrNull { it.id == look.layer }?.id,
+            everywhere = "Lith on the whole print. Pick a layer to keep it inside, the rest in colour.",
+            inside = { "Lith only in $it; the rest stays in colour. The border stays round the whole sheet." },
+        ) { id -> onLook(look.copy(layer = id ?: 0)) }
         LithSlider("grain", look.grit, look.on) { onLook(look.copy(grit = it)) }
         LithSlider("edges", look.burn, look.on) { onLook(look.copy(burn = it)) }
         LithSlider("glow", look.glow, look.on) { onLook(look.copy(glow = it)) }

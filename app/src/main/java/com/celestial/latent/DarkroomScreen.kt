@@ -344,7 +344,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                 val sat = saturationMap?.let { if (cropFraction < 1f) it.centreCrop(cropFraction) else it }
                 val lithFrame = if (cropFraction < 1f) (1f - cropFraction) / 2f else 0f
                 val (bytes, _) = Develop.render(context, target, r, preview = true, exposureMap = map, softenMask = softenMap, saturationMap = sat,
-                    lith = lithLook, lithFrame = if (lithFrame > 0f) com.celestial.latent.develop.Region(lithFrame, lithFrame, 1f - lithFrame, 1f - lithFrame) else null,
+                    lith = lithLook.within(op.layers), lithFrame = if (lithFrame > 0f) com.celestial.latent.develop.Region(lithFrame, lithFrame, 1f - lithFrame, 1f - lithFrame) else null,
                     hdrGlow = if (hdrView && fileFormat == com.celestial.latent.develop.DarkroomPrefs.FILE_ULTRA_HDR) hdrGlow.also { glowUsed = it } else 0f,
                     // 109c: layers with NEGATIVE settings of their own (their masks cut to the centre on the quick pass),
                     // and the photo prepared again for one whose settings act before the film
@@ -413,7 +413,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                 extraLights = if (masks.raysOn) el else emptyList(), depthSplit = ds,
                 wetMask = masks.wet, wetLook = masks.wetLook, rainMask = masks.rain, layers = masks.layers) { }
             val (bytes, _) = Develop.render(context, s0, r.copy(previewMaxSize = edge), preview = true, exposureMap = masks.dodge, softenMask = masks.soften,
-                saturationMap = masks.saturation, lith = masks.lith, looks = com.celestial.latent.develop.LayerLooks.resolve(masks.layers, recipe, r),
+                saturationMap = masks.saturation, lith = masks.lith.within(masks.layers), looks = com.celestial.latent.develop.LayerLooks.resolve(masks.layers, recipe, r),
                 prepareLook = { lr -> Develop.openCached(context, source, isRaw, decodeEdge(DECODE_EDGE, framing), lr, iso, softenMask = masks.soften, pairFirst = pairFirst, framing = framing,
                     fogMask = masks.fog, fogLook = fl,
                     raysMask = masks.rays, raysLook = if (masks.raysOn) rl else com.celestial.latent.develop.RaysLook(),
@@ -442,7 +442,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
             Develop.cropRegion(whole, region).use { part ->
                 val (bytes, _) = Develop.render(context, part, r.copy(previewMaxSize = edge), preview = true,
                     exposureMap = masks.dodge?.crop(region), softenMask = masks.soften, saturationMap = masks.saturation?.crop(region),
-                    lith = masks.lith, lithFrame = region, hdrGlow = if (hdrView && fileFormat == com.celestial.latent.develop.DarkroomPrefs.FILE_ULTRA_HDR) hdrGlow else 0f,
+                    lith = masks.lith.within(masks.layers), lithFrame = region, hdrGlow = if (hdrView && fileFormat == com.celestial.latent.develop.DarkroomPrefs.FILE_ULTRA_HDR) hdrGlow else 0f,
                     looks = com.celestial.latent.develop.LayerLooks.crop(com.celestial.latent.develop.LayerLooks.resolve(masks.layers, recipe, r)) { m -> m.crop(region) },
                     prepareLook = { lr ->
                         val own = Develop.openCached(context, source, isRaw, decodeEdge(DETAIL_EDGE, framing), lr, iso, softenMask = masks.soften, pairFirst = pairFirst, framing = framing,
@@ -757,7 +757,7 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
         fullJob = com.celestial.latent.develop.DevelopQueue.submitFull(
             context, source, isRaw, recipe, upscale = printSize, exposureMap = exposureMap, softenMask = softenMap, pairFirst = pairFirst, framing = framing,
             fogMask = fogMap, fogLook = fogLook, raysMask = raysMap, raysLook = raysLook, extraLights = extraLights, depthSplit = depthSplit,
-            saturationMap = saturationMap, lith = lithLook, wetMask = wetMap, wetLook = wetLook, rainMask = rainMap,
+            saturationMap = saturationMap, lith = lithLook.within(op.layers), wetMask = wetMap, wetLook = wetLook, rainMask = rainMap,
             hdrGlow = hdrGlow, format = fileFormat, age = ageLook, layers = op.layers,
             looks = com.celestial.latent.develop.LayerLooks.resolve(op.layers, recipe, recipe),
             onStatus = { m ->
