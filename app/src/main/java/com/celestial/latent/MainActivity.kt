@@ -34,6 +34,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
@@ -56,6 +57,8 @@ open class MainActivity : ComponentActivity() {
         LatentColors.load(this)
         com.celestial.latent.ui.Touch.load(this)
         com.celestial.latent.ui.Wave.load(this)
+        // 114a: the mascot switch, read before the first frame (the crash screen shows it before settings load)
+        Mascot.load(this)
         // 88b: the window behind the first frame in the theme's own colour
         window.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(LatentColors.Background.toArgb()))
         setContent {
@@ -117,6 +120,8 @@ private fun Root() {
     var screen by remember { mutableStateOf(cameraHome()) }
     crash?.let { text ->
         Column(Modifier.fillMaxSize().background(LatentColors.Background).statusBarsPadding().navigationBarsPadding().padding(16.dp)) {
+            // 114a: the mascot, sheepish, its camera on the floor
+            if (Mascot.on) { MascotView(com.celestial.latent.ui.MascotScene.OOPS, Modifier.align(Alignment.CenterHorizontally)); Spacer(Modifier.height(12.dp)) }
             Text("Celestial Darkroom crashed last time", color = LatentColors.TextBright, fontSize = 18.sp)
             Spacer(Modifier.height(8.dp))
             Row {
@@ -147,6 +152,9 @@ private fun Root() {
     // Shown once per launch, over the camera, which opens behind it. Declared after settings,
     // which it reads.
     var opening by remember { mutableStateOf(settings.openingAnimation) }
+    // 114a: the mascot follows the switch; its hello shows once, after the opening animation
+    SideEffect { Mascot.on = settings.mascot }
+    var hello by remember { mutableStateOf(Mascot.helloDue(context)) }
     var controllerRef by remember { mutableStateOf<com.celestial.latent.camera.CameraController?>(null) }
     var vendorEcho by remember { mutableStateOf("") }
 
@@ -251,6 +259,7 @@ private fun Root() {
         // 88a: a photo flying between the roll and the darkroom, over both
         PhotoFlightLayer()
         if (opening) BlackHoleIntro(onDone = { opening = false })
+        else if (hello) HelloScreen(onDone = { hello = false; Mascot.helloDone(context) })
     }
 }
 
