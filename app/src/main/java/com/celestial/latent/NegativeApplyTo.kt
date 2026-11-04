@@ -57,7 +57,8 @@ import com.celestial.latent.ui.raised
  * fresh was; the NO FILM card does that), alone when the photo has no layers.
  */
 @Composable
-internal fun ApplyToRow(layers: List<Layer>, applyTo: Int?, noFilm: Boolean, history: NegHistory, onUndo: () -> Unit, onRedo: () -> Unit, onPick: (Int?) -> Unit) {
+internal fun ApplyToRow(layers: List<Layer>, applyTo: Int?, noFilm: Boolean, history: NegHistory, onUndo: () -> Unit, onRedo: () -> Unit,
+                         restAsShot: Boolean = false, onPick: (Int?) -> Unit) {
     val chosen = layers.firstOrNull { it.id == applyTo }
     // 109e: hidden ones too: showing one again must not go past the most there can be
     val owning = layers.count { it.recipe != null }
@@ -90,7 +91,10 @@ internal fun ApplyToRow(layers: List<Layer>, applyTo: Int?, noFilm: Boolean, his
             noFilm -> "No film: your photo as shot, the same as Before. Pick a film to start editing."
             layers.isEmpty() -> null
             chosen != null && !chosen.visible -> "${chosen.name} is hidden in LAYERS: its changes show once it is shown again."
+            // 115a: REST OF THE PHOTO · AS SHOT (LAYERS): only layers with their own look get film
+            restAsShot && chosen != null && chosen.recipe == null -> "${chosen.name} is still as shot: pick a film to give it one. The rest of the photo stays as shot.$dot"
             chosen != null -> "Changes here go to ${chosen.name} only.$dot"
+            restAsShot -> "The rest of the photo stays as shot (LAYERS). Pick a layer to give it a film; changes here reach layers with their own.$dot"
             owning >= LayerLooks.MAX_EXTRA -> "Changes here go to the whole photo, layers too. ${LayerLooks.MAX_EXTRA} layers have their own settings, the most there can be.$dot"
             else -> "Changes here go to the whole photo, layers too. Pick a layer to change only that part.$dot"
         }

@@ -57,6 +57,9 @@ internal fun NegativeLayers(
     renderRegionWithMasks: (Recipe, Int, Masks, Region) -> Bitmap?,
     onClose: () -> Unit,
     modifier: Modifier = Modifier,
+    /** 115a: REST OF THE PHOTO: false = FILM, true = AS SHOT ([com.celestial.latent.develop.AsShot]). */
+    restAsShot: Boolean = false,
+    onRestAsShot: (Boolean) -> Unit = {},
 ) {
     val context = LocalContext.current
     val cache = memory.cache
@@ -80,6 +83,8 @@ internal fun NegativeLayers(
             GlyphIcon(Glyph.LAYERS, LatentColors.TextBright, size = 16.dp, tap = false)
             Text("LAYERS", color = LatentColors.TextBright, fontSize = 10.sp, letterSpacing = 1.5.sp)
         }
+        // 115a: what the parts outside the layers' own looks get: the whole photo's film, or nothing
+        if (layers.isNotEmpty()) RestRow(restAsShot, onRestAsShot)
         LayersStep(recipe, layers, onLayers, depthRanks = depthRanks, selectPicture = memory.selectPicture,
             depthSplit = depthSplit, onDepthSplit = onDepthSplit, depthFix = depthFix, onDepthFix = onDepthFix,
             render = render,
@@ -88,5 +93,24 @@ internal fun NegativeLayers(
             usedBy = { id -> if (lith.on && lith.layer == id) listOf("lith") else emptyList() },
             canAdjust = !noFilm,
             hint = if (noFilm) "Cut your layers first, then pick a film for each in APPLY TO." else null)
+    }
+}
+
+/**
+ * 115a: REST OF THE PHOTO · FILM | AS SHOT. FILM is the way it always was: the parts without a look of
+ * their own get the whole photo's film. AS SHOT keeps them the photo exactly as shot (as NO FILM shows
+ * it): only a layer given its own look in NEGATIVE → APPLY TO gets film. Saved with the photo's layers.
+ */
+@Composable
+internal fun RestRow(asShot: Boolean, onPick: (Boolean) -> Unit) {
+    Column(Modifier.fillMaxWidth().padding(horizontal = 14.dp).padding(top = 6.dp)) {
+        com.celestial.latent.ui.GlideRow(if (asShot) "shot" else "film", Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("REST OF THE PHOTO", color = LatentColors.TextDim, fontSize = 9.sp, letterSpacing = 1.5.sp, modifier = Modifier.padding(end = 2.dp))
+            TargetChip("FILM", null, on = !asShot, enabled = true, own = false, key = "film") { if (asShot) { com.celestial.latent.ui.Wave.start(); onPick(false) } }
+            TargetChip("AS SHOT", null, on = asShot, enabled = true, own = false, key = "shot") { if (!asShot) { com.celestial.latent.ui.Wave.start(); onPick(true) } }
+        }
+        Text(if (asShot) "Outside the layers with their own look, the photo stays as shot." else "Outside the layers with their own look, the photo gets its film.",
+            color = LatentColors.TextDim, fontSize = 9.sp, lineHeight = 12.sp, modifier = Modifier.padding(top = 3.dp))
     }
 }

@@ -70,21 +70,25 @@ object LayerRecipes {
         }
     }
 
-    /** A layer whose own settings came back to the whole photo's has none of its own. */
-    fun tidy(l: Layer, all: Recipe): Layer = if (l.recipe != null && l.recipe == all) l.copy(recipe = null, lookId = null) else l
+    /**
+     * A layer whose own settings came back to the whole photo's has none of its own. 115a: unless [keep]:
+     * with the rest of the photo as shot ([AsShot]), a layer without its own has no film at all, so one
+     * given the photo's own look keeps it (and its card says so).
+     */
+    fun tidy(l: Layer, all: Recipe, keep: Boolean = false): Layer = if (!keep && l.recipe != null && l.recipe == all) l.copy(recipe = null, lookId = null) else l
 
     /** The whole photo's settings went from [old] to [new]: every layer with its own follows. */
-    fun followAll(layers: List<Layer>, old: Recipe, new: Recipe): List<Layer> =
+    fun followAll(layers: List<Layer>, old: Recipe, new: Recipe, keep: Boolean = false): List<Layer> =
         if (old == new || layers.none { it.recipe != null }) layers
-        else layers.map { l -> if (l.recipe == null) l else tidy(l.copy(recipe = follow(l.recipe, old, new)), new) }
+        else layers.map { l -> if (l.recipe == null) l else tidy(l.copy(recipe = follow(l.recipe, old, new)), new, keep) }
 
     /**
      * A look picked on ALL: every layer with its own settings takes it too, keeping its own light the
      * way picking a look keeps it ([SceneLight.keepLight]); [lookOf] is the look a layer's settings
      * started from (the layer's own, or the photo's before the pick).
      */
-    fun pickedOnAll(layers: List<Layer>, newAll: Recipe, look: Recipe, lookOf: (Layer) -> Recipe): List<Layer> =
-        layers.map { l -> if (l.recipe == null) l else tidy(l.copy(recipe = SceneLight.keepLight(l.recipe, lookOf(l), look), lookId = null), newAll) }
+    fun pickedOnAll(layers: List<Layer>, newAll: Recipe, look: Recipe, keep: Boolean = false, lookOf: (Layer) -> Recipe): List<Layer> =
+        layers.map { l -> if (l.recipe == null) l else tidy(l.copy(recipe = SceneLight.keepLight(l.recipe, lookOf(l), look), lookId = null), newAll, keep) }
 
     /** Layers that have settings of their own, and are shown. */
     fun own(layers: List<Layer>?): List<Layer> = layers?.filter { it.visible && it.recipe != null && !it.mask.isBlank } ?: emptyList()
