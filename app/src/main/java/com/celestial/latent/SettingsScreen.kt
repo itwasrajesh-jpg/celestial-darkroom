@@ -91,6 +91,8 @@ fun SettingsScreen(settings: AppSettings, onChange: (AppSettings) -> Unit, onOpe
         ) { com.celestial.latent.ui.Wave.set(uiContext, it); com.celestial.latent.ui.Wave.start() }
         // 105c
         ToggleRow("Breathing shutter", "In manual, when the meter reads 0 the shutter wakes, glows in the theme's colours and breathes, with small lights circling it. Turn off for a plain shutter.", settings.breathingShutter) { onChange(settings.copy(breathingShutter = it)) }
+        // 114a
+        ToggleRow("Mascot", "The little photographer on the empty roll, Help, About and the crash screen. It waves once when the screen opens, then just breathes; tap it and it jumps. Still when the phone's animations are off.", settings.mascot) { onChange(settings.copy(mascot = it)) }
 
         Section("Exposure")
         OptionRow(

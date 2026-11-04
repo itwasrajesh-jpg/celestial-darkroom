@@ -18,6 +18,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextDecoration
@@ -37,6 +38,8 @@ fun AboutScreen(onBack: () -> Unit) {
             .verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 12.dp),
     ) {
         Text("‹ settings", color = LatentColors.Text, fontSize = 14.sp, modifier = Modifier.combinedClickable(onClick = onBack).padding(vertical = 6.dp))
+        // 114a: the mascot waves above the name
+        if (Mascot.on) { Spacer(Modifier.height(4.dp)); MascotView(com.celestial.latent.ui.MascotScene.HELLO, Modifier.align(Alignment.CenterHorizontally)) }
         Spacer(Modifier.height(10.dp))
         // Two lines, as on the opening screen: the full name in one would not fit at this size.
         Text("CELESTIAL", color = LatentColors.TextDim, fontSize = 11.sp, letterSpacing = 5.sp)

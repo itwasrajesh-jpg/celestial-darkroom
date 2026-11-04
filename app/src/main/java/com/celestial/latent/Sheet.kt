@@ -296,7 +296,9 @@ internal fun EmptyState(kind: EmptyKind, modifier: Modifier = Modifier, action: 
         EmptyKind.FOLDER -> "This folder has no photos" to "Only photos directly in the folder show here, not ones in folders inside it."
     }
     Column(modifier.fillMaxWidth().padding(horizontal = 30.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-        Canvas(Modifier.size(150.dp, 120.dp)) { drawEmpty(kind, LatentColors.TextDim, LatentColors.Amber) }
+        // 114a: on the empty roll the mascot takes the canister's place (the other views keep their drawings)
+        if (kind == EmptyKind.ROLL && Mascot.on) MascotView(com.celestial.latent.ui.MascotScene.HELLO)
+        else Canvas(Modifier.size(150.dp, 120.dp)) { drawEmpty(kind, LatentColors.TextDim, LatentColors.Amber) }
         Spacer(Modifier.height(18.dp))
         Text(title.uppercase(), color = LatentColors.TextBright, fontSize = 12.sp, letterSpacing = 2.sp, textAlign = TextAlign.Center)
         Spacer(Modifier.height(8.dp))

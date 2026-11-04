@@ -73,7 +73,11 @@ fun HelpScreen(start: String? = null, onBack: () -> Unit) {
                 modifier = Modifier.combinedClickable(onClick = { topic = null }).padding(8.dp))
             else Spacer(Modifier.width(32.dp))
         }
-        if (shown == null) HelpIndex { topic = it } else HelpPage(shown)
+        if (shown == null) {
+            // 114a: the mascot lifts its camera above the topics (the index only, not the pages)
+            if (Mascot.on) MascotView(com.celestial.latent.ui.MascotScene.LIFT, Modifier.align(Alignment.CenterHorizontally))
+            HelpIndex { topic = it }
+        } else HelpPage(shown)
         Spacer(Modifier.height(24.dp))
     }
     }

@@ -49,6 +49,8 @@ data class AppSettings(
     val haptics: Boolean = true,
     // 105c: the shutter wakes and breathes when the meter reads 0 in manual; on unless turned off
     val breathingShutter: Boolean = true,
+    // 114a: the little photographer on the empty roll, Help, About, the crash screen and the one-time hello
+    val mascot: Boolean = true,
     // 91a: camera sounds, all off until turned on; which camera they come from
     val soundShutter: Boolean = false,
     val soundWind: Boolean = false,
@@ -131,6 +133,7 @@ data class AppSettings(
                 bracketFrames = p.getInt("bracketFrames", 5),
                 haptics = p.getBoolean("haptics", true),
                 breathingShutter = p.getBoolean("breathingShutter", true),
+                mascot = p.getBoolean("mascot", true),
                 soundShutter = p.getBoolean("soundShutter", false),
                 soundWind = p.getBoolean("soundWind", false),
                 soundDial = p.getBoolean("soundDial", false),
@@ -183,6 +186,7 @@ data class AppSettings(
                 .putInt("bracketFrames", s.bracketFrames)
                 .putBoolean("haptics", s.haptics)
                 .putBoolean("breathingShutter", s.breathingShutter)
+                .putBoolean("mascot", s.mascot)
                 .putBoolean("soundShutter", s.soundShutter)
                 .putBoolean("soundWind", s.soundWind)
                 .putBoolean("soundDial", s.soundDial)
