@@ -48,11 +48,12 @@ object LayerLooks {
      * the darkroom's own are [all]. Each layer's settings take the same changes ([LayerRecipes.follow]);
      * one that comes out the same as [main] needs nothing.
      */
-    fun resolve(layers: List<Layer>?, all: Recipe, main: Recipe): List<LayerLook> {
+    fun resolve(layers: List<Layer>?, all: Recipe, main: Recipe, restAsShot: Boolean = false): List<LayerLook> {
         val ls = LayerRecipes.own(layers)
         if (ls.isEmpty()) return emptyList()
         val groups = ls.map { alignTo(LayerRecipes.follow(it.recipe!!, all, main), main) to it }
-            .filter { it.first != main }
+            // 115a: with the rest of the photo as shot, a layer on the photo's own settings still needs its film
+            .filter { restAsShot || it.first != main }
             .groupBy({ it.first }, { it.second })
         if (groups.size > MAX_EXTRA) Log.w("Latent", "layers: ${groups.size} sets of own settings, only the first $MAX_EXTRA are developed: " +
             groups.values.drop(MAX_EXTRA).flatten().joinToString { it.name })
@@ -86,18 +87,38 @@ object LayerLooks {
      * full, they share the place.
      */
     fun blend(engine: SpektraEngine, source: Develop.Source, main: SimResult, looks: List<LayerLook>, preview: Boolean,
-              mainRecipe: Recipe, prepare: ((Recipe) -> Pair<Develop.Source, Boolean>?)?,
-              params: (Recipe) -> com.spectrafilm.engine.SpektraParams, log: (String) -> Unit = {}) {
-        if (looks.isEmpty()) return
+              mainRecipe: Recipe, prepare: ((Recipe, Boolean) -> Pair<Develop.Source, Boolean>?)?,
+              params: (Recipe) -> com.spectrafilm.engine.SpektraParams, log: (String) -> Unit = {}, restAsShot: Boolean = false) {
+        if (looks.isEmpty() && !restAsShot) return
         val t = System.nanoTime()
         val w = main.width; val h = main.height
         val results = ArrayList<SimResult>()
         try {
+            val outs = ArrayList<java.nio.FloatBuffer>()
             val used = ArrayList<LayerLook>()
+            // 115a: REST OF THE PHOTO · AS SHOT. A layer on the photo's own settings takes the print as the film
+            // made it: kept aside first on a preview (quicker than developing it again), developed again at full
+            // size (no room for a second print there).
+            val mainCopy = if (restAsShot && preview && looks.any { it.recipe == mainRecipe }) {
+                val src = main.data.duplicate().apply { clear() }
+                java.nio.ByteBuffer.allocateDirect(src.capacity()).order(ByteOrder.nativeOrder()).apply { put(src); clear() }
+            } else null
+            if (restAsShot) {
+                // the print becomes the photo as shot: the layers' own prints go over it, snapped to its edges
+                val base = if (prepare == null) null else {
+                    log("the rest of the photo as shot…")
+                    runCatching { prepare(mainRecipe, true) }.getOrElse { e -> Log.e("Latent", "as shot: could not prepare the photo", e); null }
+                }
+                if (base == null) Log.w("Latent", "as shot: no picture of the photo as shot; the rest keeps the film")
+                else try { AsShot.lay(base.first, main) } finally { if (base.second) base.first.close() }
+            }
             for (look in looks) {
+                if (mainCopy != null && look.recipe == mainRecipe) {
+                    outs.add(mainCopy.duplicate().order(ByteOrder.nativeOrder()).asFloatBuffer()); used.add(look); continue
+                }
                 val own = if (prepare != null && Develop.preparedKeyOf(look.recipe) != Develop.preparedKeyOf(mainRecipe)) {
                     log("preparing the photo for ${look.id}…")
-                    runCatching { prepare(look.recipe) }.getOrElse { t -> Log.e("Latent", "layer ${look.id}: could not prepare the photo", t); null }
+                    runCatching { prepare(look.recipe, false) }.getOrElse { t -> Log.e("Latent", "layer ${look.id}: could not prepare the photo", t); null }
                 } else null
                 log("developing ${look.id} with its own settings (${used.size + 1} of ${looks.size})…")
                 val s = own?.first ?: source
@@ -105,12 +126,15 @@ object LayerLooks {
                     if (preview) engine.simulatePreview(s.image, params(look.recipe)) else engine.simulate(s.image, params(look.recipe))
                 } finally { if (own != null && own.second) own.first.close() }
                 if (r.width != w || r.height != h) { Log.w("Latent", "layer ${look.id}: ${r.width}x${r.height} is not the print's ${w}x$h; skipped"); r.close(); continue }
-                results.add(r); used.add(look)
+                results.add(r); used.add(look); outs.add(r.data.order(ByteOrder.nativeOrder()).asFloatBuffer())
             }
-            if (results.isEmpty()) return
-            blendInto(main.data.order(ByteOrder.nativeOrder()).asFloatBuffer(), w, h,
-                results.map { it.data.order(ByteOrder.nativeOrder()).asFloatBuffer() }, used.map { it.mask })
-            Log.i("Latent", "layers' own settings ${used.joinToString { it.id }} developed and blended at ${w}x$h in ${(System.nanoTime() - t) / 1_000_000} ms")
+            if (outs.isEmpty()) {
+                if (restAsShot) Log.i("Latent", "rest of the photo as shot, no layer with a look of its own, at ${w}x$h in ${(System.nanoTime() - t) / 1_000_000} ms")
+                return
+            }
+            blendInto(main.data.order(ByteOrder.nativeOrder()).asFloatBuffer(), w, h, outs, used.map { it.mask })
+            Log.i("Latent", "layers' own settings ${used.joinToString { it.id }} developed and blended at ${w}x$h in ${(System.nanoTime() - t) / 1_000_000} ms" +
+                if (restAsShot) ", the rest of the photo as shot" else "")
         } finally {
             results.forEach { it.close() }
         }

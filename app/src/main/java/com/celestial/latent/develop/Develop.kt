@@ -283,7 +283,8 @@ object Develop {
     private object LayerCopies {
         // 109e: twice the layers: the quick pass prepares without the diffusion filters, so each layer
         // can need two copies, and with one slot each the quick and full passes kept pushing out each other's
-        private const val MAX = 2 * LayerLooks.MAX_EXTRA
+        // 115a: + the photo as shot (its read and its prepared copy) for REST OF THE PHOTO · AS SHOT
+        private const val MAX = 2 * LayerLooks.MAX_EXTRA + 2
         private val entries = LinkedHashMap<String, Source>()
         @Synchronized fun get(key: String): Source? = entries.remove(key)?.also { entries[key] = it }
         @Synchronized fun put(key: String, src: Source) {
@@ -363,21 +364,42 @@ object Develop {
                    extraLights: List<RaysLook> = emptyList(),
                    depthSplit: ExposureMap? = null,
                    wetMask: ExposureMap? = null, wetLook: WetLook = WetLook(), rainMask: ExposureMap? = null,
-                   layers: List<Layer>? = null, forLayer: Boolean = false,
+                   layers: List<Layer>? = null, forLayer: Boolean = false, asShot: Boolean = false,
                    log: (String) -> Unit = {}): Source {
+        // 115a: [asShot]: the photo as it was shot, for REST OF THE PHOTO · AS SHOT ([AsShot]): prepared
+        // with nothing the film's settings do before the film, a RAW read the way its Before is, always
+        // in a copy of its own like a layer's
+        if (asShot) return openCachedOf(context, source, isRaw, maxEdge, AsShot.plain(recipe), iso, softenMask, pairFirst, framing,
+            fogMask, fogLook, raysMask, raysLook, extraLights, depthSplit, wetMask, wetLook, rainMask, layers,
+            forLayer = true, asShotRead = isRaw && pairFirst == null, log = log)
+        return openCachedOf(context, source, isRaw, maxEdge, recipe, iso, softenMask, pairFirst, framing, fogMask, fogLook, raysMask, raysLook,
+            extraLights, depthSplit, wetMask, wetLook, rainMask, layers, forLayer, false, log)
+    }
+
+    private fun openCachedOf(context: Context, source: Uri, isRaw: Boolean, maxEdge: Int, recipe: Recipe, iso: Int,
+                             softenMask: ExposureMap?, pairFirst: Uri?, framing: Framing, fogMask: ExposureMap?, fogLook: FogLook,
+                             raysMask: ExposureMap?, raysLook: RaysLook, extraLights: List<RaysLook>, depthSplit: ExposureMap?,
+                             wetMask: ExposureMap?, wetLook: WetLook, rainMask: ExposureMap?, layers: List<Layer>?,
+                             forLayer: Boolean, asShotRead: Boolean, log: (String) -> Unit): Source {
         // 109c: [forLayer]: prepared for a layer's own settings, in a copy of its own ([LayerCopies]),
         // never in the photo's working copy, which the photo's own print is still being made from.
         // The pristine decode is cached on its own, so changing a pre-engine setting costs a
         // copy rather than a fresh decode of the file (which was over a second every time).
         // A double exposure is cached as its combined light, under a key naming both frames.
         val pair = pairFirst != null && isRaw
-        val key = if (pair) "$pairFirst+$source@$maxEdge" else "$source@$maxEdge"
-        val pristine = Cache.get(key) ?: run {
+        val decodeKey = if (pair) "$pairFirst+$source@$maxEdge" else "$source@$maxEdge"
+        val decodedPristine = Cache.get(decodeKey) ?: run {
             val decoded = if (pair) openPair(context, pairFirst!!, source, maxEdge, log)
                 else if (isRaw) openRaw(context, source, maxEdge, log) else openImage(context, source, maxEdge)
-            Cache.put(key, decoded)
+            Cache.put(decodeKey, decoded)
             decoded
         }
+        // 115a: the RAW as shot, read once the way its Before is, at the darkroom decode's size; kept beside it
+        // (with the layers' copies, not in [Cache], so it never pushes out a decode or working copy a render is using)
+        val asShotPristine = if (!asShotRead) null else LayerCopies.get("$decodeKey|asshot")?.takeIf { it.width == decodedPristine.width && it.height == decodedPristine.height }
+            ?: openAsShot(context, source, isRaw, decodedPristine.width, decodedPristine.height)?.also { LayerCopies.keepOnly(decodeKey); LayerCopies.put("$decodeKey|asshot", it) }
+        val pristine = asShotPristine ?: decodedPristine
+        val key = if (asShotPristine != null) "$decodeKey|asshot" else decodeKey
         // One working buffer per photo and size, reused: no allocation churn while a slider
         // moves, and nothing is freed while a render might still be reading it.
         // The framing is applied as the working copy is filled, so the untouched decode stays
@@ -414,7 +436,7 @@ object Develop {
         ).joinToString("|")
         val working = if (forLayer) {
             val copyKey = "$key|layer|$prep"
-            LayerCopies.keepOnly(key)
+            LayerCopies.keepOnly(decodeKey)
             LayerCopies.get(copyKey)?.takeIf { it.preparedFor == prep && it.width == fw && it.height == fh }?.let { return it }
             pristine.blankSized(fw, fh).also { LayerCopies.put(copyKey, it) }
         } else {
@@ -550,6 +572,14 @@ object Develop {
             ?: error("could not open $image")
         val scale = if (maxEdge > 0) minOf(1f, maxEdge.toFloat() / maxOf(src.width, src.height)) else 1f
         val bmp = if (scale < 1f) android.graphics.Bitmap.createScaledBitmap(src, (src.width * scale).toInt(), (src.height * scale).toInt(), true) else src
+        val out = bitmapToSource(bmp, scale)
+        if (bmp !== src) bmp.recycle()
+        src.recycle()
+        return out
+    }
+
+    /** A picture's pixels as the engine's working light (linear ProPhoto), as [openImage] reads every picture. */
+    private fun bitmapToSource(bmp: android.graphics.Bitmap, scale: Float): Source {
         val w = bmp.width; val h = bmp.height
         val out = pictureSource(w, h, "ProPhoto RGB").also { it.nativeScale = scale }
         val f = out.image.data.asFloatBuffer()
@@ -571,9 +601,43 @@ object Develop {
                 f.put(0.0168f * r + 0.1178f * g + 0.8654f * b)
             }
         }
-        if (bmp !== src) bmp.recycle()
-        src.recycle()
         return out
+    }
+
+    /**
+     * 115a: a RAW as it was shot, for REST OF THE PHOTO · AS SHOT ([AsShot]): read by Android's own
+     * decoder, which is what draws its Before (the darkroom's decoder, LibRaw, gives the film the
+     * sensor's plain linear light, which looks flatter than the photo as shot). Stood the way LibRaw
+     * stands it (Android's decoder ignores the file's turn) and brought to LibRaw's size [likeW]×[likeH],
+     * so it lines up with the print pixel for pixel. Null for any other picture (its own decode is
+     * already as shot) or when it cannot be lined up; the caller then uses the darkroom's decode.
+     */
+    fun openAsShot(context: Context, source: Uri, isRaw: Boolean, likeW: Int, likeH: Int): Source? {
+        if (!isRaw) return null
+        return runCatching {
+            val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            context.contentResolver.openInputStream(source)?.use { android.graphics.BitmapFactory.decodeStream(it, null, bounds) }
+            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+            var sample = 1
+            while (maxOf(bounds.outWidth, bounds.outHeight) / (sample * 2) >= maxOf(likeW, likeH)) sample *= 2
+            val opts = android.graphics.BitmapFactory.Options().apply {
+                inSampleSize = sample
+                if (android.os.Build.VERSION.SDK_INT >= 26) inPreferredColorSpace = android.graphics.ColorSpace.get(android.graphics.ColorSpace.Named.SRGB)
+            }
+            val read = context.contentResolver.openInputStream(source)?.use { android.graphics.BitmapFactory.decodeStream(it, null, opts) } ?: return null
+            val turn = when (orientationOf(context, source)) { 3 -> 180f; 6 -> 90f; 8 -> 270f; else -> 0f }
+            val upright = if (turn == 0f) read else android.graphics.Bitmap.createBitmap(read, 0, 0, read.width, read.height,
+                android.graphics.Matrix().apply { postRotate(turn) }, true).also { if (it !== read) read.recycle() }
+            // the same picture? Its shape must agree with LibRaw's (a few edge pixels may differ)
+            val a = upright.width.toFloat() / upright.height; val b = likeW.toFloat() / likeH
+            if (kotlin.math.abs(a / b - 1f) > 0.03f) {
+                Log.w("Latent", "as shot: Android's picture ${upright.width}x${upright.height} does not line up with ${likeW}x$likeH; using the plain decode")
+                upright.recycle(); return null
+            }
+            val sized = if (upright.width == likeW && upright.height == likeH) upright
+                else android.graphics.Bitmap.createScaledBitmap(upright, likeW, likeH, true).also { if (it !== upright) upright.recycle() }
+            bitmapToSource(sized, 1f).also { sized.recycle() }
+        }.onFailure { Log.w("Latent", "as shot: could not read the RAW the way Before does: ${it.message}") }.getOrNull()
     }
 
     /**
@@ -740,7 +804,8 @@ object Develop {
                exposureMap: ExposureMap? = null, softenMask: ExposureMap? = null, saturationMap: ExposureMap? = null,
                lith: LithLook = LithLook(), lithFrame: Region? = null, hdrGlow: Float = 0f,
                png: PngTarget? = null, filmEdge: Int = 0, aged: AgedTarget? = null,
-               looks: List<LayerLook> = emptyList(), prepareLook: ((Recipe) -> Pair<Source, Boolean>?)? = null,
+               looks: List<LayerLook> = emptyList(), prepareLook: ((Recipe, Boolean) -> Pair<Source, Boolean>?)? = null,
+               restAsShot: Boolean = false,
                log: (String) -> Unit = {}): Pair<ByteArray, Pair<Int, Int>> {
         val t = System.nanoTime()
         Log.i("Latent", "render start: source ${source.width}x${source.height}, preview=$preview, cap=${recipe.previewMaxSize}")
@@ -762,8 +827,10 @@ object Develop {
                 val result = if (preview) engine.simulatePreview(source.image, params) else engine.simulate(source.image, params)
                 result.use { r ->
                     // 109c: layers with NEGATIVE settings of their own: the photo developed again with each, blended in by the layer
-                    if (looks.isNotEmpty()) LayerLooks.blend(engine, source, r, looks, preview, recipe, prepareLook,
-                        { lr -> filmParams(source, lr.copy(previewMaxSize = recipe.previewMaxSize, gpuPreview = recipe.gpuPreview), preview, upscale, exposureMap, softenMask).first }, log)
+                    // 115a: REST OF THE PHOTO · AS SHOT: the print starts as the photo as shot, the layers' own over it
+                    if (looks.isNotEmpty() || restAsShot) LayerLooks.blend(engine, source, r, looks, preview, recipe, prepareLook,
+                        { lr -> filmParams(source, lr.copy(previewMaxSize = recipe.previewMaxSize, gpuPreview = recipe.gpuPreview), preview, upscale, exposureMap, softenMask).first }, log,
+                        restAsShot = restAsShot)
                     // painted saturation (62a): on the finished print, before any bars
                     if (Saturation.wanted(saturationMap)) {
                         val ts = System.nanoTime()
@@ -1287,11 +1354,11 @@ object Develop {
                     depthSplit: ExposureMap? = null, saturationMap: ExposureMap? = null, lith: LithLook = LithLook(),
                     wetMask: ExposureMap? = null, wetLook: WetLook = WetLook(), rainMask: ExposureMap? = null,
                     hdrGlow: Float = 0f, format: String = DarkroomPrefs.FILE_JPEG, age: AgeLook = AgeLook(),
-                    layers: List<Layer>? = null, looks: List<LayerLook> = emptyList(), log: (String) -> Unit = {}): Uri {
+                    layers: List<Layer>? = null, looks: List<LayerLook> = emptyList(), restAsShot: Boolean = false, log: (String) -> Unit = {}): Uri {
         log(if (maxEdge > 0) "decoding…" else "decoding at full size…")
         lastFullNote = ""
         val stored = storedSize(context, source, isRaw)
-        val ownPrep = looks.any { preparedKeyOf(it.recipe) != preparedKeyOf(recipe) }
+        val ownPrep = restAsShot || looks.any { preparedKeyOf(it.recipe) != preparedKeyOf(recipe) }
         val fullEdge = stored?.let { (sw, sh) -> fullEdgeFor(context, sw, sh, upscale, looks.size, ownPrep) } ?: FULL_EDGE_CAP
         val cap = if (maxEdge > 0) minOf(maxEdge, fullEdge) else fullEdge
         val peaks = MemoryPeaks(context)
@@ -1309,6 +1376,7 @@ object Develop {
                 log("big photo: developing at ${opened.width}×${opened.height}")
             }
         }
+        val openedW = opened.width; val openedH = opened.height
         // Framed before anything else touches the light, so the film forms on the framed picture.
         val src = if (framing.isIdentity) opened else {
             log("framing…")
@@ -1322,9 +1390,12 @@ object Develop {
             prepareStages(context, source, s, iso, recipe, framing, softenMask, fogMask, fogLook, raysMask, raysLook, extraLights,
                 depthSplit, wetMask, wetLook, rainMask, log, layers = layers)
             // 109c: a layer whose own settings prepare the photo differently: decoded, framed and prepared again for it
-            val prepareLook: (Recipe) -> Pair<Source, Boolean>? = { lr ->
+            // 115a: or the photo as shot ([asShot]): a RAW read the way its Before is, prepared with nothing the film's settings do
+            val prepareLook: (Recipe, Boolean) -> Pair<Source, Boolean>? = { lr0, asShot ->
+                val lr = if (asShot) AsShot.plain(lr0) else lr0
                 val again = if (pair) openPair(context, pairFirst!!, source, cap, log)
-                    else if (isRaw) openRaw(context, source, cap, log) else openImage(context, source, cap)
+                    else if (isRaw) (if (asShot) openAsShot(context, source, true, openedW, openedH) else null) ?: openRaw(context, source, cap, log)
+                    else openImage(context, source, cap)
                 val framed = if (framing.isIdentity) again else {
                     val (fw, fh) = framing.outputSize(again.width, again.height)
                     try { again.blankSized(fw, fh).also { it.frameFrom(again, framing) } } finally { again.close() }
@@ -1356,7 +1427,7 @@ object Develop {
             val agedTag = (if (tag != null) "${tag}_" else "") + "AGED"
             if (bits == 0) {
                 val aged = if (age.on) AgedTarget(age, AgedPrint.seedOf(source), AgedPrint.backWords(context, source, recipe.film), null) else null
-                val (bytes, dims) = render(context, s, recipe, preview = false, upscale = upscale, exposureMap = exposureMap, softenMask = softenMask, saturationMap = saturationMap, lith = lith, looks = looks, prepareLook = prepareLook,
+                val (bytes, dims) = render(context, s, recipe, preview = false, upscale = upscale, exposureMap = exposureMap, softenMask = softenMask, saturationMap = saturationMap, lith = lith, looks = looks, prepareLook = prepareLook, restAsShot = restAsShot,
                     hdrGlow = if (format == DarkroomPrefs.FILE_ULTRA_HDR) hdrGlow else 0f, filmEdge = framing.edgeFrame, aged = aged, log = log)
                 log("saving ${dims.first}×${dims.second}, ${bytes.size / 1024} KB")
                 val clean = saveDeveloped(context, bytes, source, recipe.film, tag = tag, note = note)
@@ -1370,7 +1441,7 @@ object Develop {
                 val tmpAged = File(context.cacheDir, "develop-aged-${System.nanoTime()}.png")
                 try {
                     val aged = if (age.on) AgedTarget(age, AgedPrint.seedOf(source), AgedPrint.backWords(context, source, recipe.film), PngTarget(tmpAged, bits, note)) else null
-                    val (_, dims) = render(context, s, recipe, preview = false, upscale = upscale, exposureMap = exposureMap, softenMask = softenMask, saturationMap = saturationMap, lith = lith, looks = looks, prepareLook = prepareLook,
+                    val (_, dims) = render(context, s, recipe, preview = false, upscale = upscale, exposureMap = exposureMap, softenMask = softenMask, saturationMap = saturationMap, lith = lith, looks = looks, prepareLook = prepareLook, restAsShot = restAsShot,
                         png = PngTarget(tmp, bits, note), filmEdge = framing.edgeFrame, aged = aged, log = log)
                     log("saving ${dims.first}×${dims.second}, PNG $bits-bit, ${tmp.length() / 1024} KB")
                     val clean = saveDevelopedFile(context, tmp, source, recipe.film, tag = tag)

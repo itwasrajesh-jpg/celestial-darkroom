@@ -340,7 +340,13 @@ object Layers {
         }
     }.onFailure { Log.w("Latent", "layers: could not read this photo's layers: ${it.message}") }.getOrDefault(emptyList())
 
-    fun save(context: Context, photo: Uri, layers: List<Layer>) {
+    /** 115a: REST OF THE PHOTO · AS SHOT ([AsShot]), kept with the photo's layers; off (FILM) when never set. */
+    fun restAsShot(context: Context, photo: Uri): Boolean = runCatching {
+        val f = file(context, photo)
+        f.exists() && JSONObject(f.readText()).optBoolean("restAsShot", false)
+    }.getOrDefault(false)
+
+    fun save(context: Context, photo: Uri, layers: List<Layer>, restAsShot: Boolean = false) {
         runCatching {
             val f = file(context, photo)
             if (layers.isEmpty()) { f.delete(); return }
@@ -353,7 +359,7 @@ object Layers {
                 put("mask", JSONArray().apply { for (s in l.mask.stops) put((s * 1000f).roundToInt() / 1000.0) })
             })
             val tmp = File(f.parentFile, f.name + ".tmp")
-            tmp.writeText(JSONObject().put("version", 1).put("layers", arr).toString())
+            tmp.writeText(JSONObject().put("version", 1).put("layers", arr).apply { if (restAsShot) put("restAsShot", true) }.toString())
             if (!tmp.renameTo(f)) { f.delete(); tmp.renameTo(f) }
         }.onFailure { Log.w("Latent", "layers: could not save: ${it.message}") }
     }
