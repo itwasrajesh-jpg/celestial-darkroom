@@ -373,7 +373,11 @@ private fun StepIndicator(active: Int, available: Int, onSelect: (Int) -> Unit, 
     // Four names in one row, measured: "TEST STRIP" and 16 dp gaps would need ~394 dp of the ~357
     // a phone has, and the last would be crushed. "STRIP", 12 dp gaps and 1.2 sp letter spacing
     // come to about 331 dp.
-    val steps = listOf("STRIP", "COLOUR", "LAYERS", "DODGE & BURN", "SOFTEN", "FOG", "LIGHT", "WET", "LITH", "AGE", "DEVELOP")
+    // 113a: LAYERS moved to NEGATIVE (its own tab), so PRINT shows ten steps; each keeps its number
+    // inside PRINT (step 2 is simply never offered), so every step's memory stays where it was
+    val steps = listOf("STRIP", "COLOUR", "DODGE & BURN", "SOFTEN", "FOG", "LIGHT", "WET", "LITH", "AGE", "DEVELOP")
+    val ids = listOf(0, 1, 3, 4, 5, 6, 7, 8, 9, 10)
+    val activePos = ids.indexOf(active).coerceAtLeast(0)
     // Eight names since 64a's WET (seven since 63a's LITH), measured on this phone as it draws them (61d): spread across the width when they fit;
     // a phone that draws everything larger (the Xiaomi) gets them up to 20% smaller so all six still
     // show; only beyond that does the row scroll, and then it keeps the chosen step in view.
@@ -388,7 +392,7 @@ private fun StepIndicator(active: Int, available: Int, onSelect: (Int) -> Unit, 
         val fits = widths.sum() * k + gap * (steps.size - 1) <= avail
         val scroll = rememberScrollState()
         LaunchedEffect(active, fits) {
-            if (!fits) scroll.animateScrollTo((widths.take(active).sum() * k + gap * active - gap * 2).toInt().coerceAtLeast(0))
+            if (!fits) scroll.animateScrollTo((widths.take(activePos).sum() * k + gap * activePos - gap * 2).toInt().coerceAtLeast(0))
         }
         // 110a: when the row scrolls, each end with more steps beyond it fades out, so it reads as scrollable
         // 112: one underline glides from step to step (its leading end runs ahead, so it stretches as it goes)
@@ -396,7 +400,7 @@ private fun StepIndicator(active: Int, available: Int, onSelect: (Int) -> Unit, 
         val barL = remember { androidx.compose.animation.core.Animatable(Float.NaN) }
         val barR = remember { androidx.compose.animation.core.Animatable(Float.NaN) }
         val barW = with(density) { 40.dp.toPx() }
-        val target = stepX[active]
+        val target = stepX[activePos]
         LaunchedEffect(active, target) {
             if (target == null) return@LaunchedEffect
             if (barL.value.isNaN() || !com.celestial.latent.motionOn()) { barL.snapTo(target); barR.snapTo(target + barW); return@LaunchedEffect }
@@ -417,9 +421,9 @@ private fun StepIndicator(active: Int, available: Int, onSelect: (Int) -> Unit, 
             },
             horizontalArrangement = if (fits) Arrangement.SpaceBetween else Arrangement.spacedBy(8.dp)) {
             steps.forEachIndexed { i, label ->
-                val on = i == active
-                Column(Modifier.onGloballyPositioned { stepX[i] = it.positionInParent().x }.pressIn().pointerInput(i) { detectTapGestures(onTap = { onSelect(i) }) }) {
-                    Text("${i + 1}  $label", color = when { on -> LatentColors.Amber; i < available -> LatentColors.TextDim; else -> LatentColors.Line },
+                val on = i == activePos
+                Column(Modifier.onGloballyPositioned { stepX[i] = it.positionInParent().x }.pressIn().pointerInput(i) { detectTapGestures(onTap = { onSelect(ids[i]) }) }) {
+                    Text("${i + 1}  $label", color = when { on -> LatentColors.Amber; ids[i] < available -> LatentColors.TextDim; else -> LatentColors.Line },
                         fontSize = (10f * k).sp, letterSpacing = (1.2f * k).sp, maxLines = 1, softWrap = false)
                     Box(Modifier.padding(top = 4.dp).height(2.dp))
                 }
@@ -623,6 +627,8 @@ fun PrintPanel(
     val context = LocalContext.current
     val cache = memory.cache
     var step by memory.step
+    // 113a: LAYERS lives in NEGATIVE now; a PRINT left on it opens on the strip
+    if (step == 2) step = 0
     // the fog step's eyedropper: on, the next tap on the print takes the scene's light there
     var fogPicking by remember { mutableStateOf(false) }
     // the rays step's light: placing it, the next tap on the print sets where the light comes from
@@ -723,14 +729,7 @@ fun PrintPanel(
                     }
                 }
                 1 -> RingAroundStep(recipe, render, { r, e -> cache.peek(r, e, paintedKey(stripMasks)) }, onFilters, Modifier.fillMaxSize())
-                // 109a: LAYERS — parts of the photo, each with its own exposure, warmth and colour (LayersStep.kt)
-                2 -> LayersStep(recipe, layers, onLayers, depthRanks = depthRanks, selectPicture = selectPicture,
-                    depthSplit = depthSplit, onDepthSplit = onDepthSplit, depthFix = depthFix, onDepthFix = onDepthFix,
-                    render = { r, e, ls -> renderMasked(r, e, all.copy(layers = ls)) },
-                    renderRegion = renderRegionWithMasks?.let { f -> { r, e, ls, reg -> f(r, e, all.copy(layers = ls), reg) } },
-                    modifier = Modifier.fillMaxSize(),
-                    // 110a: LITH keeps its layer; the painting steps' strokes are already cut, so nothing else holds one
-                    usedBy = { id -> if (lithLook.on && lithLook.layer == id) listOf("lith") else emptyList() })
+                // 109a LAYERS (step 2) moved to NEGATIVE in 113a: NegativeLayers.kt
                 // each painting step shows the print with BOTH masks: it is one print
                 3 -> {
                     // the film's colour as the step began, for "hold: before" (the slider is part of this step)
@@ -3100,7 +3099,7 @@ private fun Chip(label: String, on: Boolean, enabled: Boolean = true, choice: Bo
             .pointerInput(label, on, enabled) { detectTapGestures(onTap = {
                 if (!enabled) return@detectTapGestures
                 Haptics.tick(context)
-                // 111e: in a row of choices the pill moves first, then the (re-rendering) change follows
+                // 113a: in a row of choices the pill moves first, then the (re-rendering) change follows
                 if (choice && glide != null && motionOn()) { glide.pick(label); scope.launch { glide.afterPill(); tapNow() } } else tapNow()
             }) }
             .padding(horizontal = 10.dp, vertical = 5.dp),

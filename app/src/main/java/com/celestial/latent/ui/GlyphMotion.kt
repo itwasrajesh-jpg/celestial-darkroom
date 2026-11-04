@@ -177,6 +177,13 @@ fun DrawScope.drawGlyphMoving(g: Glyph, ink: Color, accent: Color, t: Float) {
             for (i in 0 until 8) { val a = i * PI / 4 + e * PI / 4; val c = cos(a).toFloat(); val s = sin(a).toFloat(); stroke(path(12f + c * 7.8f to 12f + s * 7.8f, 12f + c * 9.6f to 12f + s * 9.6f)) }
         }
         // the loupe leans in
+        // 113a: the sheets fan apart and settle back into one stack
+        Glyph.LAYERS -> {
+            val o = 2.2f * b
+            stroke(path(12f to 14f + o, 20f to 17.5f + o, 12f to 21f + o, 4f to 17.5f + o, close = true), ink.copy(alpha = 0.6f))
+            stroke(path(12f to 8.5f, 20f to 12f, 12f to 15.5f, 4f to 12f, close = true))
+            stroke(path(12f to 3f - o, 20f to 6.5f - o, 12f to 10f - o, 4f to 6.5f - o, close = true), accent)
+        }
         Glyph.LOUPE -> scale(1 + 0.18f * b, 1 + 0.18f * b, p(10.5f, 10.5f)) { drawGlyph(g, ink, accent) }
         Glyph.FOLDER -> scale(1f, 1 - 0.12f * b, p(12f, 18.5f)) { drawGlyph(g, ink, accent) }
         // arrows nudge the way they point; close and add turn a quarter

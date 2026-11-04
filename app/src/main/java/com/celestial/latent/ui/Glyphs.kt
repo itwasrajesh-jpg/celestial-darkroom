@@ -45,7 +45,7 @@ enum class Glyph(val label: String) {
     IMPORT("import"), LOOK("look"), FOLDER("folder"), DELETE("delete"), SHARE("share"),
     LIGHT("light"), FILM("film"), HALATION("halation"), GRAIN("grain"), DIFFUSION("diffusion"), CAMERA("camera"),
     DEVELOP("develop"), BURST("burst"), HDR("hdr"), LOUPE("loupe"),
-    ENLARGER("enlarger"), SCANNER("scanner"), GLARE("glare"), COLOUR("colour"), ENGINE("engine"), UNFOLD("unfold"), NEXT("next"),
+    ENLARGER("enlarger"), SCANNER("scanner"), GLARE("glare"), COLOUR("colour"), ENGINE("engine"), LAYERS("layers"), UNFOLD("unfold"), NEXT("next"),
 }
 
 /**
@@ -167,6 +167,12 @@ fun DrawScope.drawGlyph(g: Glyph, ink: Color, accent: Color) {
         // a prism splitting a ray: the spectral engine
         Glyph.ENGINE -> { stroke(path(12f to 4.5f, 19.5f to 18f, 4.5f to 18f, close = true)); stroke(path(2f to 12.5f, 9f to 12f))
             stroke(path(15.5f to 11f, 22f to 8f), accent); stroke(path(16f to 12.5f, 22f to 12f)); stroke(path(16.5f to 14f, 22f to 16f), ink.copy(alpha = 0.6f)) }
+        // 113a: three sheets stacked, the top one in the accent: the photo cut into layers
+        Glyph.LAYERS -> {
+            stroke(path(12f to 14f, 20f to 17.5f, 12f to 21f, 4f to 17.5f, close = true), ink.copy(alpha = 0.6f))
+            stroke(path(12f to 8.5f, 20f to 12f, 12f to 15.5f, 4f to 12f, close = true))
+            stroke(path(12f to 3f, 20f to 6.5f, 12f to 10f, 4f to 6.5f, close = true), accent)
+        }
         Glyph.LOUPE -> { ring(10.5f, 10.5f, 6.5f); stroke(path(15.3f to 15.3f, 20f to 20f)); dot(8.2f, 8.2f, 1.1f, accent) }
     }
 }

@@ -179,6 +179,10 @@ internal fun LayersStep(
     modifier: Modifier = Modifier,
     /** 110a: the other PRINT steps that keep a layer (by id), e.g. "lith", for the cards and delete's question. */
     usedBy: (Int) -> List<String> = { emptyList() },
+    /** 113a: false while the photo has no film: layers can be cut, but their exposure, warmth and colour wait. */
+    canAdjust: Boolean = true,
+    /** 113a: what the LAYERS label says when nothing else is being said (NEGATIVE's own hint). */
+    hint: String? = null,
 ) {
     val context = LocalContext.current
     val ui = remember { LayersUi() }
@@ -238,7 +242,7 @@ internal fun LayersStep(
             stepStartMap = { a -> ExposureMap.blank(a) },
             modifier = modifier,
             renderRegion = renderRegion?.let { f -> { r, e, m, reg -> f(r, e, if (sel == null) layers else layers.map { if (it.id == sel.id) it.copy(mask = m ?: ExposureMap.blank(aspect())) else it }, reg) } },
-            tabs = if (sel == null) null else listOf("ADJUST" to @Composable { AdjustRows(sel) { f -> edit(sel.id, f) } }),
+            tabs = if (sel == null || !canAdjust) null else listOf("ADJUST" to @Composable { AdjustRows(sel) { f -> edit(sel.id, f) } }),
             tabsLead = sel?.name,
             // the other layers' settings re-develop the print; this one's painting does so itself
             refreshKey = layers.joinToString(";") { (if (it.id == sel?.id) "${it.ev}:${it.warmth}:${it.colour}:${it.visible}" else it.key()) + ":" + (it.recipe?.toJson()?.hashCode() ?: 0) },
@@ -264,7 +268,7 @@ internal fun LayersStep(
                 }
             },
             strip = @Composable { LayersStrip(layers, sel, ui, tints, onLayers, { n, m, p -> add(n, m, p) }, aspect = { aspect() }, hasDepth = depthRanks != null,
-                byDepth = { near -> byDepth(near) }, usedBy = usedBy) },
+                byDepth = { near -> byDepth(near) }, usedBy = usedBy, hint = hint) },
         )
     }
 }
@@ -274,13 +278,15 @@ internal fun LayersStep(
 private fun LayersStrip(
     layers: List<Layer>, sel: Layer?, ui: LayersUi, tints: Map<Int, Bitmap>,
     onLayers: (List<Layer>) -> Unit, add: (String, ExposureMap, Int?) -> Unit, aspect: () -> Float, hasDepth: Boolean,
-    byDepth: (Boolean) -> Unit, usedBy: (Int) -> List<String>,
+    byDepth: (Boolean) -> Unit, usedBy: (Int) -> List<String>, hint: String? = null,
 ) {
     val context = LocalContext.current
     Column(Modifier.fillMaxWidth().padding(bottom = 8.dp)) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 6.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-            Text(if (ui.note.isNotEmpty()) ui.note else "LAYERS", color = if (ui.note.isNotEmpty()) LatentColors.Amber else LatentColors.TextDim,
-                fontSize = if (ui.note.isNotEmpty()) 11.sp else 10.sp, letterSpacing = if (ui.note.isNotEmpty()) 0.sp else 1.5.sp)
+            val said = ui.note.ifEmpty { hint ?: "" }
+            Text(said.ifEmpty { "LAYERS" }, color = if (said.isNotEmpty()) LatentColors.Amber else LatentColors.TextDim,
+                fontSize = if (said.isNotEmpty()) 11.sp else 10.sp, letterSpacing = if (said.isNotEmpty()) 0.sp else 1.5.sp,
+                modifier = Modifier.weight(1f, fill = false).padding(end = 8.dp))
             if (layers.size > 1) PrintChip("show all", on = ui.showAll) { ui.showAll = !ui.showAll }
         }
         // Card widths: 92 dp each + 8 dp gaps; four cards and "+" (56 dp) ≈ 408 dp, so the row scrolls on a phone.

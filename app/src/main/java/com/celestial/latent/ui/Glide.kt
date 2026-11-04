@@ -57,7 +57,7 @@ class Glide(
     internal var host: LayoutCoordinates? = null
     internal val rects = mutableStateMapOf<Any, Rect>()
     internal var selected: Any? by mutableStateOf(null)
-    /** 111e: a choice just tapped whose work has not landed yet: the pill already heads there. */
+    /** 113a: a choice just tapped whose work has not landed yet: the pill already heads there. */
     internal var pending: Any? by mutableStateOf(null)
     internal val left = Animatable(0f)
     internal val right = Animatable(0f)
@@ -67,7 +67,7 @@ class Glide(
     internal var radius: Float = -1f
 
     /**
-     * 111e: send the pill to [key] now, before the tap's work recomposes the row (APPLY TO swaps NEGATIVE to the
+     * 113a: send the pill to [key] now, before the tap's work recomposes the row (APPLY TO swaps NEGATIVE to the
      * layer's settings, which took a frame or more before the pill learned of the new choice). Pair it with
      * [afterPill] around the work. Reverts by itself if the choice never arrives.
      */
@@ -144,7 +144,7 @@ fun Modifier.glideHost(g: Glide, selected: Any?, corner: Dp = 999.dp): Modifier 
 @Composable
 private fun GlideMoverEffect(g: Glide, selected: Any?) {
     if (g.selected != selected) g.selected = selected
-    // 111e: a tapped choice leads; it is dropped once the real one catches up (or did not come)
+    // 113a: a tapped choice leads; it is dropped once the real one catches up (or did not come)
     val pending = g.pending
     LaunchedEffect(pending, selected) {
         if (pending == null) return@LaunchedEffect
@@ -172,7 +172,7 @@ private fun GlideMoverEffect(g: Glide, selected: Any?) {
 }
 
 /**
- * 111f: wait until the pill has (nearly) landed on the tapped choice, then let the tap's work run. 111e waited only
+ * 111f: wait until the pill has (nearly) landed on the tapped choice, then let the tap's work run. 113a waited only
  * two frames, and APPLY TO's layer switch froze the screen with the pill hardly moved, so it still seemed to wait
  * for the layer. Gives up after ~0.35 s (at the user's pace), or at once when the pill never starts.
  */
