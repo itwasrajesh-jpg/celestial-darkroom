@@ -114,7 +114,7 @@ internal fun TargetChip(label: String, tint: Int?, on: Boolean, enabled: Boolean
             .pointerInput(label, on, enabled) { detectTapGestures(onTap = {
                 if (!enabled) return@detectTapGestures
                 Haptics.tick(context)
-                // 113a/f: the pill moves first; the layer switch (and its wave) follows once it has landed
+                // 111e/f: the pill moves first; the layer switch (and its wave) follows once it has landed
                 if (glide != null && motionOn()) { glide.pick(key); scope.launch { glide.afterPill(); tapNow() } } else tapNow()
             }) }
             .padding(horizontal = 10.dp, vertical = 5.dp),

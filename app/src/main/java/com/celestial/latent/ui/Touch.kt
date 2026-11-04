@@ -101,7 +101,7 @@ fun Modifier.pressIn(enabled: Boolean = true, ring: Color? = null): Modifier = i
     val slop = LocalViewConfiguration.current.touchSlop
     val tint = ring ?: Touch.ring
     var bounds by remember { mutableStateOf(Rect.Zero) }
-    // 113a: the LIGHT wave's lit edge is drawn by the panel ([waveHost]) from this list, so a passing wave
+    // 111e: the LIGHT wave's lit edge is drawn by the panel ([waveHost]) from this list, so a passing wave
     // redraws the panel once a frame instead of every control in it
     val me = remember { Wave.Edge() }
     DisposableEffect(Unit) { Wave.edges.add(me); onDispose { Wave.edges.remove(me) } }
@@ -170,7 +170,7 @@ object Wave {
         runCatching { ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString("wave", s.id).apply() }
     }
 
-    /** 113a: a control the LIGHT wave lights the edge of: where it is (root px) and its own colour, if any. */
+    /** 111e: a control the LIGHT wave lights the edge of: where it is (root px) and its own colour, if any. */
     internal class Edge { var rect: Rect = Rect.Zero; var colour: Color? = null }
     internal val edges = LinkedHashSet<Edge>()
 
