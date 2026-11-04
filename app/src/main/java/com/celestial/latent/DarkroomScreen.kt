@@ -105,6 +105,8 @@ private fun decodeEdge(edge: Int, framing: com.celestial.latent.develop.Framing)
     if (framing.zoomed) (edge * framing.zoom.coerceAtMost(2f)).toInt() else edge
 
 private val TABS = listOf(
+    // 113a: the photo cut into layers first, before any editing (moved here from PRINT)
+    "layers" to "LAYERS",
     // 100a: the scene's light first, before the film sees it
     "light" to "LIGHT", "film" to "FILM", "halation" to "HALATION", "grain" to "GRAIN", "diffusion" to "DIFFUSION",
     "camera" to "CAMERA", "enlarger" to "ENLARGER", "scanner" to "SCANNER", "glare" to "GLARE",
@@ -114,6 +116,7 @@ private val TABS = listOf(
 )
 
 private val TAB_GLYPHS = mapOf(
+    "layers" to Glyph.LAYERS,
     "light" to Glyph.LIGHT, "film" to Glyph.FILM, "halation" to Glyph.HALATION, "grain" to Glyph.GRAIN, "diffusion" to Glyph.DIFFUSION,
     "camera" to Glyph.CAMERA, "enlarger" to Glyph.ENLARGER, "scanner" to Glyph.SCANNER, "glare" to Glyph.GLARE,
     "colour" to Glyph.COLOUR, "engine" to Glyph.ENGINE, "develop" to Glyph.DEVELOP,
@@ -1191,6 +1194,13 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                     renderRegionWithMasks = { r, edge, mk, reg -> renderDetail(r, reg, edge, mk) },
                     modifier = Modifier.fillMaxSize().waveHost(),
                 )
+            } else if (tab == "layers") androidx.compose.runtime.CompositionLocalProvider(LocalPanelSplit provides panelSplit) {
+                // 113a: LAYERS, its own screen (the photo, its layers and the brush), back to the tabs with ‹ NEGATIVE
+                NegativeLayers(recipe, op.layers, { op.layers = it; if (it.none { l -> l.id == op.applyTo }) op.applyTo = null }, printMemory,
+                    op.noFilm, if (originalFraming == framing.key()) original else null, lithLook, { currentMasks() },
+                    depthSplit, { depthSplit = it }, depthFix, { depthFix = it },
+                    { r, edge, mk -> renderStill(r, edge, mk) }, { mk -> paintedKey(mk) }, { r, edge, mk, reg -> renderDetail(r, reg, edge, mk) },
+                    onClose = { tab = "light" }, modifier = Modifier.fillMaxSize().waveHost())
             } else Column(Modifier.fillMaxSize().onSizeChanged { roomHeight = it.height.coerceAtLeast(1) }) {
                 // Photo shrinks as the sheet is dragged up; it never disappears entirely.
                 // While framing, the photo gets at least its usual share, so the crop is easy to see.
@@ -1543,14 +1553,15 @@ fun DarkroomScreen(source: Uri, isRaw: Boolean, initial: Recipe, onRecipeChanged
                     }
                     // Tabs (110a: waiting, dimmed, while the photo has no film)
                     // 111b: one pill glides between the tabs
-                    GlideRow(tab, Modifier.fillMaxWidth().waitsForFilm(op.noFilm).horizontalScroll(rememberScrollState()).padding(horizontal = 14.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), corner = 12.dp) {
+                    GlideRow(tab, Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 14.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), corner = 12.dp) {
                         val glide = LocalGlide.current!!
                         TABS.forEach { (id, label) ->
                             // 89c: each tab its glyph over its name (approved proof visual-3/proof/4-icons-in-place.jpg)
                             val on = id == tab
                             val ink = glide.ink(id, LatentColors.Text)
                             Column(
-                                Modifier.pressIn().clip(RoundedCornerShape(12.dp))
+                                // 113a: LAYERS works with no film; the other tabs wait for one
+                                Modifier.waitsForFilm(op.noFilm && id != "layers").pressIn().clip(RoundedCornerShape(12.dp))
                                     .glideItem(glide, id, Color.Transparent)
                                     .border(0.5.dp, LatentColors.Line.copy(alpha = 1f - glide.coverage(id)), RoundedCornerShape(12.dp))
                                     .combinedClickable(onClick = { Haptics.tick(context); tab = id }).widthIn(min = 52.dp).padding(horizontal = 7.dp, vertical = 5.dp),
