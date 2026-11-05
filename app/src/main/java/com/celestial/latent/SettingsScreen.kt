@@ -1,4 +1,4 @@
-@file:OptIn(ExperimentalFoundationApi::class)
+@file:OptIn(ExperimentalFoundationApi::class, androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 
 package com.celestial.latent
 
@@ -50,183 +50,296 @@ import com.celestial.latent.ui.GlideRow
 import com.celestial.latent.ui.accentFill
 import com.celestial.latent.ui.glow
 import com.celestial.latent.ui.raised
+import com.celestial.latent.ui.litEdge
+import com.celestial.latent.ui.glideHost
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
 
+/**
+ * 117a: Settings in tabs (approved proof settings-organise/proof/8-12). The pills stay at the top and only the
+ * chosen group shows below, on one card; the last tab is remembered. Every control and every word is as before;
+ * explanations open on their first sentence with "more" for the rest.
+ */
 @Composable
 fun SettingsScreen(settings: AppSettings, onChange: (AppSettings) -> Unit, onOpenReport: () -> Unit, onOpenVendor: () -> Unit, onOpenProbe: () -> Unit, onOpenDepth: () -> Unit, onOpenLogs: () -> Unit, onOpenExtension: () -> Unit, onOpenAbout: () -> Unit, onBack: () -> Unit, onOpenHelp: () -> Unit = {}, onOpenRecipeExport: () -> Unit = {}, onOpenRecipeImport: () -> Unit = {}, onOpenRecipeScan: () -> Unit = {}) {
+    val context = LocalContext.current
+    val uiContext = context
+    var tab by remember { mutableStateOf(SettingsTabs.load(context)) }
     Column(
         Modifier.fillMaxSize().background(LatentColors.Background).glow().statusBarsPadding().navigationBarsPadding()
-            .verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 12.dp).waveHost(),
+            .padding(horizontal = 16.dp).padding(top = 12.dp).waveHost(),
     ) {
-        Text("‹ back", color = LatentColors.Text, fontSize = 14.sp, modifier = Modifier.combinedClickable(onClick = onBack).padding(vertical = 6.dp))
+        Text("‹ back", color = LatentColors.Text, fontSize = 14.sp, modifier = Modifier.combinedClickable(onClick = onBack).padding(vertical = 6.dp, horizontal = 4.dp))
         Spacer(Modifier.height(8.dp))
-        Text("Settings", color = LatentColors.TextBright, fontSize = 24.sp)
-        Spacer(Modifier.height(20.dp))
-
-        // 74a: what every darkroom control does
-        Section("App help")
-        LinkRow("Every control explained, tab by tab", onOpenHelp)
+        Text("Settings", color = LatentColors.TextBright, fontSize = 24.sp, modifier = Modifier.padding(horizontal = 4.dp))
         Spacer(Modifier.height(12.dp))
-
-        // 87a: the app's colours. Changes at once; photos and the darkroom's photo mat are never tinted.
-        val uiContext = LocalContext.current
-        Section("Look")
-        // 102c: where each theme's chip is, so the new colours spread out from the one tapped
-        val themeChips = remember { HashMap<AppTheme, androidx.compose.ui.geometry.Offset>() }
-        OptionRow(
-            title = "Theme",
-            subtitle = "Darkroom: warm black with amber, as always. Midnight: layered navy with soft shadows and lit edges. Clay: pale blue and white, soft and raised. Photos always sit on a dark mat.",
-            options = AppTheme.entries.map { it.label to it },
-            selected = LatentColors.theme,
-            places = themeChips,
-        ) { ThemeReveal.start(uiContext, themeChips[it], it) }
-        // 111a: the pace of every touch motion (press-in, the gliding pill, sliders, the panel waves). 100% is
-        // the approved proofs' pace and the fastest; it can only be slowed, to half speed at most.
-        SpeedRow()
-        // 111d: what the big moments do to the panel (approved proofs touch-motion/4-6); tapping one shows it
-        OptionRow(
-            title = "Panel wave",
-            subtitle = "On a big moment (a look picked, APPLY TO changed, Auto level, Start fresh, a print made) a wave spreads from your finger. Light: a band of light lights each control's edge. Water: the controls bob as the ripple passes. Wash: a faint tint of what you touched spreads and fades.",
-            options = com.celestial.latent.ui.Wave.Style.entries.map { it.label to it },
-            selected = com.celestial.latent.ui.Wave.style,
-        ) { com.celestial.latent.ui.Wave.set(uiContext, it); com.celestial.latent.ui.Wave.start() }
-        // 105c
-        ToggleRow("Breathing shutter", "In manual, when the meter reads 0 the shutter wakes, glows in the theme's colours and breathes, with small lights circling it. Turn off for a plain shutter.", settings.breathingShutter) { onChange(settings.copy(breathingShutter = it)) }
-        // 114a
-        ToggleRow("Mascot", "The little photographer on the empty roll, Help, About and the crash screen. It waves once when the screen opens, then just breathes; tap it and it jumps. Still when the phone's animations are off.", settings.mascot) { onChange(settings.copy(mascot = it)) }
-
-        Section("Exposure")
-        OptionRow(
-            title = "Anti-banding",
-            subtitle = "Avoids flicker from mains-powered lights. India is 50 Hz. Only acts while shutter is automatic; with a manual shutter, pick 1/50, 1/100 or slower.",
-            options = listOf("Auto" to AppSettings.ANTIBANDING_AUTO, "50 Hz" to AppSettings.ANTIBANDING_50HZ, "60 Hz" to AppSettings.ANTIBANDING_60HZ, "Off" to AppSettings.ANTIBANDING_OFF),
-            selected = settings.antibanding,
-        ) { onChange(settings.copy(antibanding = it)) }
-
-        Section("Viewfinder")
-        ToggleRow("Gridlines", "Rule-of-thirds lines over the preview", settings.gridlines) { onChange(settings.copy(gridlines = it)) }
-        // 106a
-        ToggleRow("Horizon lock", "Keeps the viewfinder level however the phone is tilted, and each photo comes out level. Straightening crops the edges a little (5° keeps about 81%). Up to 15°; past that, or pointing at the sky or floor, photos are kept as shot. The RAW is never changed: undo it with Straighten in FRAME.", settings.horizonLock) { onChange(settings.copy(horizonLock = it)) }
-
-        Section("Files")
-        OptionRow(
-            title = "Format",
-            subtitle = "RAW is always saved. The JPEG is the camera driver's own processed copy, handy for sharing; it is not the film-developed result.",
-            options = listOf("RAW" to false, "RAW + JPEG" to true),
-            selected = settings.saveJpeg,
-        ) { onChange(settings.copy(saveJpeg = it)) }
-
-        Section("Shooting")
-        if (Lenses.isXiaomi15Ultra) ToggleRow("In-sensor zoom at ×2", "Asks the driver for the sensor's native centre crop while ×2 is on (JPEG path; the RAW stays the full frame). Nothing is sent at normal zoom.", settings.inSensorZoomJpeg) { onChange(settings.copy(inSensorZoomJpeg = it)) }
-        if (Lenses.isXiaomi15Ultra) ToggleRow("DCG on the main lens", "Dual conversion gain: the main sensor reads 14-bit with cleaner shadows (about 2.4× less noise in the deepest shadows on this phone). Runs at 30 fps, so no shutter is longer than 1/30 s. No JPEGs while it is on. The burst button keeps all 16 frames in one burst roll (see BURSTS in the roll). Not used at ×2. Found by the MotionCam team.", settings.dcgTest) { onChange(settings.copy(dcgTest = it)) }
-        ToggleRow("Open tele lenses directly when zoomed", "Stops the logical camera handing the frame to another sensor mid-zoom (the visible switch and refocus).", settings.teleZoomDirect) { onChange(settings.copy(teleZoomDirect = it)) }
-        ToggleRow("Volume buttons take the photo", "Either volume key acts as the shutter", settings.volumeShutter) { onChange(settings.copy(volumeShutter = it)) }
-        ToggleRow("Haptics", "Click on the shutter, ticks on slider steps and lens changes", settings.haptics) { onChange(settings.copy(haptics = it)) }
-        ToggleRow("Remember last lens", "Open on the lens you used last time", settings.rememberLens) { onChange(settings.copy(rememberLens = it)) }
-        OptionRow(
-            title = "Default lens",
-            subtitle = "Used when the app opens (if not remembering the last one)",
-            options = Lenses.ALL.map { it.label to it.physicalId },
-            selected = settings.defaultLensId,
-        ) { onChange(settings.copy(defaultLensId = it)) }
-
-        // 91a: sounds made from a model of a real camera's parts; off until turned on, quiet when the phone is
-        Section("Sounds")
-        ToggleRow("Shutter sound", "The click of a real shutter, with your shutter speed between opening and closing: 1/500 is one click, 1/2 s is click … click. Plays at the media volume, only while the ringer is on; silent and vibrate stay quiet.", settings.soundShutter) {
-            onChange(settings.copy(soundShutter = it)); if (it) Sounds.preview(Sounds.Camera.of(settings.soundCamera), false)
-        }
-        ToggleRow("Film wind", "The film winds on after each shot, and once after a burst or bracket.", settings.soundWind) {
-            onChange(settings.copy(soundWind = it)); if (it) Sounds.preview(Sounds.Camera.of(settings.soundCamera), true)
-        }
-        val soundCtx = LocalContext.current
-        if (settings.soundShutter || settings.soundWind || settings.soundDial) Sounds.mutedReason(soundCtx)?.let {
-            Text(it, color = LatentColors.Amber, fontSize = 12.sp, modifier = Modifier.padding(bottom = 6.dp))
-        }
-        ToggleRow("Dial ticks", "A soft click-stop as the S and ISO dials turn.", settings.soundDial) { onChange(settings.copy(soundDial = it)) }
-        if (settings.soundShutter || settings.soundWind) OptionRow(
-            title = "Camera",
-            subtitle = "Rangefinder: quiet cloth shutter and a smooth lever. SLR: the mirror slap and a ratcheting lever. Compact: leaf blades in the lens and a little motor wind. Tap to hear it.",
-            options = Sounds.Camera.entries.map { it.label to it.key },
-            selected = settings.soundCamera,
-        ) { onChange(settings.copy(soundCamera = it)); Sounds.preview(Sounds.Camera.of(it), settings.soundWind) }
-
-        Section("Film")
-        UpdateRow()
-        ToggleRow("Opening animation", "A black hole, traced live, as the name develops in. Drag and pinch to explore it; tap to close.", settings.openingAnimation) { onChange(settings.copy(openingAnimation = it)) }
-        ToggleRow("Film in the viewfinder", "Draws the preview through the film look. Turn off to use the plain camera preview.", settings.filmPreview) { onChange(settings.copy(filmPreview = it)) }
-        ToggleRow("Let the film level the exposure", "Off: the camera decides brightness — what you expose is what develops. On: the engine brightens or darkens every shot to its own target, which cancels out the EV dial.", settings.engineAutoExposure) { onChange(settings.copy(engineAutoExposure = it)) }
-        ToggleRow("Develop every photo", "Single shots are developed with the selected film in the background. Bursts are never auto-developed.", settings.autoDevelop) { onChange(settings.copy(autoDevelop = it)) }
-        val context = LocalContext.current
-        OptionRow(
-            title = "Cinema glow",
-            subtitle = "How much the cinema films (Vision3 250D, 200T, 500T, Verita 200D) glow around lights. Classic: as they always have. True to film: less, because the real films carry a backing that stops most of the glow. Photos already developed keep theirs.",
-            options = listOf("Classic" to false, "True to film" to true),
-            selected = settings.trueCinemaGlow,
-        ) {
-            if (it != settings.trueCinemaGlow) {
-                onChange(settings.copy(trueCinemaGlow = it))
-                com.celestial.latent.develop.Presets.cinemaGlowChanged(context, settings.preset, it)
+        // the tabs: one pill glides to the chosen group; they wrap onto two rows, so none hide off the edge
+        val glide = remember { com.celestial.latent.ui.Glide() }
+        androidx.compose.runtime.CompositionLocalProvider(com.celestial.latent.ui.LocalGlide provides glide) {
+            FlowRow(Modifier.fillMaxWidth().glideHost(glide, tab), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                SettingsTabs.ALL.forEach { (id, label) ->
+                    Text(label, color = glide.ink(id, LatentColors.Text), fontSize = 12.sp,
+                        modifier = Modifier.pressIn().raised(RoundedCornerShape(999.dp), 3.dp).clip(RoundedCornerShape(999.dp))
+                            .glideItem(glide, id, LatentColors.Surface)
+                            .combinedClickable(onClick = { if (id != tab) { Haptics.tick(context); tab = id; SettingsTabs.save(context, id) } })
+                            .padding(horizontal = 12.dp, vertical = 6.dp))
+                }
             }
         }
-        // 78a: where a new photo's Ultra HDR glow starts; each photo keeps its own once moved in the darkroom
-        if (com.celestial.latent.develop.HdrGlow.supported) {
-            var hdrStart by remember { mutableStateOf(com.celestial.latent.develop.HdrGlows.defaultStops(context)) }
-            OptionRow(
-                title = "Ultra HDR glow for new photos",
-                subtitle = "Developed JPEGs carry a hidden glow map: on HDR screens the brightest lights shine brighter than white, and every other screen shows the normal print. Each photo can change its own in the darkroom's DEVELOP tab.",
-                options = com.celestial.latent.develop.HdrGlow.CHOICES.map { com.celestial.latent.develop.HdrGlow.label(it) to it },
-                selected = hdrStart,
-            ) { hdrStart = it; com.celestial.latent.develop.HdrGlows.setDefault(context, it) }
-        }
-        Text("Open the roll to reach the darkroom: tap the last-photo thumbnail on the camera screen, or long-press the film strip.", color = LatentColors.TextDim, fontSize = 12.sp)
+        // the chosen group, on its own card; each tab opens at its top
+        androidx.compose.runtime.key(tab) {
+            Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(bottom = 12.dp)) {
+                when (tab) {
+                    SettingsTabs.CAMERA -> SettingsCard("How photos are taken and saved") {
+                        OptionRow(
+                            title = "Format",
+                            subtitle = "RAW is always saved. The JPEG is the camera driver's own processed copy, handy for sharing; it is not the film-developed result.",
+                            options = listOf("RAW" to false, "RAW + JPEG" to true),
+                            selected = settings.saveJpeg,
+                            note = if (settings.dcgTest && Lenses.isXiaomi15Ultra) "With DCG on, the main lens saves RAW only (Advanced tab)." else null,
+                        ) { onChange(settings.copy(saveJpeg = it)) }
+                        Hair()
+                        ToggleRow("Volume buttons take the photo", "Either volume key acts as the shutter", settings.volumeShutter) { onChange(settings.copy(volumeShutter = it)) }
+                        Hair()
+                        ToggleRow("Remember last lens", "Open on the lens you used last time", settings.rememberLens) { onChange(settings.copy(rememberLens = it)) }
+                        Hair()
+                        OptionRow(
+                            title = "Default lens",
+                            subtitle = "Used when the app opens (if not remembering the last one)",
+                            options = Lenses.ALL.map { it.label to it.physicalId },
+                            selected = settings.defaultLensId,
+                            enabled = !settings.rememberLens,
+                            note = if (settings.rememberLens) "Not used while Remember last lens is on." else null,
+                        ) { onChange(settings.copy(defaultLensId = it)) }
+                        Hair()
+                        OptionRow(
+                            title = "Anti-banding",
+                            subtitle = "Avoids flicker from mains-powered lights. India is 50 Hz. Only acts while shutter is automatic; with a manual shutter, pick 1/50, 1/100 or slower.",
+                            options = listOf("Auto" to AppSettings.ANTIBANDING_AUTO, "50 Hz" to AppSettings.ANTIBANDING_50HZ, "60 Hz" to AppSettings.ANTIBANDING_60HZ, "Off" to AppSettings.ANTIBANDING_OFF),
+                            selected = settings.antibanding,
+                        ) { onChange(settings.copy(antibanding = it)) }
+                    }
 
-        // 90a: recipes travel to another phone as one small file
-        Section("Recipes")
-        var counts by remember { mutableStateOf<Pair<Int, Int>?>(null) }
-        LaunchedEffect(Unit) {
-            counts = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                runCatching {
-                    com.celestial.latent.develop.EngineAssets.attach(context)
-                    com.celestial.latent.develop.Recipes.saved(context).size to com.celestial.latent.develop.Recipes.stocks(context).size
-                }.getOrNull()
+                    SettingsTabs.VIEWFINDER -> SettingsCard("What you see while framing") {
+                        ToggleRow("Film in the viewfinder", "Draws the preview through the film look. Turn off to use the plain camera preview.", settings.filmPreview) { onChange(settings.copy(filmPreview = it)) }
+                        Hair()
+                        ToggleRow("Gridlines", "Rule-of-thirds lines over the preview", settings.gridlines) { onChange(settings.copy(gridlines = it)) }
+                        Hair()
+                        // 106a
+                        ToggleRow("Horizon lock", "Keeps the viewfinder level however the phone is tilted, and each photo comes out level. Straightening crops the edges a little (5° keeps about 81%). Up to 15°; past that, or pointing at the sky or floor, photos are kept as shot. The RAW is never changed: undo it with Straighten in FRAME.", settings.horizonLock) { onChange(settings.copy(horizonLock = it)) }
+                    }
+
+                    SettingsTabs.DEVELOPING -> SettingsCard("What the film does after the shot") {
+                        ToggleRow("Develop every photo", "Single shots are developed with the selected film in the background. Bursts are never auto-developed.", settings.autoDevelop) { onChange(settings.copy(autoDevelop = it)) }
+                        Hair()
+                        ToggleRow("Let the film level the exposure", "Off: the camera decides brightness — what you expose is what develops. On: the engine brightens or darkens every shot to its own target, which cancels out the EV dial.", settings.engineAutoExposure) { onChange(settings.copy(engineAutoExposure = it)) }
+                        Hair()
+                        OptionRow(
+                            title = "Cinema glow",
+                            subtitle = "How much the cinema films (Vision3 250D, 200T, 500T, Verita 200D) glow around lights. Classic: as they always have. True to film: less, because the real films carry a backing that stops most of the glow. Photos already developed keep theirs.",
+                            options = listOf("Classic" to false, "True to film" to true),
+                            selected = settings.trueCinemaGlow,
+                        ) {
+                            if (it != settings.trueCinemaGlow) {
+                                onChange(settings.copy(trueCinemaGlow = it))
+                                com.celestial.latent.develop.Presets.cinemaGlowChanged(context, settings.preset, it)
+                            }
+                        }
+                        // 78a: where a new photo's Ultra HDR glow starts; each photo keeps its own once moved in the darkroom
+                        if (com.celestial.latent.develop.HdrGlow.supported) {
+                            Hair()
+                            var hdrStart by remember { mutableStateOf(com.celestial.latent.develop.HdrGlows.defaultStops(context)) }
+                            OptionRow(
+                                title = "Ultra HDR glow for new photos",
+                                subtitle = "Developed JPEGs carry a hidden glow map: on HDR screens the brightest lights shine brighter than white, and every other screen shows the normal print. Each photo can change its own in the darkroom's DEVELOP tab.",
+                                options = com.celestial.latent.develop.HdrGlow.CHOICES.map { com.celestial.latent.develop.HdrGlow.label(it) to it },
+                                selected = hdrStart,
+                            ) { hdrStart = it; com.celestial.latent.develop.HdrGlows.setDefault(context, it) }
+                        }
+                        Blurb("Open the roll to reach the darkroom: tap the last-photo thumbnail on the camera screen, or long-press the film strip.", Modifier.padding(top = 4.dp))
+                    }
+
+                    // 90a: recipes travel to another phone as one small file
+                    SettingsTabs.RECIPES -> SettingsCard("Your looks, to and from another phone") {
+                        var counts by remember { mutableStateOf<Pair<Int, Int>?>(null) }
+                        LaunchedEffect(Unit) {
+                            counts = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                runCatching {
+                                    com.celestial.latent.develop.EngineAssets.attach(context)
+                                    com.celestial.latent.develop.Recipes.saved(context).size to com.celestial.latent.develop.Recipes.stocks(context).size
+                                }.getOrNull()
+                            }
+                        }
+                        counts?.let { (own, built) ->
+                            Text("$own of your ${if (own == 1) "recipe" else "recipes"} · $built ${if (built == 1) "film" else "films"} built here", color = LatentColors.Text, fontSize = 13.sp, modifier = Modifier.padding(top = 6.dp))
+                        }
+                        LinkRow("Export recipes", onOpenRecipeExport)
+                        LinkRow("Import recipes", onOpenRecipeImport)
+                        LinkRow("Scan a recipe", onOpenRecipeScan)
+                        Blurb("Sends your darkroom recipes and the films you built, with their air and light, as one small file. Open it on the other phone with Import. Photos and per-photo edits stay here.")
+                        Blurb("One recipe can also travel as a QR card (Export, tick one, QR card). Scan someone's card here, or share their picture to Celestial Darkroom from any app.", Modifier.padding(top = 4.dp))
+                    }
+
+                    // 87a: the app's colours. Changes at once; photos and the darkroom's photo mat are never tinted.
+                    SettingsTabs.LOOK -> SettingsCard("The app's colours, motion and touch") {
+                        // 102c: where each theme's chip is, so the new colours spread out from the one tapped
+                        val themeChips = remember { HashMap<AppTheme, androidx.compose.ui.geometry.Offset>() }
+                        OptionRow(
+                            title = "Theme",
+                            subtitle = "Darkroom: warm black with amber, as always. Midnight: layered navy with soft shadows and lit edges. Clay: pale blue and white, soft and raised. Photos always sit on a dark mat.",
+                            options = AppTheme.entries.map { it.label to it },
+                            selected = LatentColors.theme,
+                            places = themeChips,
+                        ) { ThemeReveal.start(uiContext, themeChips[it], it) }
+                        Hair()
+                        // 111a: the pace of every touch motion; 100% is the approved proofs' pace and the fastest
+                        SpeedRow()
+                        Hair()
+                        // 111d: what the big moments do to the panel (approved proofs touch-motion/4-6); tapping one shows it
+                        OptionRow(
+                            title = "Panel wave",
+                            subtitle = "On a big moment (a look picked, APPLY TO changed, Auto level, Start fresh, a print made) a wave spreads from your finger. Light: a band of light lights each control's edge. Water: the controls bob as the ripple passes. Wash: a faint tint of what you touched spreads and fades.",
+                            options = com.celestial.latent.ui.Wave.Style.entries.map { it.label to it },
+                            selected = com.celestial.latent.ui.Wave.style,
+                        ) { com.celestial.latent.ui.Wave.set(uiContext, it); com.celestial.latent.ui.Wave.start() }
+                        Hair()
+                        ToggleRow("Haptics", "Click on the shutter, ticks on slider steps and lens changes", settings.haptics) { onChange(settings.copy(haptics = it)) }
+                        Hair()
+                        // 105c
+                        ToggleRow("Breathing shutter", "In manual, when the meter reads 0 the shutter wakes, glows in the theme's colours and breathes, with small lights circling it. Turn off for a plain shutter.", settings.breathingShutter) { onChange(settings.copy(breathingShutter = it)) }
+                        Hair()
+                        // 114a
+                        ToggleRow("Mascot", "The little photographer on the empty roll, Help, About and the crash screen. It waves once when the screen opens, then just breathes; tap it and it jumps. Still when the phone's animations are off.", settings.mascot) { onChange(settings.copy(mascot = it)) }
+                        Hair()
+                        ToggleRow("Opening animation", "A black hole, traced live, as the name develops in. Drag and pinch to explore it; tap to close.", settings.openingAnimation) { onChange(settings.copy(openingAnimation = it)) }
+                    }
+
+                    // 91a: sounds made from a model of a real camera's parts; off until turned on, quiet when the phone is
+                    SettingsTabs.SOUNDS -> SettingsCard("A real camera's clicks, off until you turn them on") {
+                        ToggleRow("Shutter sound", "The click of a real shutter, with your shutter speed between opening and closing: 1/500 is one click, 1/2 s is click … click. Plays at the media volume, only while the ringer is on; silent and vibrate stay quiet.", settings.soundShutter) {
+                            onChange(settings.copy(soundShutter = it)); if (it) Sounds.preview(Sounds.Camera.of(settings.soundCamera), false)
+                        }
+                        Hair()
+                        ToggleRow("Film wind", "The film winds on after each shot, and once after a burst or bracket.", settings.soundWind) {
+                            onChange(settings.copy(soundWind = it)); if (it) Sounds.preview(Sounds.Camera.of(settings.soundCamera), true)
+                        }
+                        if (settings.soundShutter || settings.soundWind || settings.soundDial) Sounds.mutedReason(context)?.let {
+                            Text(it, color = LatentColors.Amber, fontSize = 12.sp, modifier = Modifier.padding(bottom = 6.dp))
+                        }
+                        Hair()
+                        ToggleRow("Dial ticks", "A soft click-stop as the S and ISO dials turn.", settings.soundDial) { onChange(settings.copy(soundDial = it)) }
+                        if (settings.soundShutter || settings.soundWind) {
+                            Hair()
+                            OptionRow(
+                                title = "Camera",
+                                subtitle = "Rangefinder: quiet cloth shutter and a smooth lever. SLR: the mirror slap and a ratcheting lever. Compact: leaf blades in the lens and a little motor wind. Tap to hear it.",
+                                options = Sounds.Camera.entries.map { it.label to it.key },
+                                selected = settings.soundCamera,
+                            ) { onChange(settings.copy(soundCamera = it)); Sounds.preview(Sounds.Camera.of(it), settings.soundWind) }
+                        }
+                    }
+
+                    SettingsTabs.ADVANCED -> SettingsCard("How the phone's lenses are driven") {
+                        ToggleRow("Open tele lenses directly when zoomed", "Stops the logical camera handing the frame to another sensor mid-zoom (the visible switch and refocus).", settings.teleZoomDirect) { onChange(settings.copy(teleZoomDirect = it)) }
+                        if (Lenses.isXiaomi15Ultra) {
+                            Hair()
+                            ToggleRow("In-sensor zoom at ×2", "Asks the driver for the sensor's native centre crop while ×2 is on (JPEG path; the RAW stays the full frame). Nothing is sent at normal zoom.", settings.inSensorZoomJpeg) { onChange(settings.copy(inSensorZoomJpeg = it)) }
+                            Hair()
+                            ToggleRow("DCG on the main lens", "Dual conversion gain: the main sensor reads 14-bit with cleaner shadows (about 2.4× less noise in the deepest shadows on this phone). Runs at 30 fps, so no shutter is longer than 1/30 s. No JPEGs while it is on. The burst button keeps all 16 frames in one burst roll (see BURSTS in the roll). Not used at ×2. Found by the MotionCam team.", settings.dcgTest) { onChange(settings.copy(dcgTest = it)) }
+                        }
+                        Hair()
+                        LinkRow("Portrait / Night test", onOpenExtension)
+                        Blurb("Xiaomi's own bokeh and night modes via Android's Camera Extensions. JPEG only, main camera.")
+                        Hair()
+                        // the tools for finding camera keys: folded away, one tap opens them
+                        var tools by remember { mutableStateOf(false) }
+                        val count = if (Lenses.isXiaomi15Ultra) 6 else 5
+                        Row(Modifier.fillMaxWidth().combinedClickable(onClick = { tools = !tools }).padding(vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text("Testing tools", color = LatentColors.TextBright, fontSize = 15.sp)
+                                Text(if (tools) "Hide them" else "$count tools for finding and checking camera keys", color = LatentColors.TextDim, fontSize = 12.sp, lineHeight = 17.sp)
+                            }
+                            Text(if (tools) "︿" else "﹀", color = LatentColors.Amber, fontSize = 15.sp)
+                        }
+                        if (tools) {
+                            if (Lenses.isXiaomi15Ultra) OptionRow(
+                                title = "Camera path",
+                                subtitle = "Which logical camera the lens is reached through, or open the lens directly. Vendor keys differ per path. Takes effect on next lens switch.",
+                                options = listOf("0" to "0", "6" to "6", "7" to "7", "Direct" to "direct"),
+                                selected = settings.cameraPath,
+                            ) { onChange(settings.copy(cameraPath = it)) }
+                            LinkRow("Vendor tags & opmode", onOpenVendor)
+                            LinkRow("Vendor probe (find & test keys)", onOpenProbe)
+                            LinkRow("Depth test (the depth model)", onOpenDepth)
+                            LinkRow("Logs (app logcat)", onOpenLogs)
+                            LinkRow("Camera report", onOpenReport)
+                        }
+                    }
+
+                    else -> SettingsCard("How things work, and keeping up to date") {
+                        // 74a: what every darkroom control does
+                        LinkRow("Every control explained, tab by tab", onOpenHelp)
+                        Hair()
+                        UpdateRow()
+                        Hair()
+                        LinkRow("About & credits", onOpenAbout)
+                    }
+                }
+                Spacer(Modifier.height(20.dp))
+                Text("Celestial Darkroom v" + BuildConfig.VERSION_NAME + " · film modeling powered by spektrafilm", color = LatentColors.TextDim, fontSize = 11.sp, modifier = Modifier.padding(horizontal = 4.dp))
             }
         }
-        counts?.let { (own, built) ->
-            Text("$own of your ${if (own == 1) "recipe" else "recipes"} · $built ${if (built == 1) "film" else "films"} built here", color = LatentColors.Text, fontSize = 13.sp)
-        }
-        LinkRow("Export recipes", onOpenRecipeExport)
-        LinkRow("Import recipes", onOpenRecipeImport)
-        LinkRow("Scan a recipe", onOpenRecipeScan)
-        Text("Sends your darkroom recipes and the films you built, with their air and light, as one small file. Open it on the other phone with Import. Photos and per-photo edits stay here.", color = LatentColors.TextDim, fontSize = 12.sp)
-        Text("One recipe can also travel as a QR card (Export, tick one, QR card). Scan someone's card here, or share their picture to Celestial Darkroom from any app.", color = LatentColors.TextDim, fontSize = 12.sp)
-
-        Section("Xiaomi processing (official extensions)")
-        LinkRow("Portrait / Night test", onOpenExtension)
-        Text("Xiaomi's own bokeh and night modes via Android's Camera Extensions. JPEG only, main camera.", color = LatentColors.TextDim, fontSize = 12.sp)
-
-        Section("Diagnostics")
-        if (Lenses.isXiaomi15Ultra) OptionRow(
-            title = "Camera path",
-            subtitle = "Which logical camera the lens is reached through, or open the lens directly. Vendor keys differ per path. Takes effect on next lens switch.",
-            options = listOf("0" to "0", "6" to "6", "7" to "7", "Direct" to "direct"),
-            selected = settings.cameraPath,
-        ) { onChange(settings.copy(cameraPath = it)) }
-        LinkRow("Vendor tags & opmode", onOpenVendor)
-        LinkRow("Vendor probe (find & test keys)", onOpenProbe)
-        LinkRow("Depth test (the depth model)", onOpenDepth)
-        LinkRow("Logs (app logcat)", onOpenLogs)
-        LinkRow("Camera report", onOpenReport)
-
-        LinkRow("About & credits", onOpenAbout)
-        Spacer(Modifier.height(24.dp))
-        Text("Celestial Darkroom v" + BuildConfig.VERSION_NAME + " · film modeling powered by spektrafilm", color = LatentColors.TextDim, fontSize = 11.sp)
     }
 }
 
+/** 117a: the Settings tabs, and the last one opened (prefs latent_settings_ui/tab). */
+private object SettingsTabs {
+    const val CAMERA = "camera"; const val VIEWFINDER = "viewfinder"; const val DEVELOPING = "developing"; const val RECIPES = "recipes"
+    const val LOOK = "look"; const val SOUNDS = "sounds"; const val ADVANCED = "advanced"; const val APP = "app"
+    val ALL = listOf(CAMERA to "Camera", VIEWFINDER to "Viewfinder", DEVELOPING to "Developing", RECIPES to "Recipes",
+        LOOK to "Look & feel", SOUNDS to "Sounds", ADVANCED to "Advanced", APP to "Help & app")
+    private const val PREFS = "latent_settings_ui"
+    fun load(ctx: android.content.Context): String =
+        runCatching { ctx.getSharedPreferences(PREFS, android.content.Context.MODE_PRIVATE).getString("tab", null) }.getOrNull()
+            ?.takeIf { id -> ALL.any { it.first == id } } ?: CAMERA
+    fun save(ctx: android.content.Context, id: String) {
+        runCatching { ctx.getSharedPreferences(PREFS, android.content.Context.MODE_PRIVATE).edit().putString("tab", id).apply() }
+    }
+}
+
+/** 117a: one group of settings on a raised card: a one-line summary, then its rows with hairlines between. */
 @Composable
-private fun Section(title: String) {
-    Spacer(Modifier.height(14.dp))
-    Text(title.uppercase(), color = LatentColors.TextDim, fontSize = 11.sp, letterSpacing = 2.sp)
-    Spacer(Modifier.height(6.dp))
+private fun SettingsCard(about: String, content: @Composable () -> Unit) {
+    val shape = RoundedCornerShape(18.dp)
+    Column(
+        Modifier.padding(top = 16.dp).fillMaxWidth()
+            .raised(shape, 4.dp).clip(shape).background(LatentColors.Panel).litEdge(shape)
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+    ) {
+        Text(about, color = LatentColors.TextDim, fontSize = 12.sp, lineHeight = 17.sp, modifier = Modifier.padding(bottom = 2.dp))
+        content()
+    }
+}
+
+/** 117a: a hairline between two rows of a card. */
+@Composable
+private fun Hair() = Spacer(Modifier.fillMaxWidth().height(1.dp).background(LatentColors.Line.copy(alpha = 0.35f)))
+
+/** 117a: a row's explanation: the first sentence, then "more" for the rest (tap again: "less"). Every word is kept. */
+@Composable
+private fun Blurb(text: String, modifier: Modifier = Modifier) {
+    val cut = text.indexOf(". ").let { if (it < 0) -1 else it + 1 }
+    var open by remember(text) { mutableStateOf(false) }
+    val accent = LatentColors.Amber
+    val shown = buildAnnotatedString {
+        append(if (open || cut < 0) text else text.substring(0, cut))
+        if (cut > 0) withStyle(SpanStyle(color = accent)) { append(if (open) "  less" else "  more") }
+    }
+    Text(shown, color = LatentColors.TextDim, fontSize = 12.sp, lineHeight = 17.sp,
+        modifier = modifier.padding(top = 2.dp).then(if (cut > 0) Modifier.combinedClickable(onClick = { open = !open }) else Modifier))
 }
 
 /**
@@ -325,7 +438,7 @@ private fun ToggleRow(title: String, subtitle: String, value: Boolean, onChange:
     Row(Modifier.fillMaxWidth().padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
             Text(title, color = LatentColors.TextBright, fontSize = 15.sp)
-            Text(subtitle, color = LatentColors.TextDim, fontSize = 12.sp)
+            Blurb(subtitle)
         }
         Spacer(Modifier.width(12.dp))
         LivingSwitch(value, onChange)
@@ -334,14 +447,18 @@ private fun ToggleRow(title: String, subtitle: String, value: Boolean, onChange:
 
 @Composable
 private fun <T> OptionRow(title: String, subtitle: String, options: List<Pair<String, T>>, selected: T,
-                          places: MutableMap<T, androidx.compose.ui.geometry.Offset>? = null, onSelect: (T) -> Unit) {
+                          places: MutableMap<T, androidx.compose.ui.geometry.Offset>? = null,
+                          enabled: Boolean = true, note: String? = null, onSelect: (T) -> Unit) {
     val ctx = LocalContext.current
+    // 117a: a row another setting overrides is dimmed, and [note] says why
+    val dim = if (enabled) 1f else 0.45f
     Column(Modifier.fillMaxWidth().padding(vertical = 10.dp)) {
-        Text(title, color = LatentColors.TextBright, fontSize = 15.sp)
-        Text(subtitle, color = LatentColors.TextDim, fontSize = 12.sp)
+        Text(title, color = LatentColors.TextBright, fontSize = 15.sp, modifier = Modifier.graphicsLayer { alpha = dim })
+        if (note != null) Text(note, color = LatentColors.Amber, fontSize = 12.sp, lineHeight = 17.sp)
+        Box(Modifier.graphicsLayer { alpha = dim }) { Blurb(subtitle) }
         Spacer(Modifier.height(8.dp))
         // 111b: one pill glides to the new choice
-        com.celestial.latent.ui.GlideRow(options.firstOrNull { it.second == selected }?.first, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        com.celestial.latent.ui.GlideRow(options.firstOrNull { it.second == selected }?.first, Modifier.graphicsLayer { alpha = dim }, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             val glide = com.celestial.latent.ui.LocalGlide.current!!
             options.forEach { (label, v) ->
                 val on = v == selected
@@ -372,8 +489,7 @@ private fun SpeedRow() {
             Text("Motion speed", color = LatentColors.TextBright, fontSize = 15.sp)
             Text("${Math.round(speed * 100)}%", color = LatentColors.TextBright, fontSize = 15.sp)
         }
-        Text("How quickly buttons, pills and sliders answer your touch. 100% is the fastest; slow it to as little as half speed if you like it calmer. Off when the phone's animations are off.",
-            color = LatentColors.TextDim, fontSize = 12.sp)
+        Blurb("How quickly buttons, pills and sliders answer your touch. 100% is the fastest; slow it to as little as half speed if you like it calmer. Off when the phone's animations are off.")
         // 112: the living slider (thumb grows while held, value bubble), a tick on each 10%
         com.celestial.latent.ui.LivingSlider(
             value = speed, valueRange = com.celestial.latent.ui.Touch.SPEED_MIN..1f, steps = 4,

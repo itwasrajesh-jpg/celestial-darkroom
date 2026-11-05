@@ -86,7 +86,8 @@ private val DARKROOM = Palette(
 // words, so a chosen value still stands out from the rest.
 private val MIDNIGHT = Palette(
     background = Color(0xFF111522), surface = Color(0xFF303D59), line = Color(0xFF536684),
-    textDim = Color(0xFF7B8CAA), text = Color(0xFF98A9C4), textBright = Color(0xFFCFD8E7),
+    // 117a: textDim one step stronger (was 7B8CAA, 3.8:1 on the panel; now 4.7:1)
+    textDim = Color(0xFF8D9DBA), text = Color(0xFF98A9C4), textBright = Color(0xFFCFD8E7),
     amber = Color(0xFFEDF1F8), amberInk = Color(0xFF111522),
     bar = Color(0xFF1E263B), dock = Color(0xFF303D59), panel = Color(0xFF273248), mat = Color(0xFF1E243A),
     frost = Color(0xB8303D59),
@@ -100,7 +101,8 @@ private val MIDNIGHT = Palette(
 // The darkroom photo sits on the proof's navy mat.
 private val CLAY = Palette(
     background = Color(0xFFD9E3F1), surface = Color(0xFFFBFCFE), line = Color(0xFFB3C1D9),
-    textDim = Color(0xFF6A7898), text = Color(0xFF45536F), textBright = Color(0xFF1E263B),
+    // 117a: textDim one step stronger (was 6A7898, 3.5:1 on the panel; now 4.8:1)
+    textDim = Color(0xFF56647F), text = Color(0xFF45536F), textBright = Color(0xFF1E263B),
     amber = Color(0xFF5B78E6), amberInk = Color(0xFFFFFFFF),
     bar = Color(0xFFFBFCFE), dock = Color(0xFFD9E3F1), panel = Color(0xFFDDE7F3), mat = Color(0xFF2E3C57),
     frost = Color(0xD9F3F6FB),

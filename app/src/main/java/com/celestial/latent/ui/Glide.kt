@@ -80,7 +80,10 @@ class Glide(
         val r = rects[key] ?: return if (key == selected) a else 0f
         if (r.width <= 0f) return 0f
         val over = (minOf(right.value, r.right) - maxOf(left.value, r.left)).coerceAtLeast(0f)
-        return (over / r.width).coerceIn(0f, 1f) * a
+        // 117a: a row that wraps onto several lines (Settings tabs): only a chip on the pill's own line is covered
+        val tall = (minOf(bottom.value, r.bottom) - maxOf(top.value, r.top)).coerceAtLeast(0f)
+        val v = if (r.height <= 0f) 1f else (tall / r.height).coerceIn(0f, 1f)
+        return (over / r.width).coerceIn(0f, 1f) * v * a
     }
 
     /** The words' colour for [key]: [off] where uncovered, the accent's ink under the pill; a toggle that is [on]
