@@ -65,7 +65,8 @@ import java.io.File
  * pick the file, see what is in it, choose what to do with names already here, then add.
  */
 @Composable
-fun RecipesScreen(importing: Boolean, onBack: () -> Unit, onOpenCamera: () -> Unit) {
+fun RecipesScreen(importing: Boolean, onBack: () -> Unit, onOpenCamera: () -> Unit, incoming: RecipeIncoming? = null,
+                  onQrCard: (RecipeShare.Item) -> Unit = {}, onScan: () -> Unit = {}) {
     Column(
         Modifier.fillMaxSize().background(LatentColors.Background).glow().statusBarsPadding().navigationBarsPadding()
             .padding(horizontal = 20.dp, vertical = 12.dp),
@@ -76,12 +77,12 @@ fun RecipesScreen(importing: Boolean, onBack: () -> Unit, onOpenCamera: () -> Un
         }
         Spacer(Modifier.height(8.dp))
         Text(if (importing) "Import recipes" else "Export recipes", color = LatentColors.TextBright, fontSize = 24.sp)
-        if (importing) ImportPart(onOpenCamera) else ExportPart()
+        if (importing) ImportPart(onOpenCamera, incoming, onScan) else ExportPart(onQrCard)
     }
 }
 
 @Composable
-private fun ColumnScope.ExportPart() {
+private fun ColumnScope.ExportPart(onQrCard: (RecipeShare.Item) -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var items by remember { mutableStateOf<List<RecipeShare.Item>?>(null) }
@@ -99,22 +100,22 @@ private fun ColumnScope.ExportPart() {
     Text("Tick what to send. Built films carry their film profile and the air and light saved with them.", color = LatentColors.TextDim, fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp))
     val all = items
     Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
-        if (all == null) Note("Reading your recipes…")
-        else if (all.isEmpty()) Note("No saved recipes yet. Save one in the darkroom (DEVELOP → Save recipe) or build a film in the Film Builder.")
+        if (all == null) RecipeNote("Reading your recipes…")
+        else if (all.isEmpty()) RecipeNote("No saved recipes yet. Save one in the darkroom (DEVELOP → Save recipe) or build a film in the Film Builder.")
         else {
             val (built, own) = all.partition { it.built }
             if (own.isNotEmpty()) {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Bottom) {
-                    Column(Modifier.weight(1f)) { Section("Your recipes") }
+                    Column(Modifier.weight(1f)) { RecipeSection("Your recipes") }
                     val allOn = all.all { ticked[it.name] == true }
                     Text(if (allOn) "none" else "all", color = LatentColors.Amber, fontSize = 12.sp,
                         modifier = Modifier.combinedClickable(onClick = { all.forEach { ticked[it.name] = !allOn } }).padding(6.dp))
                 }
-                own.forEach { ItemRow(it, ticked[it.name] == true) { ticked[it.name] = ticked[it.name] != true } }
+                own.forEach { RecipeItemRow(it, ticked[it.name] == true) { ticked[it.name] = ticked[it.name] != true } }
             }
             if (built.isNotEmpty()) {
-                Section("Built here")
-                built.forEach { ItemRow(it, ticked[it.name] == true) { ticked[it.name] = ticked[it.name] != true } }
+                RecipeSection("Built here")
+                built.forEach { RecipeItemRow(it, ticked[it.name] == true) { ticked[it.name] = ticked[it.name] != true } }
             }
         }
     }
@@ -124,9 +125,13 @@ private fun ColumnScope.ExportPart() {
         "$nOwn ${if (nOwn == 1) "recipe" else "recipes"}",
         if (nBuilt > 0) "$nBuilt built ${if (nBuilt == 1) "film" else "films"}" else null,
         if (chosen.isNotEmpty()) remember(chosen.map { it.name }) { "${maxOf(1, text().length / 1024)} KB" } else null,
+        // 116a: one plain recipe fits a QR code; a built film's profile doesn't
+        if (chosen.size == 1) (if (chosen[0].built) "too big for a QR code" else "fits a QR code") else null,
     ).joinToString(" · "), color = LatentColors.TextDim, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp))
+    val qrOk = chosen.size == 1 && !chosen[0].built
+    RecipePill("QR card", qrOk, Glyph.SHARE, Modifier.fillMaxWidth().padding(top = 10.dp), enabled = qrOk) { onQrCard(chosen[0]) }
     Row(Modifier.fillMaxWidth().padding(top = 10.dp, bottom = 8.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        Pill("Share", true, Glyph.SHARE, Modifier.weight(1f), enabled = chosen.isNotEmpty()) {
+        RecipePill("Share", true, Glyph.SHARE, Modifier.weight(1f), enabled = chosen.isNotEmpty()) {
             scope.launch {
                 val uri = withContext(Dispatchers.IO) {
                     runCatching {
@@ -141,20 +146,21 @@ private fun ColumnScope.ExportPart() {
                 runCatching { context.startActivity(Intent.createChooser(send, "Send recipes").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
             }
         }
-        Pill("Save to Files", false, Glyph.FOLDER, Modifier.weight(1f), enabled = chosen.isNotEmpty()) { saver.launch("celestial-recipes.json") }
+        RecipePill("Save to Files", false, Glyph.FOLDER, Modifier.weight(1f), enabled = chosen.isNotEmpty()) { saver.launch("celestial-recipes.json") }
     }
 }
 
 @Composable
-private fun ColumnScope.ImportPart(onOpenCamera: () -> Unit) {
+private fun ColumnScope.ImportPart(onOpenCamera: () -> Unit, incoming: RecipeIncoming?, onScan: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    var fileName by remember { mutableStateOf("") }
-    var pack by remember { mutableStateOf<RecipeShare.Pack?>(null) }
-    var problem by remember { mutableStateOf("") }
+    // 116a: a recipe read from a QR code (scanned, or found in a shared picture) arrives ready, no file
+    var fileName by remember { mutableStateOf(incoming?.label ?: "") }
+    var pack by remember { mutableStateOf(incoming?.pack) }
+    var problem by remember { mutableStateOf(incoming?.problem ?: "") }
     var added by remember { mutableStateOf<List<RecipeShare.Item>?>(null) }
     var busy by remember { mutableStateOf(false) }
-    val ticked = remember { mutableStateMapOf<Int, Boolean>() }
+    val ticked = remember { mutableStateMapOf<Int, Boolean>().apply { incoming?.pack?.items?.indices?.forEach { put(it, true) } } }
     val clash = remember { mutableStateMapOf<Int, RecipeShare.Clash>() }
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
         if (uri != null) scope.launch {
@@ -169,7 +175,7 @@ private fun ColumnScope.ImportPart(onOpenCamera: () -> Unit) {
         }
     }
     // straight to the file picker the first time
-    LaunchedEffect(Unit) { picker.launch(arrayOf("application/json", "text/plain", "application/octet-stream")) }
+    LaunchedEffect(Unit) { if (incoming == null) picker.launch(arrayOf("application/json", "text/plain", "application/octet-stream")) }
     val done = added
     if (done != null) {
         Column(Modifier.weight(1f).fillMaxWidth().padding(top = 36.dp), horizontalAlignment = Alignment.CenterHorizontally) {
@@ -194,15 +200,16 @@ private fun ColumnScope.ImportPart(onOpenCamera: () -> Unit) {
             }
             Text("the camera's film strip", color = LatentColors.TextDim, fontSize = 10.sp, modifier = Modifier.padding(top = 8.dp))
         }
-        Pill("Open camera", true, Glyph.CAMERA, Modifier.fillMaxWidth().padding(bottom = 8.dp), onClick = onOpenCamera)
+        RecipePill("Open camera", true, Glyph.CAMERA, Modifier.fillMaxWidth().padding(bottom = 8.dp), onClick = onOpenCamera)
         return
     }
     val p = pack
     if (p == null) {
         Column(Modifier.weight(1f).fillMaxWidth(), verticalArrangement = Arrangement.Center) {
-            Note(problem.ifEmpty { "Pick the recipes file you sent from the other phone (Quick Share puts it in Downloads)." })
+            RecipeNote(problem.ifEmpty { "Pick the recipes file you sent from the other phone (Quick Share puts it in Downloads)." })
         }
-        Pill("Choose file", true, Glyph.IMPORT, Modifier.fillMaxWidth().padding(bottom = 8.dp)) {
+        RecipePill("Scan a recipe", false, Glyph.CAMERA, Modifier.fillMaxWidth().padding(bottom = 10.dp), onClick = onScan)
+        RecipePill("Choose file", true, Glyph.IMPORT, Modifier.fillMaxWidth().padding(bottom = 8.dp)) {
             picker.launch(arrayOf("application/json", "text/plain", "application/octet-stream"))
         }
         return
@@ -220,17 +227,17 @@ private fun ColumnScope.ImportPart(onOpenCamera: () -> Unit) {
     }
     val taken = p.items.indices.filter { com.celestial.latent.develop.Recipes.exists(context, p.items[it].name) }
     Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
-        Section("In this file")
-        p.items.forEachIndexed { i, it -> if (i !in taken) ItemRow(it, ticked[i] != false) { ticked[i] = ticked[i] == false } }
+        RecipeSection("In this file")
+        p.items.forEachIndexed { i, it -> if (i !in taken) RecipeItemRow(it, ticked[i] != false) { ticked[i] = ticked[i] == false } }
         if (taken.isNotEmpty()) {
-            Section("Already on this phone")
+            RecipeSection("Already on this phone")
             taken.forEach { i ->
                 val it = p.items[i]
                 val c = clash[i] ?: RecipeShare.Clash.KEEP_BOTH
-                ItemRow(it, null, "a different one with this name")
+                RecipeItemRow(it, null, "a different one with this name")
                 Row(Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     listOf("Keep both" to RecipeShare.Clash.KEEP_BOTH, "Replace" to RecipeShare.Clash.REPLACE, "Skip" to RecipeShare.Clash.SKIP).forEach { (label, v) ->
-                        Pill(label, c == v, null, Modifier.weight(1f)) { clash[i] = v }
+                        RecipePill(label, c == v, null, Modifier.weight(1f)) { clash[i] = v }
                     }
                 }
                 if (c == RecipeShare.Clash.KEEP_BOTH) Text("Keep both adds it as \"${RecipeShare.freeName(context, it.name)}\".", color = LatentColors.TextDim, fontSize = 12.sp)
@@ -238,7 +245,7 @@ private fun ColumnScope.ImportPart(onOpenCamera: () -> Unit) {
         }
     }
     val chosen = p.items.indices.filter { i -> if (i in taken) clash[i] != RecipeShare.Clash.SKIP else ticked[i] != false }
-    Pill(if (busy) "Adding…" else "Add ${chosen.size} to this phone", true, Glyph.ADD, Modifier.fillMaxWidth().padding(top = 10.dp, bottom = 8.dp),
+    RecipePill(if (busy) "Adding…" else "Add ${chosen.size} to this phone", true, Glyph.ADD, Modifier.fillMaxWidth().padding(top = 10.dp, bottom = 8.dp),
         enabled = chosen.isNotEmpty() && !busy) {
         busy = true
         scope.launch {
@@ -250,7 +257,7 @@ private fun ColumnScope.ImportPart(onOpenCamera: () -> Unit) {
 
 /** One recipe: its glyph (a look, or a film canister for a built film), name, and what it is. [on] null = no tick. */
 @Composable
-private fun ItemRow(item: RecipeShare.Item, on: Boolean?, detail: String? = null, onTap: () -> Unit = {}) {
+internal fun RecipeItemRow(item: RecipeShare.Item, on: Boolean?, detail: String? = null, onTap: () -> Unit = {}) {
     val film = Develop.FILMS.firstOrNull { it.first == item.recipe.film }?.second
     val what = detail ?: if (item.built) listOfNotNull("film profile", item.air?.let { "air" }, item.light?.let { "light" }).joinToString(" · ") else film ?: ""
     Row(
@@ -271,7 +278,7 @@ private fun ItemRow(item: RecipeShare.Item, on: Boolean?, detail: String? = null
 }
 
 @Composable
-private fun Pill(text: String, main: Boolean, glyph: Glyph?, modifier: Modifier = Modifier, enabled: Boolean = true, onClick: () -> Unit) {
+internal fun RecipePill(text: String, main: Boolean, glyph: Glyph?, modifier: Modifier = Modifier, enabled: Boolean = true, onClick: () -> Unit) {
     val context = LocalContext.current
     Row(
         modifier.clip(RoundedCornerShape(999.dp)).accentFill(main && enabled, LatentColors.Surface)
@@ -285,11 +292,14 @@ private fun Pill(text: String, main: Boolean, glyph: Glyph?, modifier: Modifier 
 }
 
 @Composable
-private fun Section(title: String) {
+internal fun RecipeSection(title: String) {
     Spacer(Modifier.height(14.dp))
     Text(title.uppercase(), color = LatentColors.TextDim, fontSize = 11.sp, letterSpacing = 2.sp)
     Spacer(Modifier.height(6.dp))
 }
 
 @Composable
-private fun Note(text: String) = Text(text, color = LatentColors.Text, fontSize = 13.sp, lineHeight = 18.sp, modifier = Modifier.padding(vertical = 16.dp))
+internal fun RecipeNote(text: String) = Text(text, color = LatentColors.Text, fontSize = 13.sp, lineHeight = 18.sp, modifier = Modifier.padding(vertical = 16.dp))
+
+/** 116a: a recipe that came in without a file: from a QR code or a shared picture. [pack] null = nothing found ([problem] says why). */
+class RecipeIncoming(val label: String, val pack: RecipeShare.Pack?, val problem: String = "")

@@ -53,6 +53,8 @@ dependencies {
     implementation("com.github.wendykierp:JTransforms:3.1")
     // Runs the depth model on the phone (step 50a). 1.24.x: the same generation the model was verified on.
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.24.3")
+    // 116a: reads and writes the recipe QR codes (Apache 2.0, pure Java, no Google Play services)
+    implementation("com.google.zxing:core:3.5.3")
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.activity.compose)
