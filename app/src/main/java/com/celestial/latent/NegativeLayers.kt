@@ -66,6 +66,9 @@ internal fun NegativeLayers(
     // the depth and the tap-to-select picture are the photo's, shared with PRINT (read once per photo)
     val depthRanks = remember { memory.depthRanks ?: (if (com.celestial.latent.develop.Depth.isReady(context)) DepthRanks() else null).also { memory.depthRanks = it } }
     DisposableEffect(Unit) { onDispose { com.celestial.latent.develop.Select.release() } }
+    // 117a: the back gesture steps out of LAYERS to NEGATIVE, as ‹ NEGATIVE does, not out of the darkroom.
+    // Panels opened inside LAYERS (tap to select) register their own back later, so they close first.
+    androidx.activity.compose.BackHandler { onClose() }
     // as PRINT renders it: through the shared cache, keyed by everything painted on it (107a)
     val render: (Recipe, Int, List<Layer>) -> Bitmap? = { r, e, ls ->
         if (noFilm) plain
