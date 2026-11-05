@@ -30,6 +30,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.key
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -50,6 +51,8 @@ open class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         CrashLog.install(this)
+        // 116a: a picture shared to the app (a recipe card from a chat) opens on the Import page
+        SharedPicture.take(intent)
         // Before anything reads the lens list or the saved default lens.
         com.celestial.latent.camera.Lenses.discover(this)
         enableEdgeToEdge()
@@ -68,6 +71,11 @@ open class MainActivity : ComponentActivity() {
             // 102c: a new theme spreads out from the chip that chose it
             LatentTheme { ThemeRevealHost { Root() } }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        SharedPicture.take(intent)
     }
 
     // 88b: the launcher icon follows the theme, changed as the app leaves the screen
@@ -98,6 +106,18 @@ open class MainActivity : ComponentActivity() {
     }
 }
 
+/** 116a: a picture another app shared to Celestial Darkroom, waiting to be read for a recipe code. */
+object SharedPicture {
+    var uri by mutableStateOf<android.net.Uri?>(null)
+    fun take(intent: Intent?) {
+        if (intent?.action != Intent.ACTION_SEND || intent.type?.startsWith("image/") != true) return
+        @Suppress("DEPRECATION")
+        val u = (if (android.os.Build.VERSION.SDK_INT >= 33) intent.getParcelableExtra(Intent.EXTRA_STREAM, android.net.Uri::class.java)
+            else intent.getParcelableExtra(Intent.EXTRA_STREAM) as? android.net.Uri) ?: intent.clipData?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.uri
+        if (u != null) uri = u
+    }
+}
+
 @Composable
 private fun Root() {
     val context = LocalContext.current
@@ -114,6 +134,10 @@ private fun Root() {
     var calendarNext by remember { mutableStateOf<CalendarResume?>(null) }
     var darkroomBack by remember { mutableStateOf("roll") }   // where Back leaves the darkroom to
     var crash by remember { mutableStateOf(CrashLog.read(context)) }
+    // 116a: a recipe that came in from a QR code or a shared picture, and the recipe a QR card is for
+    var recipeIn by remember { mutableStateOf<RecipeIncoming?>(null) }
+    var recipeCard by remember { mutableStateOf<com.celestial.latent.develop.RecipeShare.Item?>(null) }
+    var recipesBack by remember { mutableStateOf("settings") }
     // 84a: the camera screen in use is the mode row's: Xiaomi's for Night/Auto, ours otherwise
     fun cameraHome() = if (android.os.Build.VERSION.SDK_INT >= 31 && CameraModes.xiaomi(context).isNotEmpty()) "extension" else "camera"
     // back in Night or Auto if that is the mode the app was left in
@@ -151,14 +175,22 @@ private fun Root() {
     }
     // Shown once per launch, over the camera, which opens behind it. Declared after settings,
     // which it reads.
-    var opening by remember { mutableStateOf(settings.openingAnimation) }
+    var opening by remember { mutableStateOf(settings.openingAnimation && SharedPicture.uri == null) }
     // 114a: the mascot follows the switch; its hello shows once, after the opening animation
     SideEffect { Mascot.on = settings.mascot }
     var hello by remember { mutableStateOf(Mascot.helloDue(context)) }
     var controllerRef by remember { mutableStateOf<com.celestial.latent.camera.CameraController?>(null) }
     var vendorEcho by remember { mutableStateOf("") }
 
-    if (!granted) {
+    // 116a: a shared picture is read for a recipe code, and the Import page shows what it held
+    val shared = SharedPicture.uri
+    LaunchedEffect(shared) {
+        if (shared == null) return@LaunchedEffect
+        val got = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) { readSharedPicture(context, shared, "from a shared picture") }
+        SharedPicture.uri = null
+        recipeIn = got; recipesBack = cameraHome(); opening = false; hello = false; screen = "recipes-in"
+    }
+    if (!granted && screen != "recipes-in") {
         Column(Modifier.fillMaxSize().background(LatentColors.Background).statusBarsPadding().padding(24.dp)) {
             Text("CELESTIAL DARKROOM", color = LatentColors.TextBright, fontSize = 16.sp, letterSpacing = 4.sp)
             Spacer(Modifier.height(16.dp))
@@ -173,7 +205,7 @@ private fun Root() {
     BackHandler(enabled = screen != "camera") {
         if (screen == "extension") CameraModes.setXiaomi(context, "")
         if (screen == "darkroom" && darkroomBack == "roll") darkroomSource?.let { PhotoFlight.back(it) }
-        screen = when (screen) { "settings", "extension" -> "camera"; "roll" -> { calendarNext = null; cameraHome() }; "darkroom" -> darkroomBack; "burst", "collage" -> "roll"; else -> "settings" }
+        screen = when (screen) { "settings", "extension" -> "camera"; "recipes-card" -> "recipes-export"; "recipes-scan", "recipes-in" -> recipesBack; "roll" -> { calendarNext = null; cameraHome() }; "darkroom" -> darkroomBack; "burst", "collage" -> "roll"; else -> "settings" }
     }
 
     // The overlay is drawn after the screens, so it covers them while the camera starts behind.
@@ -193,10 +225,21 @@ private fun Root() {
             onOpenHelp = { screen = "help" },
             onOpenRecipeExport = { screen = "recipes-export" },
             onOpenRecipeImport = { screen = "recipes-import" },
+            onOpenRecipeScan = { recipesBack = "settings"; screen = "recipes-scan" },
             onBack = { screen = "camera" },
         )
-        "recipes-export" -> RecipesScreen(importing = false, onBack = { screen = "settings" }, onOpenCamera = { screen = "camera" })
-        "recipes-import" -> RecipesScreen(importing = true, onBack = { screen = "settings" }, onOpenCamera = { screen = "camera" })
+        "recipes-export" -> RecipesScreen(importing = false, onBack = { screen = "settings" }, onOpenCamera = { screen = "camera" },
+            onQrCard = { recipeCard = it; screen = "recipes-card" })
+        "recipes-import" -> RecipesScreen(importing = true, onBack = { screen = "settings" }, onOpenCamera = { screen = "camera" },
+            onScan = { recipesBack = "settings"; screen = "recipes-scan" })
+        // 116a: QR codes
+        "recipes-card" -> recipeCard?.let { RecipeCardScreen(it, onBack = { screen = "recipes-export" }) } ?: run { screen = "recipes-export" }
+        "recipes-scan" -> RecipeScanScreen(onBack = { screen = recipesBack },
+            onFound = { recipeIn = it; screen = "recipes-in" }, onOpenFile = { screen = "recipes-import" })
+        "recipes-in" -> key(recipeIn) {
+            RecipesScreen(importing = true, incoming = recipeIn, onBack = { screen = recipesBack }, onOpenCamera = { screen = "camera" },
+                onScan = { screen = "recipes-scan" })
+        }
         "collage" -> CollageScreen(collagePicks, resume = calendarNext, onBack = { screen = "roll" },
             onNextMonth = { calendarNext = it; screen = "roll" })
         "look" -> LookScreen(settings = settings, onBack = { screen = "roll" })

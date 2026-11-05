@@ -58,6 +58,22 @@
             </intent-filter>
         </activity-alias>
 
+        <!-- 116a: Celestial Darkroom in the share sheet for pictures, so a recipe card seen in any chat can be
+             shared straight to the app, which reads its QR code (SharedPicture in MainActivity.kt). Its own
+             alias, always on, so the launcher icon aliases (AppIcon.kt) can come and go without it. -->
+        <activity-alias
+            android:name=".ShareRecipe"
+            android:targetActivity=".CameraActivity"
+            android:label="@string/app_name"
+            android:enabled="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="image/*" />
+            </intent-filter>
+        </activity-alias>
+
         <!-- Android's installer reports here on an update; only Latent itself can reach it. -->
         <receiver
             android:name=".UpdateInstallReceiver"
