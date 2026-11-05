@@ -678,7 +678,8 @@ class CameraController(
      * With [bracket] (86b) it is an HDR bracket: one frame per step, darkest first, each at the shutter
      * and ISO the user's plan gives it (roll only, no STACK).
      */
-    fun captureBurst(frames: Int = 16, focus: Boolean = false, hdr: Boolean = false, bracket: List<Bracket.Step>? = null) = handler.post {
+    fun captureBurst(frames: Int = 16, focus: Boolean = false, hdr: Boolean = false, bracket: List<Bracket.Step>? = null,
+                     focusPlan: FloatArray? = null) = handler.post {
         val s = session ?: return@post
         if (roll != null) { status("Still saving the last burst…"); return@post }
         if (burst != null || busy) { status("busy"); return@post }
@@ -688,8 +689,12 @@ class CameraController(
         var rj: RollJob? = null
         try {
             val steps = bracket?.takeIf { !focus && it.isNotEmpty() }?.let { bracketSteps(it, dcg) }
-            val frames = steps?.size ?: frames
-            val focusAt = if (focus) focusBracket(frames) else null
+            // 118a: the user's own near-to-far plan (FocusStackCard) sets both the frames and their focus
+            val plan = focusPlan?.takeIf { focus && it.size >= 2 }
+            val frames = steps?.size ?: plan?.size ?: frames
+            val focusAt = if (focus) (plan?.let { p -> p.map { it.coerceIn(0f, minFocusDiopters) }.toFloatArray()
+                .also { a -> log("focus stack: ${lens.name}, your plan " + a.joinToString(" ") { "%.2f".format(it) } + " D (step ${"%.3f".format(focusStepDiopters())} D)") } }
+                ?: focusBracket(frames)) else null
             val dark = if (hdr && !focus && steps == null) hdrExposure(dcg) else null
             // Every frame goes into one burst roll (68a). Without DCG the frames are also stacked into
             // the cleaner STACK DNG as before; DCG frames (14-bit) are only kept, their merge is 68b.
@@ -933,16 +938,30 @@ class CameraController(
      * so 12 frames cover roughly 16-27 cm when focused at 20 cm. If the lens does not report real
      * dioptres (calibration "uncalibrated"), it falls back to 1/40 of the focus range.
      */
+    /**
+     * One focus step (dioptres): about one depth of field, 2·N·c / f² with c = two pixels, times 0.8 so
+     * neighbouring frames' sharp zones overlap a little; 1/40 of the focus range if the lens does not
+     * report real dioptres. 118a's FocusStackCard plans its frames with it too.
+     */
+    fun focusStepDiopters(): Float {
+        val maxD = minFocusDiopters
+        val cal = physChars.get(CameraCharacteristics.LENS_INFO_FOCUS_DISTANCE_CALIBRATION)
+        val f = physChars.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)?.firstOrNull()
+        val aperture = physChars.get(CameraCharacteristics.LENS_INFO_AVAILABLE_APERTURES)?.firstOrNull()
+        val sensorMm = physChars.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE)?.width
+        return if (cal != CameraMetadata.LENS_INFO_FOCUS_DISTANCE_CALIBRATION_UNCALIBRATED && f != null && aperture != null && sensorMm != null) {
+            val c = 2f * sensorMm / rawSize.width                       // mm
+            (0.8f * 2f * aperture * c / (f * f) * 1000f).coerceIn(0.02f, 1f)
+        } else (maxD / 40f).coerceAtLeast(0.05f)
+    }
+
     private fun focusBracket(n: Int): FloatArray {
         val maxD = minFocusDiopters
         val cal = physChars.get(CameraCharacteristics.LENS_INFO_FOCUS_DISTANCE_CALIBRATION)
         val f = physChars.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)?.firstOrNull()
         val aperture = physChars.get(CameraCharacteristics.LENS_INFO_AVAILABLE_APERTURES)?.firstOrNull()
         val sensorMm = physChars.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE)?.width
-        val step = if (cal != CameraMetadata.LENS_INFO_FOCUS_DISTANCE_CALIBRATION_UNCALIBRATED && f != null && aperture != null && sensorMm != null) {
-            val c = 2f * sensorMm / rawSize.width                       // mm
-            (0.8f * 2f * aperture * c / (f * f) * 1000f).coerceIn(0.02f, 1f)
-        } else (maxD / 40f).coerceAtLeast(0.05f)
+        val step = focusStepDiopters()
         val centre = controls.focusDiopters ?: lastFocusD
         val span = step * (n - 1)
         val near = (centre + span / 2).coerceAtMost(maxD).coerceAtLeast(span.coerceAtMost(maxD))

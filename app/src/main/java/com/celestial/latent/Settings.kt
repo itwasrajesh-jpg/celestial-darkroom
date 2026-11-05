@@ -46,6 +46,15 @@ data class AppSettings(
     val bracketBrightNs: Long = 0L,
     val bracketBrightIso: Int = 0,
     val bracketFrames: Int = 5,
+    // 118a: focus stack ends the user set (dioptres, -1 = not set) for one lens, and where on the picture
+    // they were tapped (0..1, -1 = dialled, no mark)
+    val fsNearD: Float = -1f,
+    val fsFarD: Float = -1f,
+    val fsLens: String = "",
+    val fsNearX: Float = -1f,
+    val fsNearY: Float = -1f,
+    val fsFarX: Float = -1f,
+    val fsFarY: Float = -1f,
     val haptics: Boolean = true,
     // 105c: the shutter wakes and breathes when the meter reads 0 in manual; on unless turned off
     val breathingShutter: Boolean = true,
@@ -131,6 +140,13 @@ data class AppSettings(
                 bracketBrightNs = p.getLong("bracketBrightNs", 0L),
                 bracketBrightIso = p.getInt("bracketBrightIso", 0),
                 bracketFrames = p.getInt("bracketFrames", 5),
+                fsNearD = p.getFloat("fsNearD", -1f),
+                fsFarD = p.getFloat("fsFarD", -1f),
+                fsLens = p.getString("fsLens", "") ?: "",
+                fsNearX = p.getFloat("fsNearX", -1f),
+                fsNearY = p.getFloat("fsNearY", -1f),
+                fsFarX = p.getFloat("fsFarX", -1f),
+                fsFarY = p.getFloat("fsFarY", -1f),
                 haptics = p.getBoolean("haptics", true),
                 breathingShutter = p.getBoolean("breathingShutter", true),
                 mascot = p.getBoolean("mascot", true),
@@ -184,6 +200,13 @@ data class AppSettings(
                 .putLong("bracketBrightNs", s.bracketBrightNs)
                 .putInt("bracketBrightIso", s.bracketBrightIso)
                 .putInt("bracketFrames", s.bracketFrames)
+                .putFloat("fsNearD", s.fsNearD)
+                .putFloat("fsFarD", s.fsFarD)
+                .putString("fsLens", s.fsLens)
+                .putFloat("fsNearX", s.fsNearX)
+                .putFloat("fsNearY", s.fsNearY)
+                .putFloat("fsFarX", s.fsFarX)
+                .putFloat("fsFarY", s.fsFarY)
                 .putBoolean("haptics", s.haptics)
                 .putBoolean("breathingShutter", s.breathingShutter)
                 .putBoolean("mascot", s.mascot)

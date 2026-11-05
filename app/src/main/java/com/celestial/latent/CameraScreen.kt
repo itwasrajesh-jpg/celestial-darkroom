@@ -269,7 +269,9 @@ fun CameraScreen(
 
     // 86b: HDR is the user's bracket; until both ends are set the shutter opens the card instead
     fun fireMulti() {
-        if (settings.focusStack) controller.captureBurst(FOCUS_FRAMES, focus = true)
+        // 118a: with both ends set for this lens, the stack is the user's near-to-far plan
+        if (settings.focusStack) controller.captureBurst(FOCUS_FRAMES, focus = true,
+            focusPlan = if (controller.hasCharacteristics) FocusPlan.plan(settings, lens.physicalId, controller.focusStepDiopters()) else null)
         else if (settings.hdrStack) bracketPlan(settings)?.let { controller.captureBurst(bracket = it) } ?: run { bracketOpen = true }
         else controller.captureBurst(16)
     }
@@ -466,6 +468,7 @@ fun CameraScreen(
                         onTap = { pos ->
                             if (drawerOpen) { drawerOpen = false; return@detectTapGestures }
                             focusTap = pos; focusTapAt = System.currentTimeMillis()
+                            FocusPlan.lastTap = Offset(pos.x / size.width, pos.y / size.height)
                             if (controls.locked) controller.unlock()
                             controller.tapFocus(pos.x / size.width, pos.y / size.height)
                             controls = controls.copy(focusDiopters = null, locked = false)
@@ -473,6 +476,7 @@ fun CameraScreen(
                         onLongPress = { pos ->
                             Haptics.double(context)
                             focusTap = pos; focusTapAt = System.currentTimeMillis()
+                            FocusPlan.lastTap = Offset(pos.x / size.width, pos.y / size.height)
                             controller.lockAt(pos.x / size.width, pos.y / size.height)
                             controls = controls.copy(focusDiopters = null, locked = true)
                         },
@@ -534,6 +538,7 @@ fun CameraScreen(
             }
             // 105a: near level, a thin horizon line; gold for a moment when exact (106a: not needed while the lock keeps it level)
             if (!settings.horizonLock) LevelLine()
+            if (bracketOpen && settings.focusStack) FocusStackMarks(settings, lens.physicalId)
             FocusEvOverlay(
                 point = focusTap, evIndex = controls.evIndex,
                 evRange = (if (controller.hasCharacteristics) controller.evRange.lower..controller.evRange.upper else -24..24),
@@ -630,7 +635,7 @@ fun CameraScreen(
                 if (settings.fastShot) "FAST SHOT" else null,
                 if (settings.inSensorZoomJpeg && Lenses.isXiaomi15Ultra && controls.zoom > 1.001f && !settings.fastShot) "ISZ" else null,
                 if (settings.dcgTest && !settings.fastShot && Lenses.isXiaomi15Ultra && lens.physicalId == Lenses.MAIN_ID && controls.zoom <= 1.001f) "DCG" else null,
-                if (settings.burstMode) "BURST" else null, if (settings.focusStack) "FOCUS STACK" else null, if (settings.hdrStack) (bracketPlan(settings)?.let { "HDR · ${it.size}" } ?: "HDR BRACKET") else null, if (settings.timerSeconds > 0) "${settings.timerSeconds}S" else null,
+                if (settings.burstMode) "BURST" else null, if (settings.focusStack) (FocusPlan.plan(settings, lens.physicalId, if (controller.hasCharacteristics) controller.focusStepDiopters() else 1f)?.let { "FOCUS STACK · ${it.size}" } ?: "FOCUS STACK") else null, if (settings.hdrStack) (bracketPlan(settings)?.let { "HDR · ${it.size}" } ?: "HDR BRACKET") else null, if (settings.timerSeconds > 0) "${settings.timerSeconds}S" else null,
             )
             val tagLabels = remember(settings.vendorTags, lens) { if (controller.hasCharacteristics) controller.activeTagLabels() else emptyList() }
             val allLabels = modes + tagLabels
@@ -745,6 +750,13 @@ fun CameraScreen(
                     val ns = controls.shutterNs ?: readout.shutterNs; val iso = controls.iso ?: readout.iso
                     if (ns > 0 && iso > 0) ns to iso else null
                 },
+                onClose = { bracketOpen = false },
+                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 128.dp + filmsLift))
+            // 118a: the focus stack card, same place; the FOCUS cell below stays free for dialling
+            if (bracketOpen && settings.focusStack) FocusStackCard(settings, onSettingsChange, lens.physicalId,
+                current = { if (controller.hasCharacteristics) controls.focusDiopters ?: readout.focusDiopters else null },
+                tapped = { controls.focusDiopters == null },
+                step = if (controller.hasCharacteristics) controller.focusStepDiopters() else null,
                 onClose = { bracketOpen = false },
                 modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 128.dp + filmsLift))
             if (toast.isNotEmpty()) Text(toast, color = OnPhoto.TextBright, fontSize = 11.sp, modifier = Modifier.align(Alignment.Center).padding(24.dp).clip(RoundedCornerShape(8.dp)).background(OnPhoto.Background.copy(alpha = 0.8f)).padding(12.dp))
@@ -880,7 +892,9 @@ fun CameraScreen(
                 contentAlignment = Alignment.Center,
             ) { Box(Modifier.size(62.dp).clip(CircleShape).accentFill(multi, shutterFace()).auraFace(aura)) }
             // Tap cycles: off → 16 (burst) → FS (focus stack, 69a) → HDR (bracket, 86b) → off.
-            // Hold: HDR with its bracket card open (86b).
+            // Hold: HDR with its bracket card open (86b); on FS, the focus stack card (118a).
+            // 118a: a bubble above the button offers FS when a tele lens is focused close.
+            Box {
             Box(Modifier.size(46.dp).pressIn().then(if (LatentColors.palette.depth) Modifier.floating(CircleShape, 5.dp).background(LatentColors.Surface, CircleShape) else Modifier)
                 .clip(CircleShape).border(if (settings.hdrStack) 1.dp else 0.5.dp, if (multi) LatentColors.Amber else LatentColors.Line, CircleShape)
                 .combinedClickable(onClick = {
@@ -895,10 +909,14 @@ fun CameraScreen(
                     onSettingsChange(next)
                 }, onLongClick = {
                     Haptics.tick(context)
-                    if (!settings.hdrStack) onSettingsChange(settings.copy(burstMode = false, focusStack = false, hdrStack = true))
+                    if (!settings.hdrStack && !settings.focusStack) onSettingsChange(settings.copy(burstMode = false, focusStack = false, hdrStack = true))
                     bracketOpen = true
                 }), contentAlignment = Alignment.Center) {
                 Text(if (settings.hdrStack) "HDR" else if (settings.focusStack) "FS" else "16", color = if (multi) LatentColors.Amber else LatentColors.Text, fontSize = 13.sp, fontWeight = FontWeight.Light)
+            }
+            TeleStackHint(show = lens.mm >= 70 && !multi && !settings.fastShot && readout.focusDiopters >= 1f) {
+                onSettingsChange(settings.copy(burstMode = false, focusStack = true, hdrStack = false)); bracketOpen = true
+            }
             }
         }
         val filmLabel = Develop.FILMS.firstOrNull { it.first == settings.film }?.second?.uppercase() ?: "FILM"
