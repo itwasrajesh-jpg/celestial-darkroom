@@ -84,8 +84,14 @@ fun BlackHoleIntro(onDone: () -> Unit) {
         if (seen) 2.2f else 3.6f
     }
     var failed by remember { mutableStateOf(false) }
+    // 119a: Silver unless Classic was chosen; if Silver cannot run here, the classic one takes over
+    val silverChosen = remember { IntroStyle.silver(context) }
+    var silverFailed by remember { mutableStateOf(false) }
+    val silver = silverChosen && !silverFailed
     // no graphics: the old opening, the name developing in
-    if (failed) LaunchOverlay(onDone) else BlackHoleScene(duration, onDone, onFail = { failed = true })
+    if (failed) LaunchOverlay(onDone) else androidx.compose.runtime.key(silver) {
+        BlackHoleScene(duration, onDone, onFail = { if (silver) silverFailed = true else failed = true }, silver = silver)
+    }
 }
 
 @OptIn(ExperimentalFoundationApi::class)
@@ -96,7 +102,7 @@ fun BlackHoleIntro(onDone: () -> Unit) {
  * during the glide takes over from wherever the camera is. A tap — no drag — closes it, fading
  * to the camera beneath. It never closes by itself (Settings → Opening animation turns it off).
  */
-private fun BlackHoleScene(duration: Float, onDone: () -> Unit, onFail: () -> Unit) {
+private fun BlackHoleScene(duration: Float, onDone: () -> Unit, onFail: () -> Unit, silver: Boolean) {
     val fade = remember { Animatable(1f) }
     var finishing by remember { mutableStateOf(false) }
     var elapsed by remember { mutableStateOf(0f) }
@@ -108,8 +114,10 @@ private fun BlackHoleScene(duration: Float, onDone: () -> Unit, onFail: () -> Un
     var glView by remember { mutableStateOf<GLSurfaceView?>(null) }
     // black until the first frame is drawn: the surface is see-through before that, and the camera is behind it
     var drawn by remember { mutableStateOf(false) }
-    val renderer = remember { BlackHoleRenderer(duration, density, reduced, onFail = { main.post { onFail() } },
-        onFirstFrame = { main.post { drawn = true } }) }
+    val renderer: IntroRenderer = remember {
+        if (silver) SilverRenderer(context, duration, density, reduced, onFail = { main.post { onFail() } }, onFirstFrame = { main.post { drawn = true } })
+        else BlackHoleRenderer(duration, density, reduced, onFail = { main.post { onFail() } }, onFirstFrame = { main.post { drawn = true } })
+    }
     LaunchedEffect(finishing) {
         if (!finishing) return@LaunchedEffect
         // fade out over 0.65 s, the camera showing through, then hand over
@@ -153,7 +161,8 @@ private fun BlackHoleScene(duration: Float, onDone: () -> Unit, onFail: () -> Un
         )
         // the spark of light rising out of the black hole, in the second half of the glide
         val k = (elapsed / duration).coerceIn(0f, 1f)
-        if (k > 0.5f) {
+        // 119a: Silver has no spark and draws the name in its sky, where the hole bends it
+        if (!silver && k > 0.5f) {
             val q = (k - 0.5f) / 0.5f
             Box(
                 Modifier.align(Alignment.Center)
@@ -167,7 +176,7 @@ private fun BlackHoleScene(duration: Float, onDone: () -> Unit, onFail: () -> Un
             )
         }
         // the name, under the black hole, developing in as a print does
-        Column(
+        if (!silver) Column(
             Modifier.align(Alignment.BottomCenter).padding(bottom = maxHeight * 0.15f).alpha(fade.value),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
@@ -225,10 +234,10 @@ private class BlackHoleRenderer(
     private val reducedMotion: Boolean,
     private val onFail: () -> Unit,
     private val onFirstFrame: () -> Unit,
-) : GLSurfaceView.Renderer {
+) : IntroRenderer {
     private var first = true
     /** 1 → 0 as the intro fades out: the last pass is scaled by it, so the camera shows through. */
-    @Volatile var fade = 1f
+    @Volatile override var fade = 1f
     private var scene = 0; private var post = 0; private var accum = 0
     private val us = IntArray(8); private val up = IntArray(4); private val ua = IntArray(6)
     // the finer picture, built up over time: two at the screen's size, read one and write the other
@@ -253,21 +262,21 @@ private class BlackHoleRenderer(
     private var pinchDist = 27f
     private val lock = Any(); private var dYaw = 0f; private var dPitch = 0f      // drags since the last frame
 
-    fun touchDown() { held = true; takeOver = true; lastTouch = System.nanoTime() }
-    fun touchUp() {
+    override fun touchDown() { held = true; takeOver = true; lastTouch = System.nanoTime() }
+    override fun touchUp() {
         held = false; lastTouch = System.nanoTime()
         // 93a: where the camera was let go, to choose the resting tilt from (REST_PITCH)
         Log.i("Latent", "black hole: let go at pitch %.3f yaw %.3f dist %.1f".format(java.util.Locale.US, pitch + dPitch, yaw + dYaw, dist))
     }
     /** One finger moved (dx, dy) density-independent pixels: orbit, as the demo does (0.0055 rad each). */
-    fun drag(dx: Float, dy: Float) {
+    override fun drag(dx: Float, dy: Float) {
         vyaw = -dx * 0.0055f; vpitch = dy * 0.0055f
         synchronized(lock) { dYaw += vyaw; dPitch += vpitch }
         lastTouch = System.nanoTime()
     }
-    fun pinchBegin() { pinchDist = distTarget }
+    override fun pinchBegin() { pinchDist = distTarget }
     /** Two fingers: spreading them falls closer, pinching pulls away. */
-    fun pinch(startSpread: Float, spread: Float) { distTarget = pinchDist * startSpread / maxOf(spread, 1f); lastTouch = System.nanoTime() }
+    override fun pinch(startSpread: Float, spread: Float) { distTarget = pinchDist * startSpread / maxOf(spread, 1f); lastTouch = System.nanoTime() }
 
     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
         try {
