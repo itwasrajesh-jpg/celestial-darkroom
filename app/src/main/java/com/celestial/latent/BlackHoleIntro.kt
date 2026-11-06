@@ -100,7 +100,7 @@ fun BlackHoleIntro(onDone: () -> Unit) {
  * It glides in, then it is yours to explore, as the live demo is: drag to orbit (with momentum),
  * pinch to fall closer or pull away, and after 2.5 s untouched it turns slowly by itself. Touching
  * during the glide takes over from wherever the camera is. A tap — no drag — closes it, fading
- * to the camera beneath. It never closes by itself (Settings → Opening animation turns it off).
+ * to the camera beneath (Silver, 120a: falling into the hole, the camera opening out of its shadow). It never closes by itself (Settings → Opening animation turns it off).
  */
 private fun BlackHoleScene(duration: Float, onDone: () -> Unit, onFail: () -> Unit, silver: Boolean) {
     val fade = remember { Animatable(1f) }
@@ -120,8 +120,14 @@ private fun BlackHoleScene(duration: Float, onDone: () -> Unit, onFail: () -> Un
     }
     LaunchedEffect(finishing) {
         if (!finishing) return@LaunchedEffect
-        // fade out over 0.65 s, the camera showing through, then hand over
-        fade.animateTo(0f, tween(650)) { renderer.fade = value }
+        // 120a: Silver falls into the hole and the camera opens out of its shadow (not with animations removed);
+        // if that cannot finish (paused, failed) within 3 s, or for the classic one, the 0.65 s fade as before
+        val fell = !reduced && kotlinx.coroutines.withTimeoutOrNull(3000L) {
+            val opened = kotlinx.coroutines.CompletableDeferred<Unit>()
+            if (!renderer.close { opened.complete(Unit) }) return@withTimeoutOrNull false
+            opened.await(); true
+        } == true
+        if (!fell) fade.animateTo(0f, tween(650)) { renderer.fade = value }
         onDone()
     }
     LaunchedEffect(Unit) {
