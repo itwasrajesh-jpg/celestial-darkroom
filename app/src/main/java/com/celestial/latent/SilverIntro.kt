@@ -28,6 +28,10 @@ import javax.microedition.khronos.opengles.GL10
  *  - a soft halo of the disc's own light and a wide bloom, done in linear light (half-float targets).
  * Numbers are the proof's (video5.py / render4.py); comments name them where they differ.
  * Settings → Look → Opening look switches back to the classic one.
+ * 120a (approved drafts blackhole-silver/v6): a hair-thin photon ring round the shadow, lit by the threads; and
+ * the closing tap sends a flash out of the hole (the light echo: each part of the disc is seen as its light
+ * arrives, so the side bent round under the hole lights up later) while the view falls in and the camera
+ * opens out of the shadow.
  */
 object IntroStyle {
     private const val PREFS = "latent_intro"
@@ -46,6 +50,8 @@ internal interface IntroRenderer : GLSurfaceView.Renderer {
     fun drag(dx: Float, dy: Float)
     fun pinchBegin()
     fun pinch(startSpread: Float, spread: Float)
+    /** 120a: close by falling into the hole; [done] runs (GL thread) once the camera shows. False: just fade. */
+    fun close(done: () -> Unit): Boolean = false
 }
 
 internal class SilverRenderer(
@@ -79,7 +85,7 @@ internal class SilverRenderer(
     private var first = true
     @Volatile override var fade = 1f
     private var scene = 0; private var post = 0; private var accum = 0; private var glow = 0; private var bloom = 0
-    private val us = IntArray(16); private val up = IntArray(4); private val ua = IntArray(6); private val ug = IntArray(2); private val ub = IntArray(4)
+    private val us = IntArray(18); private val up = IntArray(5); private val ua = IntArray(6); private val ug = IntArray(2); private val ub = IntArray(4)
     private val maptex = IntArray(5)                  // fib, low, shape, sky, name
     private val hist = IntArray(2); private val histFbo = IntArray(2); private var histNow = 0
     private val tex = IntArray(4); private val fbo = IntArray(4)        // the frame, its hot parts (bloom), its light (halo), the glow
@@ -118,6 +124,13 @@ internal class SilverRenderer(
     /** From [TiltSensor]: radians of view swing, already limited. */
     fun tilt(yaw: Float, pitch: Float) { tiltYawTarget = yaw; tiltPitchTarget = pitch }
 
+    // 120a: the closing tap. A flash leaves the hole (the light echo), the view falls in from above the disc
+    // (never through it) until the shadow is the whole screen, then the camera opens out of its middle.
+    @Volatile private var closeDone: (() -> Unit)? = null
+    @Volatile private var closeAsked = false
+    private var closeAt = -1f; private var echoAt = -1000f; private var fallFrom = 18f; private var pitchFrom = 0.12f
+    override fun close(done: () -> Unit): Boolean { if (failed) return false; closeDone = done; closeAsked = true; return true }
+
     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
         try {
             // linear light needs half-float targets (core in GLES 3.2; an extension before), and the maps need 4096 px
@@ -129,8 +142,8 @@ internal class SilverRenderer(
             if (mx[0] < 4096) error("max texture size ${mx[0]}")
             scene = program(FS_SILVER); post = program(FS_SILVER_POST); accum = program(FS_SILVER_ACC); glow = program(FS_SILVER_GLOW); bloom = program(FS_SILVER_BLOOM)
             listOf("uRes", "uTime", "uCam", "uRight", "uUp", "uFwd", "uFar", "uJitter", "uShift", "uDown",
-                "uNF", "uNR", "uNU", "uNameV", "uNameAspect").forEachIndexed { i, n -> us[i] = GLES30.glGetUniformLocation(scene, n) }
-            listOf("uHist", "uGlow", "uOut", "uTime").forEachIndexed { i, n -> up[i] = GLES30.glGetUniformLocation(post, n) }
+                "uNF", "uNR", "uNU", "uNameV", "uNameAspect", "uEcho", "uRing").forEachIndexed { i, n -> us[i] = GLES30.glGetUniformLocation(scene, n) }
+            listOf("uHist", "uGlow", "uOut", "uTime", "uIris").forEachIndexed { i, n -> up[i] = GLES30.glGetUniformLocation(post, n) }
             listOf("uHot", "uLit", "uRes", "uMaxLev").forEachIndexed { i, n -> ub[i] = GLES30.glGetUniformLocation(bloom, n) }
             listOf("uCur", "uHist", "uCurRes", "uOut", "uJitter", "uKeep").forEachIndexed { i, n -> ua[i] = GLES30.glGetUniformLocation(accum, n) }
             listOf("uScene", "uMode").forEachIndexed { i, n -> ug[i] = GLES30.glGetUniformLocation(glow, n) }
@@ -250,10 +263,18 @@ internal class SilverRenderer(
             distTarget = distTarget.coerceIn(5f, 55f)
             dist += (distTarget - dist) * minOf(1f, dt * 8f)
         }
+        // 120a: the fall (1.4 s, eased both ends): distance on a log scale to 1.08 (just outside the horizon),
+        // tipping to 0.75 rad above (or below) the disc; the tilt lets go so the hole stays where the iris opens
+        if (closeAsked && closeAt < 0f) { closeAt = el; echoAt = el; fallFrom = dist; pitchFrom = pitch }
+        if (closeAt >= 0f) {
+            val q = smooth(0f, 1f, (el - closeAt) / FALL)
+            dist = kotlin.math.exp(kotlin.math.ln(fallFrom) + (kotlin.math.ln(1.08f) - kotlin.math.ln(fallFrom)) * q)
+            pitch = pitchFrom + ((if (pitchFrom < 0f) -0.75f else 0.75f) - pitchFrom) * q
+        }
         // the tilt eases in (about 0.12 s) and only once the glide has landed
         val ease = minOf(1f, dt * 8f)
-        tiltYaw += ((if (exploring) tiltYawTarget else 0f) - tiltYaw) * ease
-        tiltPitch += ((if (exploring) tiltPitchTarget else 0f) - tiltPitch) * ease
+        tiltYaw += ((if (exploring && closeAt < 0f) tiltYawTarget else 0f) - tiltYaw) * ease
+        tiltPitch += ((if (exploring && closeAt < 0f) tiltPitchTarget else 0f) - tiltPitch) * ease
         val viewYaw = yaw + tiltYaw; val viewPitch = (pitch + tiltPitch).coerceIn(-1.45f, 1.45f)
         val b = basis(viewYaw, viewPitch, roll); val cam = b[0]; val r2 = b[1]; val u2 = b[2]; val f = b[3]
         // the name rides 40% of the tilt, so the hole still slides against it but it never leaves the screen
@@ -279,6 +300,7 @@ internal class SilverRenderer(
         GLES30.glUniform3f(us[10], nb[3][0], nb[3][1], nb[3][2]); GLES30.glUniform3f(us[11], nb[1][0], nb[1][1], nb[1][2])
         GLES30.glUniform3f(us[12], nb[2][0], nb[2][1], nb[2][2]); GLES30.glUniform1f(us[13], nameV)
         GLES30.glUniform1f(us[14], NAME_W.toFloat() / NAME_H)
+        GLES30.glUniform1f(us[15], echoAt + 20f); GLES30.glUniform1f(us[16], 1f)      // 120a: the light echo, the photon ring
         GLES30.glDrawArrays(GLES30.GL_TRIANGLES, 0, 3)
         // its hot parts (bloom) and its light (halo), each with mipmaps for the glow
         GLES30.glUseProgram(glow)
@@ -321,8 +343,13 @@ internal class SilverRenderer(
         GLES30.glActiveTexture(GLES30.GL_TEXTURE1); GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, tex[3])
         GLES30.glUniform1i(up[0], 0); GLES30.glUniform1i(up[1], 1)
         GLES30.glUniform2f(up[2], vw.toFloat(), vh.toFloat()); GLES30.glUniform1f(up[3], el)
+        // 120a: the iris, from the hole's middle (the view is shifted 0.1 of the short side), once the shadow fills
+        val iris = if (closeAt < 0f) 0f else smooth(closeAt + FALL * 0.8f, closeAt + FALL + 0.35f, el)
+        GLES30.glUniform4f(up[4], vw * 0.5f + 0.1f * minOf(vw, vh), vh * 0.5f, iris * 0.62f * kotlin.math.hypot(vw.toFloat(), vh.toFloat()),
+            0.06f * kotlin.math.hypot(vw.toFloat(), vh.toFloat()))
         GLES30.glDrawArrays(GLES30.GL_TRIANGLES, 0, 3)
         if (first) { first = false; onFirstFrame() }
+        if (iris >= 1f) closeDone?.let { closeDone = null; it() }
     }
 
     /** Camera position and its right/up/forward, rolled — the proof's scene3 and the classic driver alike. */
@@ -373,6 +400,8 @@ internal class SilverRenderer(
     }
 
     companion object {
+        /** 120a: seconds of the fall into the hole; the iris finishes 0.35 s after. */
+        const val FALL = 1.4f
         const val NAME_W = 2000; const val NAME_H = 330
         /** The intro's own two lines, as the proof drew them: CELESTIAL small over DARKROOM big, widely spaced, white on black. */
         fun nameBitmap(): Bitmap {
@@ -454,6 +483,8 @@ uniform sampler2D uLow;
 uniform sampler2D uShape;
 uniform sampler2D uSky;
 uniform sampler2D uName;
+uniform float uEcho;
+uniform float uRing;
 out vec4 outColor;
 
 const float TAU = 6.2831853;
@@ -470,6 +501,8 @@ const float SKYG = 2.5;
 const float SPIN = 0.55;
 const float LIVEP = 8.0;
 const float SKYROT = 0.04;
+const float CL = 10.0;        // the speed of light in these units (radii per second), slowed so the echo can be seen
+const float BC = 2.5980762;   // the photon ring: the impact parameter 3*sqrt(3)/2 (horizon radius 1)
 
 float ss(float a, float b, float x){ float t = clamp((x - a) / (b - a), 0.0, 1.0); return t * t * (3.0 - 2.0 * t); }
 float kep(float r){ float q = max(r, RIN) / RIN; return SPIN / (q * sqrt(q)); }
@@ -494,7 +527,7 @@ vec3 silverCol(float t){
   c = mix(c, vec3(1.0, 0.97, 0.92), ss(0.65, 1.15, t));
   return mix(c, vec3(0.88, 0.93, 1.0), ss(1.3, 2.0, t));
 }
-vec4 disk(vec3 p, vec3 rd, float si){
+vec4 disk(vec3 p, vec3 rd, float si, float path){
   float r;
   vec2 t = polar(p, r);
   if(r < RIN || r > RMAX) return vec4(0.0);
@@ -522,7 +555,13 @@ vec4 disk(vec3 p, vec3 rd, float si){
   float beam = min(pow(g, 1.6), 4.0);
   float em = prof * edge * (0.015 + 2.4 * pow(fib, 1.3)) * beam * GAIN;
   float alpha = edge * clamp(ALPHA0 + 0.7 * dust * (0.4 + fib), 0.0, 0.92);
-  return vec4(silverCol(temp) * em, alpha);
+  // the light echo: a flash at the hole runs out across the disc at the speed of light, and each point is seen
+  // as it was when its light left (path / CL ago), so the long way round, under the hole, lights up later
+  float te = uTime - path / CL - uEcho;
+  float R = RIN + CL * te;
+  float pulse = te > 0.0 ? exp(-((r - R) / 0.7) * ((r - R) / 0.7)) * exp(-te / 1.4) : 0.0;
+  vec3 c = silverCol(temp) * em + pulse * silverCol(1.8) * prof * edge * beam * GAIN * (0.2 + 3.6 * pow(fib, 1.3));
+  return vec4(c, alpha);
 }
 float hash(vec3 p){
   p = fract(p * 0.3183099 + 0.1);
@@ -572,6 +611,7 @@ void main(){
   bool hit = false;
   bool cached = false;
   float q0 = 0.0;
+  float path = -length(uCam);   // so the nearest light is seen at once
   for(int i = 0; i < 220; i++){
     float r2 = dot(p, p);
     float r = sqrt(r2);
@@ -594,7 +634,7 @@ void main(){
         float s1 = p2.y - hgt * qb;
         if(s0 * s1 < 0.0){
           vec3 cp = mix(p, p2, s0 / (s0 - s1));
-          vec4 d = disk(cp, nv, float(idx));
+          vec4 d = disk(cp, nv, float(idx), path + length(cp - p));
           col += tr * d.rgb * wgt;
           tr *= 1.0 - d.a * wgt;
         }
@@ -603,11 +643,25 @@ void main(){
     } else {
       cached = false;
     }
+    path += length(p2 - p);
     p = p2;
     v = v2;
     if(tr < 0.01) break;
   }
   if(!hit) col += tr * sky(normalize(v));
+  // the photon ring: light that circled the hole before escaping, as a hair-thin line just outside the shadow, and
+  // a fainter one inside it (the second loop; really far thinner, widened to be seen), lit by the disc's threads
+  if(uRing > 0.0){
+    float b = sqrt(h2);
+    vec3 hn = normalize(hv);
+    float ang = atan(dot(hn, uUp), dot(hn, uRight));
+    float th = textureLod(uFib, vec2(fract(ang / TAU - kep(RIN) * uTime / TAU), 0.06), 0.0).r;
+    float th2 = textureLod(uFib, vec2(fract(ang / TAU * 2.0 + kep(RIN) * uTime / TAU * 1.3), 0.12), 0.0).g;
+    float d1 = (b - BC - 0.075) / 0.05;
+    float d2 = (b - BC - 0.012) / 0.022;
+    float ring = exp(-d1 * d1) * (0.5 + 1.6 * th * th) + 0.6 * exp(-d2 * d2) * (0.4 + 1.4 * th2 * th2);
+    col += tr * uRing * ring * silverCol(1.5) * 3.2;
+  }
   outColor = vec4(max(col, vec3(0.0)), 1.0);
 }"""
 
@@ -708,6 +762,7 @@ uniform sampler2D uHist;
 uniform sampler2D uGlow;
 uniform vec2 uOut;
 uniform float uTime;
+uniform vec4 uIris;     // 120a: centre (px), radius (px), soft edge (px); radius 0 = closed
 out vec4 outColor;
 float h21(vec2 p){ return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
 void main(){
@@ -720,5 +775,7 @@ void main(){
   vec2 q = uv - 0.5;
   t *= 1.0 - 0.5 * dot(q, q);
   t += (h21(gl_FragCoord.xy + fract(uTime) * 61.0) - 0.5) * 0.018;
-  outColor = vec4(t, 1.0);
+  // the camera opening out of the shadow: see-through inside the iris (premultiplied, as the fade is)
+  float open = uIris.z > 0.0 ? clamp((uIris.z - length(gl_FragCoord.xy - uIris.xy)) / uIris.w, 0.0, 1.0) : 0.0;
+  outColor = vec4(t, 1.0) * (1.0 - open);
 }"""
