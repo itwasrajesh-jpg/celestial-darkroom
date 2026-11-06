@@ -215,6 +215,17 @@ fun SettingsScreen(settings: AppSettings, onChange: (AppSettings) -> Unit, onOpe
                         ToggleRow("Mascot", "The little photographer on the empty roll, Help, About and the crash screen. It waves once when the screen opens, then just breathes; tap it and it jumps. Still when the phone's animations are off.", settings.mascot) { onChange(settings.copy(mascot = it)) }
                         Hair()
                         ToggleRow("Opening animation", "A black hole, traced live, as the name develops in. Drag and pinch to explore it; tap to close.", settings.openingAnimation) { onChange(settings.copy(openingAnimation = it)) }
+                        // 119a: which black hole opens the app
+                        if (settings.openingAnimation) {
+                            Hair()
+                            var silverIntro by remember { mutableStateOf(IntroStyle.silver(context)) }
+                            OptionRow(
+                                title = "Opening look",
+                                subtitle = "Silver: a silver disc whose threads break up and re-form, with the name bent by the hole's gravity. Classic: the warm original. Shows the next time the app opens.",
+                                options = listOf("Silver" to true, "Classic" to false),
+                                selected = silverIntro,
+                            ) { IntroStyle.set(context, it); silverIntro = it }
+                        }
                     }
 
                     // 91a: sounds made from a model of a real camera's parts; off until turned on, quiet when the phone is
