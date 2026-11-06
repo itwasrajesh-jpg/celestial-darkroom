@@ -112,6 +112,12 @@ internal class SilverRenderer(
     override fun pinchBegin() { pinchDist = distTarget }
     override fun pinch(startSpread: Float, spread: Float) { distTarget = pinchDist * startSpread / maxOf(spread, 1f); lastTouch = System.nanoTime() }
 
+    // 119b: tilting the phone swings the view a little way round the hole (the name stays put in the sky)
+    @Volatile private var tiltYawTarget = 0f; @Volatile private var tiltPitchTarget = 0f
+    private var tiltYaw = 0f; private var tiltPitch = 0f
+    /** From [TiltSensor]: radians of view swing, already limited. */
+    fun tilt(yaw: Float, pitch: Float) { tiltYawTarget = yaw; tiltPitchTarget = pitch }
+
     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
         try {
             // linear light needs half-float targets (core in GLES 3.2; an extension before), and the maps need 4096 px
@@ -244,8 +250,14 @@ internal class SilverRenderer(
             distTarget = distTarget.coerceIn(5f, 55f)
             dist += (distTarget - dist) * minOf(1f, dt * 8f)
         }
-        val b = basis(yaw, pitch, roll); val cam = b[0]; val r2 = b[1]; val u2 = b[2]; val f = b[3]
-        val nb = basis(nameYaw, namePitch, roll)
+        // the tilt eases in (about 0.12 s) and only once the glide has landed
+        val ease = minOf(1f, dt * 8f)
+        tiltYaw += ((if (exploring) tiltYawTarget else 0f) - tiltYaw) * ease
+        tiltPitch += ((if (exploring) tiltPitchTarget else 0f) - tiltPitch) * ease
+        val viewYaw = yaw + tiltYaw; val viewPitch = (pitch + tiltPitch).coerceIn(-1.45f, 1.45f)
+        val b = basis(viewYaw, viewPitch, roll); val cam = b[0]; val r2 = b[1]; val u2 = b[2]; val f = b[3]
+        // the name rides 40% of the tilt, so the hole still slides against it but it never leaves the screen
+        val nb = basis(nameYaw + 0.4f * tiltYaw, namePitch + 0.4f * tiltPitch, roll)
         // the name: from torn round the hole to resting above it, already moving on the first frame (Celestial,
         // 6 Nov); the proof's timing is for a 3.6 s glide, so it is stretched to this glide's length
         val tn = el * 3.6f / duration
@@ -286,9 +298,9 @@ internal class SilverRenderer(
         // build-up over frames (the classic intro's): keep more of the past the stiller the view
         val side = minOf(rw, rh).toFloat()
         val moved = if (prevYaw.isNaN()) Float.MAX_VALUE else
-            (kotlin.math.abs(yaw - prevYaw) + kotlin.math.abs(pitch - prevPitch)) * side + kotlin.math.abs(dist - prevDist) / dist * side * 0.5f
+            (kotlin.math.abs(viewYaw - prevYaw) + kotlin.math.abs(viewPitch - prevPitch)) * side + kotlin.math.abs(dist - prevDist) / dist * side * 0.5f
         val keep = if (moved == Float.MAX_VALUE) 0f else 0.95f * kotlin.math.exp(-1.2f * moved)
-        prevYaw = yaw; prevPitch = pitch; prevDist = dist
+        prevYaw = viewYaw; prevPitch = viewPitch; prevDist = dist
         val next = 1 - histNow
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, histFbo[next]); GLES30.glViewport(0, 0, vw, vh); GLES30.glUseProgram(accum)
         GLES30.glActiveTexture(GLES30.GL_TEXTURE0); GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, tex[0])
@@ -377,6 +389,39 @@ internal class SilverRenderer(
             spaced(110f, "DARKROOM", 150f, 62f, Typeface.create("sans-serif-light", Typeface.NORMAL))
             return bmp
         }
+    }
+}
+
+/**
+ * 119b: the phone's tilt, from the game rotation vector (gyro + gravity, no compass, so it does not jump near
+ * metal). Each reading's small turn since the last one is added up and slowly let go (about 3 s), so holding
+ * the phone at any angle settles back to the resting view, and only the movement itself swings it. Turning
+ * the phone left/right (about its long side) swings the view round the hole, up to 0.1 rad; tipping it
+ * forward/back tilts it, up to 0.04 rad. The proof swung 0.18 and clipped the name; 0.1 with a
+ * 0.6-wide name centred on the screen keeps it all in (checked on the GPU emulator at the limits).
+ */
+internal class TiltSensor(context: Context, private val onTilt: (Float, Float) -> Unit) : android.hardware.SensorEventListener {
+    private val sm = context.getSystemService(Context.SENSOR_SERVICE) as android.hardware.SensorManager
+    private val sensor = sm.getDefaultSensor(android.hardware.Sensor.TYPE_GAME_ROTATION_VECTOR)
+    private val now = FloatArray(9); private val prev = FloatArray(9); private var have = false
+    private var ax = 0f; private var ay = 0f; private var lastNs = 0L
+    fun start() { if (sensor != null) sm.registerListener(this, sensor, android.hardware.SensorManager.SENSOR_DELAY_GAME) else Log.i("Latent", "silver intro: no rotation sensor, no tilt") }
+    fun stop() { sm.unregisterListener(this) }
+    override fun onAccuracyChanged(s: android.hardware.Sensor?, a: Int) {}
+    override fun onSensorChanged(e: android.hardware.SensorEvent) {
+        android.hardware.SensorManager.getRotationMatrixFromVector(now, e.values)
+        if (have) {
+            // the small turn between two readings, in the phone's own axes: prev^T x now
+            fun d(i: Int, j: Int) = prev[i] * now[j] + prev[3 + i] * now[3 + j] + prev[6 + i] * now[6 + j]
+            val rx = (d(2, 1) - d(1, 2)) / 2f          // about the phone's short axis: tipping forward/back
+            val ry = (d(0, 2) - d(2, 0)) / 2f          // about its long axis: turning left/right
+            val dt = ((e.timestamp - lastNs) / 1e9f).coerceIn(0f, 0.2f)
+            val keep = kotlin.math.exp(-dt / 3f)
+            ax = ax * keep + rx; ay = ay * keep + ry
+            // soft limits: 15 degrees of turn gives most of the swing
+            onTilt(0.1f * kotlin.math.tanh(ay * 0.4f / 0.1f), 0.04f * kotlin.math.tanh(-ax * 0.2f / 0.04f))
+        }
+        now.copyInto(prev); have = true; lastNs = e.timestamp
     }
 }
 
@@ -488,9 +533,9 @@ float hash(vec3 p){
 float nameLight(vec3 d){
   float z = dot(d, uNF);
   if(z <= 0.2) return 0.0;
-  float x = dot(d, uNR) / z;            // + 0.1 (the view's shift) - 0.1 (the name's) cancel
+  float x = dot(d, uNR) / z + 0.1;      // 119b: centred on the screen (the view is shifted 0.1), so a tilt keeps it all in
   float y = dot(d, uNU) / z - uNameV;
-  vec2 t = vec2(x / 0.64 + 0.5, 0.5 - y * uNameAspect / 0.64);
+  vec2 t = vec2(x / 0.6 + 0.5, 0.5 - y * uNameAspect / 0.6);   // 0.6 wide (119b; the draft's 0.64 clipped with tilt)
   if(t.x < 0.0 || t.x > 1.0 || t.y < 0.0 || t.y > 1.0) return 0.0;
   return textureLod(uName, t, 0.0).r;
 }

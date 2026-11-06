@@ -133,6 +133,13 @@ private fun BlackHoleScene(duration: Float, onDone: () -> Unit, onFail: () -> Un
     }
     // the back gesture closes it too
     BackHandler { finishing = true }
+    // 119b: Silver follows the phone's tilt (not when Android's animations are removed)
+    if (silver && !reduced) DisposableEffect(renderer) {
+        val s = renderer as? SilverRenderer
+        val tilt = s?.let { r -> TiltSensor(context) { y, p -> r.tilt(y, p) } }
+        tilt?.start()
+        onDispose { tilt?.stop() }
+    }
     // stop drawing in the background, start again on return (the page's advice for an app)
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     DisposableEffect(lifecycle) {
