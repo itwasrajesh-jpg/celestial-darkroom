@@ -39,6 +39,9 @@ import javax.microedition.khronos.opengles.GL10
  * approximation, not a full Kerr solver: the shadow shifts and flattens into a soft D, and the photon ring is
  * found by how far each ray swept round so it follows it); thin streams spiral off the inner edge into the
  * shadow; and every 9 s a hot spot flares near the inner edge and races round, seen with light-travel delay.
+ * 123a: the GPU's own time per frame (EXT_disjoint_timer_query), split into the black hole pass and the
+ * finish, in the every-60-frames log line; and once per launch, a cost check that times the black hole pass
+ * again with each effect off in turn (drawn off screen), to size the quality levels on each phone.
  */
 object IntroStyle {
     private const val PREFS = "latent_intro"
@@ -101,6 +104,14 @@ internal class SilverRenderer(
     private var t0 = 0L; private var last = 0L; private var el = 0f
     private var acc = 0f; private var frames = 0; private var failed = false
     private var logMs = 0f; private var logN = 0
+
+    // 123a: the GPU's own clock. Four frames of queries in flight (black hole pass, finish), read when ready.
+    private var gpuOk = false
+    private val gq = IntArray(8); private val gqBusy = BooleanArray(4); private var gqFrame = 0
+    private var gpuHole = 0.0; private var gpuRest = 0.0; private var gpuN = 0
+    // the cost check: each variant of the black hole pass timed twice, off screen, one per frame
+    private val probeQ = IntArray(PROBES.size * 2); private var probeStep = 0; private var probeBad = false
+    private var probeDone = false; private var probeQuiet = 0; private var probeAfter = 0f
 
     // the explorable camera, as the classic intro's (drag to orbit, pinch to fall closer, idle drift)
     private var exploring = false
@@ -189,6 +200,13 @@ internal class SilverRenderer(
             GLES30.glBufferData(GLES30.GL_ARRAY_BUFFER, 6 * 4, tri, GLES30.GL_STATIC_DRAW)
             GLES30.glEnableVertexAttribArray(0); GLES30.glVertexAttribPointer(0, 2, GLES30.GL_FLOAT, false, 0, 0)
             GLES30.glGenTextures(4, tex, 0); GLES30.glGenFramebuffers(4, fbo, 0)
+            // 123a: the GPU timer, if the driver has one
+            gpuOk = ext.contains("GL_EXT_disjoint_timer_query")
+            if (gpuOk) { GLES30.glGenQueries(gq.size, gq, 0); GLES30.glGenQueries(probeQ.size, probeQ, 0) }
+            gqBusy.fill(false); gqFrame = 0; gpuHole = 0.0; gpuRest = 0.0; gpuN = 0
+            probeStep = 0; probeBad = false; probeQuiet = 0
+            Log.i("Latent", "silver intro: GPU %s · %s · GPU timer %s".format(GLES30.glGetString(GLES30.GL_RENDERER), ver,
+                if (gpuOk) "on" else "not offered by this driver"))
             uploadMaps()
             rw = 0; rh = 0
         } catch (t: Throwable) {
@@ -222,6 +240,7 @@ internal class SilverRenderer(
     override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) {
         vw = maxOf(2, width); vh = maxOf(2, height)
         if (failed) return
+        logScreen()
         for (i in 0 until 2) {
             GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, hist[i])
             GLES30.glTexImage2D(GLES30.GL_TEXTURE_2D, 0, GLES30.GL_RGBA16F, vw, vh, 0, GLES30.GL_RGBA, GLES30.GL_HALF_FLOAT, null)
@@ -233,6 +252,51 @@ internal class SilverRenderer(
         }
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
         prevYaw = Float.NaN
+    }
+
+    /** 123a: the screen's refresh rate now and the ones it can do (for a 120 Hz quality level later). */
+    private fun logScreen() {
+        try {
+            val d = (app.getSystemService(Context.DISPLAY_SERVICE) as android.hardware.display.DisplayManager)
+                .getDisplay(android.view.Display.DEFAULT_DISPLAY) ?: return
+            val rates = d.supportedModes.map { Math.round(it.refreshRate) }.distinct().sorted()
+            Log.i("Latent", "silver intro: screen %d Hz now, can do %s Hz".format(Math.round(d.refreshRate), rates.joinToString("/")))
+        } catch (t: Throwable) { Log.i("Latent", "silver intro: screen rate unknown ($t)") }
+    }
+
+    /** 123a: GL_TIME_ELAPSED_EXT start/stop round [draw], if the timer is there. */
+    private inline fun timed(id: Int, draw: () -> Unit) {
+        if (gpuOk) GLES30.glBeginQuery(TIME_ELAPSED, id)
+        draw()
+        if (gpuOk) GLES30.glEndQuery(TIME_ELAPSED)
+    }
+    private fun ready(id: Int): Boolean { val a = IntArray(1); GLES30.glGetQueryObjectuiv(id, GLES30.GL_QUERY_RESULT_AVAILABLE, a, 0); return a[0] != 0 }
+    private fun ns(id: Int): Long { val a = IntArray(1); GLES30.glGetQueryObjectuiv(id, GLES30.GL_QUERY_RESULT, a, 0); return a[0].toLong() and 0xffffffffL }
+
+    /** 123a: collects finished GPU times. A "disjoint" (the GPU's clock jumped: power change, another app)
+     *  throws away everything still in flight, as the extension asks. */
+    private fun gpuRead() {
+        if (!gpuOk) return
+        val dj = IntArray(1); GLES30.glGetIntegerv(GPU_DISJOINT, dj, 0)
+        if (dj[0] != 0) { gqBusy.fill(false); if (probeStep > 0 && !probeDone) probeBad = true; return }
+        val s = gqFrame % 4
+        if (gqBusy[s] && ready(gq[2 * s + 1])) { gpuHole += ns(gq[2 * s]) / 1e6; gpuRest += ns(gq[2 * s + 1]) / 1e6; gpuN++ }
+        gqBusy[s] = false
+        // the cost check's results, once all are in
+        if (probeStep == probeQ.size && !probeDone && ready(probeQ[probeQ.size - 1])) {
+            probeDone = true
+            if (probeBad) { Log.i("Latent", "silver intro: cost check disturbed (GPU clock jumped), skipped"); return }
+            val ms = DoubleArray(PROBES.size) { (ns(probeQ[it]) + ns(probeQ[it + PROBES.size])) / 2e6 }
+            Log.i("Latent", "silver intro: cost check, GPU ms of the black hole pass at %dx%d: %s".format(rw, rh,
+                PROBES.indices.joinToString(" · ") { "%s %.1f".format(java.util.Locale.US, PROBES[it].first, ms[it]) }))
+        }
+    }
+
+    /** The effects' switches in the black hole pass: time slowing, nebula, ring, spin, plunge, hot spot (1 = on). */
+    private fun effects(on: FloatArray) {
+        GLES30.glUniform1f(us[16], on[2]); GLES30.glUniform1f(us[17], on[0]); GLES30.glUniform1f(us[18], on[1])
+        GLES30.glUniform1f(us[19], 0.9f * on[3]); GLES30.glUniform1f(us[20], on[4]); GLES30.glUniform1f(us[21], on[5])
+        GLES30.glUniform1f(us[22], 1.2f)
     }
 
     private fun checkFbo() {
@@ -255,8 +319,10 @@ internal class SilverRenderer(
         val now = System.nanoTime()
         if (t0 == 0L) { t0 = now; last = now }
         val dtMs = minOf((now - last) / 1e6f, 120f); last = now; el += dtMs / 1000f
+        gpuRead()
         // the classic intro's sharpness rules: smaller when slow, sharper when there is time to spare
-        acc += dtMs; frames++
+        // (123a: not counting the cost check's frames, which draw the black hole twice)
+        if (probeQuiet > 0) probeQuiet-- else { acc += dtMs; frames++ }
         if (!exploring && frames >= 12) {
             val avg = acc / frames
             if (avg > 30f && scale > 0.35f) scale = maxOf(0.35f, scale * 0.8f)
@@ -270,8 +336,10 @@ internal class SilverRenderer(
         // the frame-time line, every 60 frames, to size this on each phone
         logMs += dtMs; logN++
         if (logN >= 60) {
-            Log.i("Latent", "silver intro: %.1f ms/frame, scene %dx%d (scale %.2f) of %dx%d".format(java.util.Locale.US, logMs / logN, rw, rh, scale, vw, vh))
-            logMs = 0f; logN = 0
+            val gpu = if (gpuN > 0) "GPU %.1f ms (black hole %.1f + finish %.1f), ".format(java.util.Locale.US,
+                (gpuHole + gpuRest) / gpuN, gpuHole / gpuN, gpuRest / gpuN) else ""
+            Log.i("Latent", "silver intro: %.1f ms/frame, %sscene %dx%d (scale %.2f) of %dx%d".format(java.util.Locale.US, logMs / logN, gpu, rw, rh, scale, vw, vh))
+            logMs = 0f; logN = 0; gpuHole = 0.0; gpuRest = 0.0; gpuN = 0
         }
         alloc()
         if (failed) return
@@ -334,11 +402,24 @@ internal class SilverRenderer(
         GLES30.glUniform3f(us[10], nb[3][0], nb[3][1], nb[3][2]); GLES30.glUniform3f(us[11], nb[1][0], nb[1][1], nb[1][2])
         GLES30.glUniform3f(us[12], nb[2][0], nb[2][1], nb[2][2]); GLES30.glUniform1f(us[13], nameV)
         GLES30.glUniform1f(us[14], NAME_W.toFloat() / NAME_H)
-        GLES30.glUniform1f(us[15], echoAt + 20f); GLES30.glUniform1f(us[16], 1f)      // 120a: the light echo, the photon ring
-        GLES30.glUniform1f(us[17], 1f); GLES30.glUniform1f(us[18], 1f)                 // 121a: time slowing, the nebula
-        // 122a: spin 0.9 (frame dragging at strength 1.2), the plunging streams, the hot spot
-        GLES30.glUniform1f(us[19], 0.9f); GLES30.glUniform1f(us[20], 1f); GLES30.glUniform1f(us[21], 1f); GLES30.glUniform1f(us[22], 1.2f)
-        GLES30.glDrawArrays(GLES30.GL_TRIANGLES, 0, 3)
+        GLES30.glUniform1f(us[15], echoAt + 20f)                                         // 120a: the light echo
+        // 120a the photon ring; 121a time slowing, the nebula; 122a spin 0.9 (frame dragging at strength 1.2), the
+        // plunging streams, the hot spot
+        // 123a: the cost check, once per launch, 1.5 s after the glide lands with no finger down: this frame's black
+        // hole drawn again off screen (into the glow target, which the glow pass then overwrites) with one effect off
+        if (probeAfter == 0f) probeAfter = duration + 1.5f
+        if (gpuOk && probeStep < probeQ.size && exploring && closeAt < 0f && !held && el > probeAfter) {
+            effects(PROBES[probeStep % PROBES.size].second)
+            GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, fbo[3])
+            timed(probeQ[probeStep]) { GLES30.glDrawArrays(GLES30.GL_TRIANGLES, 0, 3) }
+            GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, fbo[0])
+            probeStep++; probeQuiet = 2
+        }
+        effects(ALL_ON)
+        if (gpuOk && gqFrame == 0) while (GLES30.glGetError() != GLES30.GL_NO_ERROR) { }   // so the check below sees only the timer's
+        val slot = gqFrame % 4
+        timed(gq[2 * slot]) { GLES30.glDrawArrays(GLES30.GL_TRIANGLES, 0, 3) }
+        if (gpuOk) GLES30.glBeginQuery(TIME_ELAPSED, gq[2 * slot + 1])
         // its hot parts (bloom) and its light (halo), each with mipmaps for the glow
         GLES30.glUseProgram(glow)
         GLES30.glActiveTexture(GLES30.GL_TEXTURE0); GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, tex[0]); GLES30.glUniform1i(ug[0], 0)
@@ -385,6 +466,10 @@ internal class SilverRenderer(
         GLES30.glUniform4f(up[4], vw * 0.5f + 0.1f * minOf(vw, vh), vh * 0.5f, iris * 0.62f * kotlin.math.hypot(vw.toFloat(), vh.toFloat()),
             0.06f * kotlin.math.hypot(vw.toFloat(), vh.toFloat()))
         GLES30.glDrawArrays(GLES30.GL_TRIANGLES, 0, 3)
+        if (gpuOk) { GLES30.glEndQuery(TIME_ELAPSED); gqBusy[slot] = true }
+        // a driver that lists the extension but refuses its timer through the ES 3.0 calls: turn it off
+        if (gpuOk && gqFrame == 0) GLES30.glGetError().let { if (it != GLES30.GL_NO_ERROR) { gpuOk = false; Log.i("Latent", "silver intro: GPU timer refused (GL error 0x%x)".format(it)) } }
+        gqFrame++
         if (first) { first = false; onFirstFrame() }
         if (iris >= 1f) closeDone?.let { closeDone = null; it() }
     }
@@ -440,6 +525,20 @@ internal class SilverRenderer(
         /** 120a: seconds of the fall into the hole; the iris finishes 0.35 s after. */
         const val FALL = 1.4f
         const val NAME_W = 2000; const val NAME_H = 330
+        /** 123a: EXT_disjoint_timer_query's names (not in android.opengl.GLES30). */
+        const val TIME_ELAPSED = 0x88BF; const val GPU_DISJOINT = 0x8FBB
+        private val ALL_ON = floatArrayOf(1f, 1f, 1f, 1f, 1f, 1f)
+        /** 123a: the cost check's variants: switches for time slowing, nebula, ring, spin, plunge, hot spot. */
+        val PROBES: List<Pair<String, FloatArray>> = listOf(
+            "all" to ALL_ON,
+            "no spin" to floatArrayOf(1f, 1f, 1f, 0f, 1f, 1f),
+            "no hot spot" to floatArrayOf(1f, 1f, 1f, 1f, 1f, 0f),
+            "no streams" to floatArrayOf(1f, 1f, 1f, 1f, 0f, 1f),
+            "no ring" to floatArrayOf(1f, 1f, 0f, 1f, 1f, 1f),
+            "no nebula" to floatArrayOf(1f, 0f, 1f, 1f, 1f, 1f),
+            "no slow time" to floatArrayOf(0f, 1f, 1f, 1f, 1f, 1f),
+            "none of 121a-122a" to floatArrayOf(0f, 0f, 1f, 0f, 0f, 0f),
+        )
         /** The intro's own two lines, as the proof drew them: CELESTIAL small over DARKROOM big, widely spaced, white on black. */
         fun nameBitmap(): Bitmap {
             val bmp = Bitmap.createBitmap(NAME_W, NAME_H, Bitmap.Config.ARGB_8888)
