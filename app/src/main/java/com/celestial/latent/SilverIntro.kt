@@ -105,10 +105,13 @@ internal class SilverRenderer(
     private var acc = 0f; private var frames = 0; private var failed = false
     private var logMs = 0f; private var logN = 0
 
-    // 123a: the GPU's own clock. Four frames of queries in flight (black hole pass, finish), read when ready.
+    // 123a: the GPU's own clock. Up to eight frames of queries in flight (black hole pass, finish), read when ready.
+    // 123b: on the Pixel's Mali no result ever came back in 123a's four frames (or every one was thrown away by a
+    // clock jump), so: eight frames, a slot still waiting is never reused (that frame just isn't timed), clock
+    // jumps are counted and reported instead of throwing the numbers away, and the line says what happened.
     private var gpuOk = false
-    private val gq = IntArray(8); private val gqBusy = BooleanArray(4); private var gqFrame = 0
-    private var gpuHole = 0.0; private var gpuRest = 0.0; private var gpuN = 0
+    private val gq = IntArray(2 * GQ); private val gqBusy = BooleanArray(GQ); private var gqFrame = 0; private var gqNow = false
+    private var gpuHole = 0.0; private var gpuRest = 0.0; private var gpuN = 0; private var gpuWait = 0; private var gpuJumps = 0
     // the cost check: each variant of the black hole pass timed twice, off screen, one per frame
     private val probeQ = IntArray(PROBES.size * 2); private var probeStep = 0; private var probeBad = false
     private var probeDone = false; private var probeQuiet = 0; private var probeAfter = 0f
@@ -203,7 +206,7 @@ internal class SilverRenderer(
             // 123a: the GPU timer, if the driver has one
             gpuOk = ext.contains("GL_EXT_disjoint_timer_query")
             if (gpuOk) { GLES30.glGenQueries(gq.size, gq, 0); GLES30.glGenQueries(probeQ.size, probeQ, 0) }
-            gqBusy.fill(false); gqFrame = 0; gpuHole = 0.0; gpuRest = 0.0; gpuN = 0
+            gqBusy.fill(false); gqFrame = 0; gpuHole = 0.0; gpuRest = 0.0; gpuN = 0; gpuWait = 0; gpuJumps = 0
             probeStep = 0; probeBad = false; probeQuiet = 0
             Log.i("Latent", "silver intro: GPU %s · %s · GPU timer %s".format(GLES30.glGetString(GLES30.GL_RENDERER), ver,
                 if (gpuOk) "on" else "not offered by this driver"))
@@ -273,22 +276,27 @@ internal class SilverRenderer(
     private fun ready(id: Int): Boolean { val a = IntArray(1); GLES30.glGetQueryObjectuiv(id, GLES30.GL_QUERY_RESULT_AVAILABLE, a, 0); return a[0] != 0 }
     private fun ns(id: Int): Long { val a = IntArray(1); GLES30.glGetQueryObjectuiv(id, GLES30.GL_QUERY_RESULT, a, 0); return a[0].toLong() and 0xffffffffL }
 
-    /** 123a: collects finished GPU times. A "disjoint" (the GPU's clock jumped: power change, another app)
-     *  throws away everything still in flight, as the extension asks. */
+    /** 123a: collects finished GPU times, and decides whether this frame is timed (its slot is free). A "disjoint"
+     *  (the GPU's clock jumped: power change, another app) is counted and reported (123b). */
     private fun gpuRead() {
+        gqNow = false
         if (!gpuOk) return
         val dj = IntArray(1); GLES30.glGetIntegerv(GPU_DISJOINT, dj, 0)
-        if (dj[0] != 0) { gqBusy.fill(false); if (probeStep > 0 && !probeDone) probeBad = true; return }
-        val s = gqFrame % 4
-        if (gqBusy[s] && ready(gq[2 * s + 1])) { gpuHole += ns(gq[2 * s]) / 1e6; gpuRest += ns(gq[2 * s + 1]) / 1e6; gpuN++ }
-        gqBusy[s] = false
+        if (dj[0] != 0) { gpuJumps++; if (probeStep > 0 && !probeDone) probeBad = true }
+        // every slot that has finished, oldest first
+        for (k in 0 until GQ) {
+            val s = (gqFrame + k) % GQ
+            if (gqBusy[s] && ready(gq[2 * s + 1])) { gpuHole += ns(gq[2 * s]) / 1e6; gpuRest += ns(gq[2 * s + 1]) / 1e6; gpuN++; gqBusy[s] = false }
+        }
+        val s = gqFrame % GQ
+        if (gqBusy[s]) gpuWait++ else gqNow = true
         // the cost check's results, once all are in
         if (probeStep == probeQ.size && !probeDone && ready(probeQ[probeQ.size - 1])) {
             probeDone = true
-            if (probeBad) { Log.i("Latent", "silver intro: cost check disturbed (GPU clock jumped), skipped"); return }
             val ms = DoubleArray(PROBES.size) { (ns(probeQ[it]) + ns(probeQ[it + PROBES.size])) / 2e6 }
-            Log.i("Latent", "silver intro: cost check, GPU ms of the black hole pass at %dx%d: %s".format(rw, rh,
-                PROBES.indices.joinToString(" · ") { "%s %.1f".format(java.util.Locale.US, PROBES[it].first, ms[it]) }))
+            Log.i("Latent", "silver intro: cost check, GPU ms of the black hole pass at %dx%d: %s%s".format(rw, rh,
+                PROBES.indices.joinToString(" · ") { "%s %.1f".format(java.util.Locale.US, PROBES[it].first, ms[it]) },
+                if (probeBad) " (the GPU clock jumped during it)" else ""))
         }
     }
 
@@ -336,10 +344,14 @@ internal class SilverRenderer(
         // the frame-time line, every 60 frames, to size this on each phone
         logMs += dtMs; logN++
         if (logN >= 60) {
-            val gpu = if (gpuN > 0) "GPU %.1f ms (black hole %.1f + finish %.1f), ".format(java.util.Locale.US,
-                (gpuHole + gpuRest) / gpuN, gpuHole / gpuN, gpuRest / gpuN) else ""
+            val gpu = when {
+                !gpuOk -> ""
+                gpuN > 0 -> "GPU %.1f ms (black hole %.1f + finish %.1f; %d frames timed, %d waits, %d clock jumps), ".format(java.util.Locale.US,
+                    (gpuHole + gpuRest) / gpuN, gpuHole / gpuN, gpuRest / gpuN, gpuN, gpuWait, gpuJumps)
+                else -> "GPU timer: no results yet (%d waits, %d clock jumps), ".format(gpuWait, gpuJumps)
+            }
             Log.i("Latent", "silver intro: %.1f ms/frame, %sscene %dx%d (scale %.2f) of %dx%d".format(java.util.Locale.US, logMs / logN, gpu, rw, rh, scale, vw, vh))
-            logMs = 0f; logN = 0; gpuHole = 0.0; gpuRest = 0.0; gpuN = 0
+            logMs = 0f; logN = 0; gpuHole = 0.0; gpuRest = 0.0; gpuN = 0; gpuWait = 0; gpuJumps = 0
         }
         alloc()
         if (failed) return
@@ -417,9 +429,10 @@ internal class SilverRenderer(
         }
         effects(ALL_ON)
         if (gpuOk && gqFrame == 0) while (GLES30.glGetError() != GLES30.GL_NO_ERROR) { }   // so the check below sees only the timer's
-        val slot = gqFrame % 4
-        timed(gq[2 * slot]) { GLES30.glDrawArrays(GLES30.GL_TRIANGLES, 0, 3) }
-        if (gpuOk) GLES30.glBeginQuery(TIME_ELAPSED, gq[2 * slot + 1])
+        val slot = gqFrame % GQ
+        if (gqNow) GLES30.glBeginQuery(TIME_ELAPSED, gq[2 * slot])
+        GLES30.glDrawArrays(GLES30.GL_TRIANGLES, 0, 3)
+        if (gqNow) { GLES30.glEndQuery(TIME_ELAPSED); GLES30.glBeginQuery(TIME_ELAPSED, gq[2 * slot + 1]) }
         // its hot parts (bloom) and its light (halo), each with mipmaps for the glow
         GLES30.glUseProgram(glow)
         GLES30.glActiveTexture(GLES30.GL_TEXTURE0); GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, tex[0]); GLES30.glUniform1i(ug[0], 0)
@@ -466,7 +479,7 @@ internal class SilverRenderer(
         GLES30.glUniform4f(up[4], vw * 0.5f + 0.1f * minOf(vw, vh), vh * 0.5f, iris * 0.62f * kotlin.math.hypot(vw.toFloat(), vh.toFloat()),
             0.06f * kotlin.math.hypot(vw.toFloat(), vh.toFloat()))
         GLES30.glDrawArrays(GLES30.GL_TRIANGLES, 0, 3)
-        if (gpuOk) { GLES30.glEndQuery(TIME_ELAPSED); gqBusy[slot] = true }
+        if (gqNow) { GLES30.glEndQuery(TIME_ELAPSED); gqBusy[slot] = true }
         // a driver that lists the extension but refuses its timer through the ES 3.0 calls: turn it off
         if (gpuOk && gqFrame == 0) GLES30.glGetError().let { if (it != GLES30.GL_NO_ERROR) { gpuOk = false; Log.i("Latent", "silver intro: GPU timer refused (GL error 0x%x)".format(it)) } }
         gqFrame++
@@ -527,6 +540,8 @@ internal class SilverRenderer(
         const val NAME_W = 2000; const val NAME_H = 330
         /** 123a: EXT_disjoint_timer_query's names (not in android.opengl.GLES30). */
         const val TIME_ELAPSED = 0x88BF; const val GPU_DISJOINT = 0x8FBB
+        /** 123b: frames of GPU timer queries in flight. */
+        const val GQ = 8
         private val ALL_ON = floatArrayOf(1f, 1f, 1f, 1f, 1f, 1f)
         /** 123a: the cost check's variants: switches for time slowing, nebula, ring, spin, plunge, hot spot. */
         val PROBES: List<Pair<String, FloatArray>> = listOf(
