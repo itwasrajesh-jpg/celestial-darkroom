@@ -32,6 +32,9 @@ import javax.microedition.khronos.opengles.GL10
  * the closing tap sends a flash out of the hole (the light echo: each part of the disc is seen as its light
  * arrives, so the side bent round under the hole lights up later) while the view falls in and the camera
  * opens out of the shadow.
+ * 121a (approved drafts blackhole-silver/v7): time slows near the hole (the inner disc turns and lives on a
+ * slower clock, a little dimmer and warmer); a faint nebula far behind the hole, bent into arcs; and gravity
+ * haptics: pulses that quicken through the glide, a click as the name settles, ticks while falling, a thud.
  */
 object IntroStyle {
     private const val PREFS = "latent_intro"
@@ -85,7 +88,7 @@ internal class SilverRenderer(
     private var first = true
     @Volatile override var fade = 1f
     private var scene = 0; private var post = 0; private var accum = 0; private var glow = 0; private var bloom = 0
-    private val us = IntArray(18); private val up = IntArray(5); private val ua = IntArray(6); private val ug = IntArray(2); private val ub = IntArray(4)
+    private val us = IntArray(20); private val up = IntArray(5); private val ua = IntArray(6); private val ug = IntArray(2); private val ub = IntArray(4)
     private val maptex = IntArray(5)                  // fib, low, shape, sky, name
     private val hist = IntArray(2); private val histFbo = IntArray(2); private var histNow = 0
     private val tex = IntArray(4); private val fbo = IntArray(4)        // the frame, its hot parts (bloom), its light (halo), the glow
@@ -131,6 +134,32 @@ internal class SilverRenderer(
     private var closeAt = -1f; private var echoAt = -1000f; private var fallFrom = 18f; private var pitchFrom = 0.12f
     override fun close(done: () -> Unit): Boolean { if (failed) return false; closeDone = done; closeAsked = true; return true }
 
+    // 121a: gravity haptics. The glide's pulses quicken and strengthen as the hole nears (made for 3.6 s, stretched
+    // to this glide), a click as the name settles; on the closing tap a click, ticks faster and stronger while
+    // falling, and a thud as the shadow fills the screen. Times in seconds; kinds 0 tick, 1 click, 2 thud.
+    private val glidePulses: List<Triple<Float, Float, Int>> = buildList {
+        var t = 0.35f
+        while (t < 3.6f) { val k = t / 3.6f; add(Triple(t * duration / 3.6f, 0.18f + 0.35f * k, 0)); t += 0.62f - 0.36f * k }
+        add(Triple(4.15f * duration / 3.6f, 0.45f, 1))
+    }
+    private val fallPulses: List<Triple<Float, Float, Int>> = buildList {
+        add(Triple(0f, 0.75f, 1))
+        var t = 0.18f
+        while (t < 1.12f) { val q = t / 1.12f; add(Triple(t, 0.3f + 0.6f * q, 0)); t += 0.16f - 0.11f * q }
+        add(Triple(1.15f, 1f, 2))
+    }
+    private var hapEl = -1f; private var hapFall = -1f
+    private fun haptics() {
+        // the glide's, until a finger takes over
+        if (!takeOver) for (p in glidePulses) if (p.first > hapEl && p.first <= el) Haptics.gravity(app, p.third, p.second)
+        hapEl = el
+        if (closeAt >= 0f) {
+            val rel = el - closeAt
+            for (p in fallPulses) if (p.first > hapFall && p.first <= rel) Haptics.gravity(app, p.third, p.second)
+            hapFall = rel
+        }
+    }
+
     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
         try {
             // linear light needs half-float targets (core in GLES 3.2; an extension before), and the maps need 4096 px
@@ -142,7 +171,7 @@ internal class SilverRenderer(
             if (mx[0] < 4096) error("max texture size ${mx[0]}")
             scene = program(FS_SILVER); post = program(FS_SILVER_POST); accum = program(FS_SILVER_ACC); glow = program(FS_SILVER_GLOW); bloom = program(FS_SILVER_BLOOM)
             listOf("uRes", "uTime", "uCam", "uRight", "uUp", "uFwd", "uFar", "uJitter", "uShift", "uDown",
-                "uNF", "uNR", "uNU", "uNameV", "uNameAspect", "uEcho", "uRing").forEachIndexed { i, n -> us[i] = GLES30.glGetUniformLocation(scene, n) }
+                "uNF", "uNR", "uNU", "uNameV", "uNameAspect", "uEcho", "uRing", "uDil", "uNeb").forEachIndexed { i, n -> us[i] = GLES30.glGetUniformLocation(scene, n) }
             listOf("uHist", "uGlow", "uOut", "uTime", "uIris").forEachIndexed { i, n -> up[i] = GLES30.glGetUniformLocation(post, n) }
             listOf("uHot", "uLit", "uRes", "uMaxLev").forEachIndexed { i, n -> ub[i] = GLES30.glGetUniformLocation(bloom, n) }
             listOf("uCur", "uHist", "uCurRes", "uOut", "uJitter", "uKeep").forEachIndexed { i, n -> ua[i] = GLES30.glGetUniformLocation(accum, n) }
@@ -266,6 +295,7 @@ internal class SilverRenderer(
         // 120a: the fall (1.4 s, eased both ends): distance on a log scale to 1.08 (just outside the horizon),
         // tipping to 0.75 rad above (or below) the disc; the tilt lets go so the hole stays where the iris opens
         if (closeAsked && closeAt < 0f) { closeAt = el; echoAt = el; fallFrom = dist; pitchFrom = pitch }
+        haptics()
         if (closeAt >= 0f) {
             val q = smooth(0f, 1f, (el - closeAt) / FALL)
             dist = kotlin.math.exp(kotlin.math.ln(fallFrom) + (kotlin.math.ln(1.08f) - kotlin.math.ln(fallFrom)) * q)
@@ -301,6 +331,7 @@ internal class SilverRenderer(
         GLES30.glUniform3f(us[12], nb[2][0], nb[2][1], nb[2][2]); GLES30.glUniform1f(us[13], nameV)
         GLES30.glUniform1f(us[14], NAME_W.toFloat() / NAME_H)
         GLES30.glUniform1f(us[15], echoAt + 20f); GLES30.glUniform1f(us[16], 1f)      // 120a: the light echo, the photon ring
+        GLES30.glUniform1f(us[17], 1f); GLES30.glUniform1f(us[18], 1f)                 // 121a: time slowing, the nebula
         GLES30.glDrawArrays(GLES30.GL_TRIANGLES, 0, 3)
         // its hot parts (bloom) and its light (halo), each with mipmaps for the glow
         GLES30.glUseProgram(glow)
@@ -485,6 +516,8 @@ uniform sampler2D uSky;
 uniform sampler2D uName;
 uniform float uEcho;
 uniform float uRing;
+uniform float uDil;
+uniform float uNeb;
 out vec4 outColor;
 
 const float TAU = 6.2831853;
@@ -506,12 +539,15 @@ const float BC = 2.5980762;   // the photon ring: the impact parameter 3*sqrt(3)
 
 float ss(float a, float b, float x){ float t = clamp((x - a) / (b - a), 0.0, 1.0); return t * t * (3.0 - 2.0 * t); }
 float kep(float r){ float q = max(r, RIN) / RIN; return SPIN / (q * sqrt(q)); }
+// time slowing near the hole, as seen from far away: the local clock runs at 0.2 at the inner edge, 1 far out
+// (really sqrt(1 - 1/r), 0.78 at the edge; deepened so it can be seen)
+float dil(float r){ return mix(1.0, 0.2 + 0.8 * pow(ss(RIN * 0.95, RIN * 3.2, r), 0.7), uDil); }
 
 // where p falls on the baked disc maps: round the orbit (turning, inner faster) and across the radius
 vec2 polar(vec3 p, out float r){
   r = length(p.xz);
   float a = atan(p.z, p.x);
-  float u = fract(a / TAU - kep(r) * uTime / TAU);
+  float u = fract(a / TAU - kep(r) * dil(r) * uTime / TAU);
   float ir = (r - RIN) / (RMAX - RIN) * (NR - 1.0);
   return vec2(u + 0.5 / NA, (ir + 0.5) / NR);
 }
@@ -538,7 +574,7 @@ vec4 disk(vec3 p, vec3 rd, float si, float path){
   float ph = (textureLod(uShape, t, 0.0).g - 0.5) * 8.0;
   float fn = (lw.b - 0.5) * 10.0;
   // living: two thread maps, each patch swapping on its own clock, segment by segment
-  float w = 0.5 + 0.5 * sin(TAU * uTime / (2.0 * LIVEP) + 2.2 * ph);
+  float w = 0.5 + 0.5 * sin(TAU * uTime * dil(r) / (2.0 * LIVEP) + 2.2 * ph);
   float m = w - 0.5 + 0.32 * fn;
   float k = ss(-0.12, 0.12, m);
   float fib = mix(fb.r, fb.g, k) * (1.0 - 0.55 * exp(-(m / 0.1) * (m / 0.1)));
@@ -551,9 +587,10 @@ vec4 disk(vec3 p, vec3 rd, float si, float path){
   float gam = 1.0 / sqrt(1.0 - v * v);
   float dop = 1.0 / (gam * (1.0 - v * dot(tang, -rd)));
   float g = dop * sqrt(max(1.0 - 1.0 / r, 0.02));
-  float temp = pow(x, -0.75) * g * 1.25;
+  float dl = dil(r);
+  float temp = pow(x, -0.75) * g * 1.25 * (0.75 + 0.25 * dl);
   float beam = min(pow(g, 1.6), 4.0);
-  float em = prof * edge * (0.015 + 2.4 * pow(fib, 1.3)) * beam * GAIN;
+  float em = prof * edge * (0.015 + 2.4 * pow(fib, 1.3)) * beam * GAIN * (0.55 + 0.45 * dl);
   float alpha = edge * clamp(ALPHA0 + 0.7 * dust * (0.4 + fib), 0.0, 0.92);
   // the light echo: a flash at the hole runs out across the disc at the speed of light, and each point is seen
   // as it was when its light left (path / CL ago), so the long way round, under the hole, lights up later
@@ -578,6 +615,29 @@ float nameLight(vec3 d){
   if(t.x < 0.0 || t.x > 1.0 || t.y < 0.0 || t.y > 1.0) return 0.0;
   return textureLod(uName, t, 0.0).r;
 }
+float vnoise(vec3 p){
+  vec3 i = floor(p);
+  vec3 f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(mix(hash(i), hash(i + vec3(1, 0, 0)), f.x), mix(hash(i + vec3(0, 1, 0)), hash(i + vec3(1, 1, 0)), f.x), f.y),
+             mix(mix(hash(i + vec3(0, 0, 1)), hash(i + vec3(1, 0, 1)), f.x), mix(hash(i + vec3(0, 1, 1)), hash(i + vec3(1, 1, 1)), f.x), f.y), f.z);
+}
+// a faint nebula far behind the hole (a little off the line of sight), so the hole bends it into arcs
+vec3 nebula(vec3 d){
+  const vec3 N = vec3(-0.2985, -0.2182, -0.9291);
+  float z = dot(d, N);
+  if(z < 0.3) return vec3(0.0);
+  vec3 t1 = normalize(cross(N, vec3(0.0, 1.0, 0.0)));
+  vec3 t2 = cross(t1, N);
+  vec2 q = vec2(dot(d, t1), dot(d, t2)) / z;
+  float shape = exp(-dot(q, q) / (2.0 * 0.2 * 0.2));
+  if(shape < 0.004) return vec3(0.0);
+  vec3 p = vec3(q * 9.0, 1.7);
+  float n = 0.5 * vnoise(p) + 0.25 * vnoise(p * 2.1 + 3.1) + 0.15 * vnoise(p * 4.3 + 7.7) + 0.1 * vnoise(p * 8.9 + 1.3);
+  float m = vnoise(p * 0.7 + 11.0);
+  float dens = shape * ss(0.38, 0.85, n);
+  return dens * mix(vec3(1.0, 0.55, 0.5), vec3(0.5, 0.72, 1.0), ss(0.3, 0.7, m)) * 0.5;
+}
 vec3 sky(vec3 d0){
   float cr = cos(SKYROT);
   float sr = sin(SKYROT);
@@ -596,6 +656,7 @@ vec3 sky(vec3 d0){
     float b = ss(0.09, 0.0, length(f - off * 0.6)) * pow(h, 14.0) * 5.0;
     c += b * vec3(1.0, 0.96, 0.9);
   }
+  c += uNeb * nebula(d0);
   c += 1.6 * nameLight(d) * vec3(1.0, 0.97, 0.92);
   return c;
 }
