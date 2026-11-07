@@ -39,6 +39,10 @@ import javax.microedition.khronos.opengles.GL10
  * approximation, not a full Kerr solver: the shadow shifts and flattens into a soft D, and the photon ring is
  * found by how far each ray swept round so it follows it); thin streams spiral off the inner edge into the
  * shadow; and every 9 s a hot spot flares near the inner edge and races round, seen with light-travel delay.
+ * 124a: the same picture for less work. The build-up's clean-up box (the brightest and darkest of the 5x5 small
+ * pixels round each one) was worked out again for every screen pixel, 25 reads each at 1440x3200; it is now worked
+ * out once per small pixel in its own pass and read twice. The hot spot's maths is skipped on sheets nowhere near
+ * its ring (where it would add under 1/100000). The GPU time is split four ways: black hole, glow, build-up, tone.
  * 123a: the GPU's own time per frame (EXT_disjoint_timer_query), split into the black hole pass and the
  * finish, in the every-60-frames log line; and once per launch, a cost check that times the black hole pass
  * again with each effect off in turn (drawn off screen), to size the quality levels on each phone.
@@ -94,11 +98,13 @@ internal class SilverRenderer(
 
     private var first = true
     @Volatile override var fade = 1f
-    private var scene = 0; private var post = 0; private var accum = 0; private var glow = 0; private var bloom = 0
-    private val us = IntArray(24); private val up = IntArray(5); private val ua = IntArray(6); private val ug = IntArray(2); private val ub = IntArray(4)
+    private var scene = 0; private var post = 0; private var accum = 0; private var glow = 0; private var bloom = 0; private var box = 0
+    private val us = IntArray(24); private val up = IntArray(5); private val ua = IntArray(8); private val ug = IntArray(2); private val ub = IntArray(4)
+    private val ux = IntArray(2)
     private val maptex = IntArray(5)                  // fib, low, shape, sky, name
     private val hist = IntArray(2); private val histFbo = IntArray(2); private var histNow = 0
-    private val tex = IntArray(4); private val fbo = IntArray(4)        // the frame, its hot parts (bloom), its light (halo), the glow
+    private val tex = IntArray(6); private val fbo = IntArray(5)        // the frame, its hot parts (bloom), its light (halo), the glow,
+                                                                        // 124a: the clean-up box's darkest and brightest (one target, two layers)
     private var frameNo = 0; private var prevYaw = Float.NaN; private var prevPitch = 0f; private var prevDist = 0f
     private var rw = 0; private var rh = 0; private var scale = 0.7f; private var vw = 2; private var vh = 2
     private var t0 = 0L; private var last = 0L; private var el = 0f
@@ -110,8 +116,8 @@ internal class SilverRenderer(
     // clock jump), so: eight frames, a slot still waiting is never reused (that frame just isn't timed), clock
     // jumps are counted and reported instead of throwing the numbers away, and the line says what happened.
     private var gpuOk = false
-    private val gq = IntArray(2 * GQ); private val gqBusy = BooleanArray(GQ); private var gqFrame = 0; private var gqNow = false
-    private var gpuHole = 0.0; private var gpuRest = 0.0; private var gpuN = 0; private var gpuWait = 0; private var gpuJumps = 0
+    private val gq = IntArray(4 * GQ); private val gqBusy = BooleanArray(GQ); private var gqFrame = 0; private var gqNow = false
+    private val gpuMs = DoubleArray(4); private var gpuN = 0; private var gpuWait = 0; private var gpuJumps = 0   // 124a: hole, glow, build-up, tone
     // the cost check: each variant of the black hole pass timed twice, off screen, one per frame
     private val probeQ = IntArray(PROBES.size * 2); private var probeStep = 0; private var probeBad = false
     private var probeDone = false; private var probeQuiet = 0; private var probeAfter = 0f
@@ -188,11 +194,13 @@ internal class SilverRenderer(
             val mx = IntArray(1); GLES30.glGetIntegerv(GLES30.GL_MAX_TEXTURE_SIZE, mx, 0)
             if (mx[0] < 4096) error("max texture size ${mx[0]}")
             scene = program(FS_SILVER); post = program(FS_SILVER_POST); accum = program(FS_SILVER_ACC); glow = program(FS_SILVER_GLOW); bloom = program(FS_SILVER_BLOOM)
+            box = program(FS_SILVER_BOX)
+            listOf("uCur", "uCurRes").forEachIndexed { i, n -> ux[i] = GLES30.glGetUniformLocation(box, n) }
             listOf("uRes", "uTime", "uCam", "uRight", "uUp", "uFwd", "uFar", "uJitter", "uShift", "uDown",
                 "uNF", "uNR", "uNU", "uNameV", "uNameAspect", "uEcho", "uRing", "uDil", "uNeb", "uSpin", "uPlunge", "uSpot", "uKD").forEachIndexed { i, n -> us[i] = GLES30.glGetUniformLocation(scene, n) }
             listOf("uHist", "uGlow", "uOut", "uTime", "uIris").forEachIndexed { i, n -> up[i] = GLES30.glGetUniformLocation(post, n) }
             listOf("uHot", "uLit", "uRes", "uMaxLev").forEachIndexed { i, n -> ub[i] = GLES30.glGetUniformLocation(bloom, n) }
-            listOf("uCur", "uHist", "uCurRes", "uOut", "uJitter", "uKeep").forEachIndexed { i, n -> ua[i] = GLES30.glGetUniformLocation(accum, n) }
+            listOf("uCur", "uHist", "uCurRes", "uOut", "uJitter", "uKeep", "uMin", "uMax").forEachIndexed { i, n -> ua[i] = GLES30.glGetUniformLocation(accum, n) }
             listOf("uScene", "uMode").forEachIndexed { i, n -> ug[i] = GLES30.glGetUniformLocation(glow, n) }
             GLES30.glUseProgram(scene)
             listOf("uFib", "uLow", "uShape", "uSky", "uName").forEachIndexed { i, n -> GLES30.glUniform1i(GLES30.glGetUniformLocation(scene, n), i) }
@@ -202,11 +210,11 @@ internal class SilverRenderer(
             val tri = ByteBuffer.allocateDirect(6 * 4).order(ByteOrder.nativeOrder()).asFloatBuffer().apply { put(floatArrayOf(-1f, -1f, 3f, -1f, -1f, 3f)); position(0) }
             GLES30.glBufferData(GLES30.GL_ARRAY_BUFFER, 6 * 4, tri, GLES30.GL_STATIC_DRAW)
             GLES30.glEnableVertexAttribArray(0); GLES30.glVertexAttribPointer(0, 2, GLES30.GL_FLOAT, false, 0, 0)
-            GLES30.glGenTextures(4, tex, 0); GLES30.glGenFramebuffers(4, fbo, 0)
+            GLES30.glGenTextures(6, tex, 0); GLES30.glGenFramebuffers(5, fbo, 0)
             // 123a: the GPU timer, if the driver has one
             gpuOk = ext.contains("GL_EXT_disjoint_timer_query")
             if (gpuOk) { GLES30.glGenQueries(gq.size, gq, 0); GLES30.glGenQueries(probeQ.size, probeQ, 0) }
-            gqBusy.fill(false); gqFrame = 0; gpuHole = 0.0; gpuRest = 0.0; gpuN = 0; gpuWait = 0; gpuJumps = 0
+            gqBusy.fill(false); gqFrame = 0; gpuMs.fill(0.0); gpuN = 0; gpuWait = 0; gpuJumps = 0
             probeStep = 0; probeBad = false; probeQuiet = 0
             Log.i("Latent", "silver intro: GPU %s · %s · GPU timer %s".format(GLES30.glGetString(GLES30.GL_RENDERER), ver,
                 if (gpuOk) "on" else "not offered by this driver"))
@@ -286,7 +294,7 @@ internal class SilverRenderer(
         // every slot that has finished, oldest first
         for (k in 0 until GQ) {
             val s = (gqFrame + k) % GQ
-            if (gqBusy[s] && ready(gq[2 * s + 1])) { gpuHole += ns(gq[2 * s]) / 1e6; gpuRest += ns(gq[2 * s + 1]) / 1e6; gpuN++; gqBusy[s] = false }
+            if (gqBusy[s] && ready(gq[4 * s + 3])) { for (q in 0 until 4) gpuMs[q] += ns(gq[4 * s + q]) / 1e6; gpuN++; gqBusy[s] = false }
         }
         val s = gqFrame % GQ
         if (gqBusy[s]) gpuWait++ else gqNow = true
@@ -346,12 +354,12 @@ internal class SilverRenderer(
         if (logN >= 60) {
             val gpu = when {
                 !gpuOk -> ""
-                gpuN > 0 -> "GPU %.1f ms (black hole %.1f + finish %.1f; %d frames timed, %d waits, %d clock jumps), ".format(java.util.Locale.US,
-                    (gpuHole + gpuRest) / gpuN, gpuHole / gpuN, gpuRest / gpuN, gpuN, gpuWait, gpuJumps)
+                gpuN > 0 -> "GPU %.1f ms (black hole %.1f + glow %.1f + build-up %.1f + tone %.1f; %d frames timed, %d waits, %d clock jumps), ".format(java.util.Locale.US,
+                    gpuMs.sum() / gpuN, gpuMs[0] / gpuN, gpuMs[1] / gpuN, gpuMs[2] / gpuN, gpuMs[3] / gpuN, gpuN, gpuWait, gpuJumps)
                 else -> "GPU timer: no results yet (%d waits, %d clock jumps), ".format(gpuWait, gpuJumps)
             }
             Log.i("Latent", "silver intro: %.1f ms/frame, %sscene %dx%d (scale %.2f) of %dx%d".format(java.util.Locale.US, logMs / logN, gpu, rw, rh, scale, vw, vh))
-            logMs = 0f; logN = 0; gpuHole = 0.0; gpuRest = 0.0; gpuN = 0; gpuWait = 0; gpuJumps = 0
+            logMs = 0f; logN = 0; gpuMs.fill(0.0); gpuN = 0; gpuWait = 0; gpuJumps = 0
         }
         alloc()
         if (failed) return
@@ -430,9 +438,11 @@ internal class SilverRenderer(
         effects(ALL_ON)
         if (gpuOk && gqFrame == 0) while (GLES30.glGetError() != GLES30.GL_NO_ERROR) { }   // so the check below sees only the timer's
         val slot = gqFrame % GQ
-        if (gqNow) GLES30.glBeginQuery(TIME_ELAPSED, gq[2 * slot])
+        // 124a: four timings a frame (black hole, glow, build-up, tone), each ending where the next begins
+        fun mark(q: Int) { if (gqNow) { if (q > 0) GLES30.glEndQuery(TIME_ELAPSED); GLES30.glBeginQuery(TIME_ELAPSED, gq[4 * slot + q]) } }
+        mark(0)
         GLES30.glDrawArrays(GLES30.GL_TRIANGLES, 0, 3)
-        if (gqNow) { GLES30.glEndQuery(TIME_ELAPSED); GLES30.glBeginQuery(TIME_ELAPSED, gq[2 * slot + 1]) }
+        mark(1)
         // its hot parts (bloom) and its light (halo), each with mipmaps for the glow
         GLES30.glUseProgram(glow)
         GLES30.glActiveTexture(GLES30.GL_TEXTURE0); GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, tex[0]); GLES30.glUniform1i(ug[0], 0)
@@ -448,6 +458,12 @@ internal class SilverRenderer(
         GLES30.glUniform1i(ub[0], 0); GLES30.glUniform1i(ub[1], 1); GLES30.glUniform2f(ub[2], rw.toFloat(), rh.toFloat())
         GLES30.glUniform1f(ub[3], kotlin.math.floor(kotlin.math.log2(maxOf(rw, rh).toFloat())))
         GLES30.glDrawArrays(GLES30.GL_TRIANGLES, 0, 3)
+        // 124a: the clean-up box, once per small pixel: its 5x5 neighbourhood's darkest and brightest
+        mark(2)
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, fbo[4]); GLES30.glUseProgram(box)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE0); GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, tex[0])
+        GLES30.glUniform1i(ux[0], 0); GLES30.glUniform2f(ux[1], rw.toFloat(), rh.toFloat())
+        GLES30.glDrawArrays(GLES30.GL_TRIANGLES, 0, 3)
         // build-up over frames (the classic intro's): keep more of the past the stiller the view
         val side = minOf(rw, rh).toFloat()
         val moved = if (prevYaw.isNaN()) Float.MAX_VALUE else
@@ -458,11 +474,14 @@ internal class SilverRenderer(
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, histFbo[next]); GLES30.glViewport(0, 0, vw, vh); GLES30.glUseProgram(accum)
         GLES30.glActiveTexture(GLES30.GL_TEXTURE0); GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, tex[0])
         GLES30.glActiveTexture(GLES30.GL_TEXTURE1); GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, hist[histNow])
-        GLES30.glUniform1i(ua[0], 0); GLES30.glUniform1i(ua[1], 1)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE2); GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, tex[4])
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE3); GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, tex[5])
+        GLES30.glUniform1i(ua[0], 0); GLES30.glUniform1i(ua[1], 1); GLES30.glUniform1i(ua[6], 2); GLES30.glUniform1i(ua[7], 3)
         GLES30.glUniform2f(ua[2], rw.toFloat(), rh.toFloat()); GLES30.glUniform2f(ua[3], vw.toFloat(), vh.toFloat())
         GLES30.glUniform2f(ua[4], jx, jy); GLES30.glUniform1f(ua[5], keep)
         GLES30.glDrawArrays(GLES30.GL_TRIANGLES, 0, 3)
         histNow = next
+        mark(3)
         // pass 2: glow, the proof's finish (tone, muted colour, cream tint, vignette, grain), faded as it closes
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
         GLES30.glViewport(0, 0, vw, vh)
@@ -479,7 +498,7 @@ internal class SilverRenderer(
         GLES30.glUniform4f(up[4], vw * 0.5f + 0.1f * minOf(vw, vh), vh * 0.5f, iris * 0.62f * kotlin.math.hypot(vw.toFloat(), vh.toFloat()),
             0.06f * kotlin.math.hypot(vw.toFloat(), vh.toFloat()))
         GLES30.glDrawArrays(GLES30.GL_TRIANGLES, 0, 3)
-        if (gqNow) { GLES30.glEndQuery(TIME_ELAPSED); gqBusy[slot] = true }
+        if (gqNow) { GLES30.glEndQuery(TIME_ELAPSED); gqBusy[slot] = true }   // the tone's
         // a driver that lists the extension but refuses its timer through the ES 3.0 calls: turn it off
         if (gpuOk && gqFrame == 0) GLES30.glGetError().let { if (it != GLES30.GL_NO_ERROR) { gpuOk = false; Log.i("Latent", "silver intro: GPU timer refused (GL error 0x%x)".format(it)) } }
         gqFrame++
@@ -514,6 +533,17 @@ internal class SilverRenderer(
             GLES30.glFramebufferTexture2D(GLES30.GL_FRAMEBUFFER, GLES30.GL_COLOR_ATTACHMENT0, GLES30.GL_TEXTURE_2D, tex[i], 0)
             checkFbo()
         }
+        // 124a: the clean-up box's darkest (layer 0) and brightest (layer 1), drawn together
+        for (i in 4..5) {
+            GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, tex[i])
+            GLES30.glTexImage2D(GLES30.GL_TEXTURE_2D, 0, GLES30.GL_RGBA16F, rw, rh, 0, GLES30.GL_RGBA, GLES30.GL_HALF_FLOAT, null)
+            texParams(GLES30.GL_NEAREST, GLES30.GL_NEAREST)
+        }
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, fbo[4])
+        GLES30.glFramebufferTexture2D(GLES30.GL_FRAMEBUFFER, GLES30.GL_COLOR_ATTACHMENT0, GLES30.GL_TEXTURE_2D, tex[4], 0)
+        GLES30.glFramebufferTexture2D(GLES30.GL_FRAMEBUFFER, GLES30.GL_COLOR_ATTACHMENT1, GLES30.GL_TEXTURE_2D, tex[5], 0)
+        GLES30.glDrawBuffers(2, intArrayOf(GLES30.GL_COLOR_ATTACHMENT0, GLES30.GL_COLOR_ATTACHMENT1), 0)
+        checkFbo()
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
     }
 
@@ -736,7 +766,8 @@ vec4 disk(vec3 p, vec3 rd, float si, float path){
   float pulse = te > 0.0 ? exp(-((r - R) / 0.7) * ((r - R) / 0.7)) * exp(-te / 1.4) : 0.0;
   // the hot spot: every 9 s a bright clump flares near the inner edge and races round, seen as its light
   // arrives (so its bent copy on the far side flares a moment later)
-  if(uSpot > 0.0){
+  // (124a: only near its ring: 1.4 out, the clump's falloff is exp(-12), under 1/100000)
+  if(uSpot > 0.0 && abs(r - RIN * 1.35) < 1.4){
     float ts = uTime - path / CL + 1.0;
     float k = floor(ts / 9.0);
     float ph = ts - k * 9.0;
@@ -902,6 +933,8 @@ uniform vec2 uCurRes;
 uniform vec2 uOut;
 uniform vec2 uJitter;
 uniform float uKeep;
+uniform sampler2D uMin;
+uniform sampler2D uMax;
 out vec4 outColor;
 void main(){
   vec2 uv = gl_FragCoord.xy / uOut;
@@ -910,6 +943,28 @@ void main(){
   vec3 s = texelFetch(uCur, ivec2(n), 0).rgb;
   vec2 d = ((n + 0.5 + uJitter) / uCurRes - uv) * uOut;
   float w = exp(-dot(d, d) / (2.0 * 0.55 * 0.55));
+  // 124a: the 5x5 box's darkest and brightest, worked out once per small pixel (FS_SILVER_BOX)
+  vec3 mn = texelFetch(uMin, ivec2(n), 0).rgb;
+  vec3 mx = texelFetch(uMax, ivec2(n), 0).rgb;
+  vec4 h = texelFetch(uHist, ivec2(gl_FragCoord.xy), 0);
+  vec3 hc = clamp(h.rgb, mn, mx);
+  float hw = h.a * 16.0 * uKeep;
+  vec3 bil = textureLod(uCur, uv, 0.0).rgb;
+  float e = 0.005;
+  vec3 c = (hc * hw + s * w + bil * e) / (hw + w + e);
+  outColor = vec4(c, min(hw + w, 16.0) / 16.0);
+}"""
+
+// 124a: the build-up's clean-up box, once per small pixel: the darkest and brightest of its 5x5 neighbourhood
+// (clamped at the edges), exactly what FS_SILVER_ACC used to work out for every screen pixel
+private const val FS_SILVER_BOX = """#version 300 es
+precision highp float;
+uniform sampler2D uCur;
+uniform vec2 uCurRes;
+layout(location = 0) out vec4 outMin;
+layout(location = 1) out vec4 outMax;
+void main(){
+  vec2 n = floor(gl_FragCoord.xy);
   vec3 mn = vec3(1e9);
   vec3 mx = vec3(-1e9);
   for(int j = -2; j <= 2; j++){
@@ -919,13 +974,8 @@ void main(){
       mx = max(mx, c);
     }
   }
-  vec4 h = texelFetch(uHist, ivec2(gl_FragCoord.xy), 0);
-  vec3 hc = clamp(h.rgb, mn, mx);
-  float hw = h.a * 16.0 * uKeep;
-  vec3 bil = textureLod(uCur, uv, 0.0).rgb;
-  float e = 0.005;
-  vec3 c = (hc * hw + s * w + bil * e) / (hw + w + e);
-  outColor = vec4(c, min(hw + w, 16.0) / 16.0);
+  outMin = vec4(mn, 1.0);
+  outMax = vec4(mx, 1.0);
 }"""
 
 // the glow's two sources (the proof's finish_glow): mode 0 the hot parts over 0.35 (bloom), mode 1 the disc's
