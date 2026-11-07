@@ -35,6 +35,10 @@ import javax.microedition.khronos.opengles.GL10
  * 121a (approved drafts blackhole-silver/v7): time slows near the hole (the inner disc turns and lives on a
  * slower clock, a little dimmer and warmer); a faint nebula far behind the hole, bent into arcs; and gravity
  * haptics: pulses that quicken through the glide, a click as the name settles, ticks while falling, a thud.
+ * 122a (approved drafts blackhole-silver/v8): the hole spins (frame dragging added to the bending, an
+ * approximation, not a full Kerr solver: the shadow shifts and flattens into a soft D, and the photon ring is
+ * found by how far each ray swept round so it follows it); thin streams spiral off the inner edge into the
+ * shadow; and every 9 s a hot spot flares near the inner edge and races round, seen with light-travel delay.
  */
 object IntroStyle {
     private const val PREFS = "latent_intro"
@@ -88,7 +92,7 @@ internal class SilverRenderer(
     private var first = true
     @Volatile override var fade = 1f
     private var scene = 0; private var post = 0; private var accum = 0; private var glow = 0; private var bloom = 0
-    private val us = IntArray(20); private val up = IntArray(5); private val ua = IntArray(6); private val ug = IntArray(2); private val ub = IntArray(4)
+    private val us = IntArray(24); private val up = IntArray(5); private val ua = IntArray(6); private val ug = IntArray(2); private val ub = IntArray(4)
     private val maptex = IntArray(5)                  // fib, low, shape, sky, name
     private val hist = IntArray(2); private val histFbo = IntArray(2); private var histNow = 0
     private val tex = IntArray(4); private val fbo = IntArray(4)        // the frame, its hot parts (bloom), its light (halo), the glow
@@ -171,7 +175,7 @@ internal class SilverRenderer(
             if (mx[0] < 4096) error("max texture size ${mx[0]}")
             scene = program(FS_SILVER); post = program(FS_SILVER_POST); accum = program(FS_SILVER_ACC); glow = program(FS_SILVER_GLOW); bloom = program(FS_SILVER_BLOOM)
             listOf("uRes", "uTime", "uCam", "uRight", "uUp", "uFwd", "uFar", "uJitter", "uShift", "uDown",
-                "uNF", "uNR", "uNU", "uNameV", "uNameAspect", "uEcho", "uRing", "uDil", "uNeb").forEachIndexed { i, n -> us[i] = GLES30.glGetUniformLocation(scene, n) }
+                "uNF", "uNR", "uNU", "uNameV", "uNameAspect", "uEcho", "uRing", "uDil", "uNeb", "uSpin", "uPlunge", "uSpot", "uKD").forEachIndexed { i, n -> us[i] = GLES30.glGetUniformLocation(scene, n) }
             listOf("uHist", "uGlow", "uOut", "uTime", "uIris").forEachIndexed { i, n -> up[i] = GLES30.glGetUniformLocation(post, n) }
             listOf("uHot", "uLit", "uRes", "uMaxLev").forEachIndexed { i, n -> ub[i] = GLES30.glGetUniformLocation(bloom, n) }
             listOf("uCur", "uHist", "uCurRes", "uOut", "uJitter", "uKeep").forEachIndexed { i, n -> ua[i] = GLES30.glGetUniformLocation(accum, n) }
@@ -332,6 +336,8 @@ internal class SilverRenderer(
         GLES30.glUniform1f(us[14], NAME_W.toFloat() / NAME_H)
         GLES30.glUniform1f(us[15], echoAt + 20f); GLES30.glUniform1f(us[16], 1f)      // 120a: the light echo, the photon ring
         GLES30.glUniform1f(us[17], 1f); GLES30.glUniform1f(us[18], 1f)                 // 121a: time slowing, the nebula
+        // 122a: spin 0.9 (frame dragging at strength 1.2), the plunging streams, the hot spot
+        GLES30.glUniform1f(us[19], 0.9f); GLES30.glUniform1f(us[20], 1f); GLES30.glUniform1f(us[21], 1f); GLES30.glUniform1f(us[22], 1.2f)
         GLES30.glDrawArrays(GLES30.GL_TRIANGLES, 0, 3)
         // its hot parts (bloom) and its light (halo), each with mipmaps for the glow
         GLES30.glUseProgram(glow)
@@ -518,6 +524,10 @@ uniform float uEcho;
 uniform float uRing;
 uniform float uDil;
 uniform float uNeb;
+uniform float uSpin;
+uniform float uPlunge;
+uniform float uSpot;
+uniform float uKD;
 out vec4 outColor;
 
 const float TAU = 6.2831853;
@@ -566,7 +576,20 @@ vec3 silverCol(float t){
 vec4 disk(vec3 p, vec3 rd, float si, float path){
   float r;
   vec2 t = polar(p, r);
-  if(r < RIN || r > RMAX) return vec4(0.0);
+  if(r < RIN){
+    // the plunge: inside the inner edge the gas stops orbiting and pours in, in thin spiralling threads
+    float hor = 1.0 - 0.3 * uSpin;
+    if(uPlunge <= 0.0 || r < hor * 1.03) return vec4(0.0);
+    float a = atan(p.z, p.x);
+    float u = fract(a / TAU - kep(RIN) * dil(RIN) * uTime / TAU + 0.45 * log(RIN / r));
+    float f = textureLod(uFib, vec2(u + si * 0.031, 0.015), 0.0).r;
+    float thread = ss(0.3, 0.9, f * f * 1.7);
+    float flow = 0.55 + 0.45 * sin(TAU * (2.5 * log(r) + 0.7 * uTime) + 9.0 * f);
+    float fall = ss(hor * 1.03, RIN, r);
+    vec3 c = silverCol(1.05) * thread * flow * fall * GAIN * 3.0 * uPlunge / 4.2;
+    return vec4(c, 0.12 * thread * fall * uPlunge);
+  }
+  if(r > RMAX) return vec4(0.0);
   t += vec2(si * 311.0 / NA, si * 2.7 / NR);
   vec2 fb = textureLod(uFib, t, 0.0).rg;
   fb = fb * fb * 1.7;
@@ -597,6 +620,20 @@ vec4 disk(vec3 p, vec3 rd, float si, float path){
   float te = uTime - path / CL - uEcho;
   float R = RIN + CL * te;
   float pulse = te > 0.0 ? exp(-((r - R) / 0.7) * ((r - R) / 0.7)) * exp(-te / 1.4) : 0.0;
+  // the hot spot: every 9 s a bright clump flares near the inner edge and races round, seen as its light
+  // arrives (so its bent copy on the far side flares a moment later)
+  if(uSpot > 0.0){
+    float ts = uTime - path / CL + 1.0;
+    float k = floor(ts / 9.0);
+    float ph = ts - k * 9.0;
+    float amp = ss(0.0, 0.5, ph) * exp(-max(ph - 0.5, 0.0) / 1.6);
+    float RS = RIN * 1.35;
+    float sa = k * 2.4 + 1.0 + kep(RS) * dil(RS) * ph;
+    float da = mod(atan(p.z, p.x) - sa + 3.14159265, TAU) - 3.14159265;
+    float along = da * r / 1.2;
+    float across = (r - RS) / 0.4;
+    em += uSpot * amp * exp(-along * along - across * across) * pow(RS / RIN, -PROFK) * 3.2 * beam * GAIN * 2.2;
+  }
   vec3 c = silverCol(temp) * em + pulse * silverCol(1.8) * prof * edge * beam * GAIN * (0.2 + 3.6 * pow(fib, 1.3));
   return vec4(c, alpha);
 }
@@ -673,13 +710,23 @@ void main(){
   bool cached = false;
   float q0 = 0.0;
   float path = -length(uCam);   // so the nearest light is seen at once
+  float wind = 0.0;             // how far round the hole the ray has swept (for the ring of a spinning hole)
   for(int i = 0; i < 220; i++){
     float r2 = dot(p, p);
     float r = sqrt(r2);
-    if(r < 1.0){ hit = true; break; }
+    if(r < 1.0 - 0.3 * uSpin){ hit = true; break; }
     if(r > uFar && dot(p, v) > 0.0) break;
     float dt = clamp(0.08 * (r - 0.7), 0.025, 3.0);
     vec3 a = -1.5 * h2 * p / (r2 * r2 * r);
+    if(uSpin > 0.0){
+      // the spin: frame dragging, as the gravitomagnetic pull of a turning mass (J along the disc's turning)
+      vec3 hh = cross(p, v);
+      a = -1.5 * dot(hh, hh) * p / (r2 * r2 * r);
+      vec3 n = p / r;
+      vec3 J = vec3(0.0, -uSpin, 0.0);
+      vec3 B = (J - 3.0 * dot(J, n) * n) / (r2 * r);
+      a += uKD * cross(v, B);
+    }
     vec3 v2 = v + a * dt;
     vec3 p2 = p + v2 * dt;
     if(min(abs(p.y), abs(p2.y)) < 0.25 * length(p.xz) + 0.5){
@@ -705,6 +752,7 @@ void main(){
       cached = false;
     }
     path += length(p2 - p);
+    wind += length(cross(p, p2)) / (r * length(p2));
     p = p2;
     v = v2;
     if(tr < 0.01) break;
@@ -720,6 +768,11 @@ void main(){
     float th2 = textureLod(uFib, vec2(fract(ang / TAU * 2.0 + kep(RIN) * uTime / TAU * 1.3), 0.12), 0.0).g;
     float d1 = (b - BC - 0.075) / 0.05;
     float d2 = (b - BC - 0.012) / 0.022;
+    if(uSpin > 0.0){
+      // a spinning hole's shadow is not round: find the ring by how far each ray swept round instead
+      d1 = hit ? 9.0 : (wind / 3.14159265 - 1.84) / 0.11;
+      d2 = hit ? 9.0 : (wind / 3.14159265 - 2.08) / 0.04;
+    }
     float ring = exp(-d1 * d1) * (0.5 + 1.6 * th * th) + 0.6 * exp(-d2 * d2) * (0.4 + 1.4 * th2 * th2);
     col += tr * uRing * ring * silverCol(1.5) * 3.2;
   }
