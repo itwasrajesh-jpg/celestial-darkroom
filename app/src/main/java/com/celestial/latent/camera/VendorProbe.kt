@@ -609,9 +609,10 @@ class VendorProbe(private val context: Context) {
             val r = try { block() } catch (t: Throwable) { Outcome(false, "threw ${t.javaClass.simpleName} ${t.message}") }
             if (r.ok) {
                 val noise = if (base.shadowNoise > 0) " · shadow noise %.2f vs %.2f".format(r.shadowNoise, base.shadowNoise) else ""
+                val zoomed = bestCrop(r.thumb, base.thumb)
                 val rc = if (r.rawCrop.isNotEmpty()) " · RAW crop ${r.rawCrop}" else ""
                 val big = if (r.rawW.toLong() * r.rawH > base.rawW.toLong() * base.rawH * 2) " ← FULL-RESOLUTION RAW" else ""
-                sb.appendLine("$label: ok ${r.rawW}x${r.rawH} echo=${r.echo} white=${r.whiteLevel} · ${classify(r.thumb, base.thumb)}$noise$rc$big")
+                sb.appendLine("$label: ok ${r.rawW}x${r.rawH} echo=${r.echo} white=${r.whiteLevel} · ${classify(r.thumb, base.thumb)}$zoomed$noise$rc$big")
             } else {
                 sb.appendLine("$label: ${r.note}")
                 if (serviceTrouble(r)) { crashed += label; if (!waitForCameraService(progress)) sb.appendLine("   (camera service did not come back)") }
@@ -621,16 +622,37 @@ class VendorProbe(private val context: Context) {
         sb.appendLine("— official Android routes —")
         for (p in paths) test("full-resolution RAW via $p") { runOne(p, lens, null, 1f, 1, lock, "maxres") }
         for (p in paths) for (z in listOf(2f, 2.5f)) test("cropped RAW ×$z via $p") { runOne(p, lens, null, z, 1, lock, "cropped") }
+        // 127b: Xiaomi's own stream types (65536+), listed by the ultra-wide on 7 Nov. Tried on
+        // the RAW stream at 1x and with zoom asked, in case one of them is the private macro crop.
+        val vendorCases = if (Build.VERSION.SDK_INT >= 33) runCatching { cm.getCameraCharacteristics(lens.physicalId).get(CameraCharacteristics.SCALER_AVAILABLE_STREAM_USE_CASES)?.filter { it >= 65536L } }.getOrNull().orEmpty() else emptyList()
+        sb.appendLine("\n— Xiaomi stream types —")
+        if (vendorCases.isEmpty()) sb.appendLine("none listed")
+        for (u in vendorCases) for (z in listOf(1f, 2.5f)) test("stream type $u ×$z via $path") { runOne(path, lens, null, z, 1, lock, "usecase:$u") }
+        // 127a's "skip 3" default switched these off by mistake; the skip list is for the sweep only.
         sb.appendLine("\n— sensor mode 3 other ways —")
-        if (3 in skip) sb.appendLine("skipped (in the skip list)")
-        else {
-            if (path != "direct") test("mode 3 via direct") { runOne("direct", lens, key, 1f, 3, lock) }
-            for (p in paths) test("mode 3 + full-resolution RAW via $p") { runOne(p, lens, key, 1f, 3, lock, "maxres") }
-        }
-        sb.appendLine("\n— sweep —")
-        sb.append(sensorModeSweep(path, lens, from, 63, skip + 3, progress).substringAfter("\n"))
+        if (path != "direct") test("mode 3 via direct") { runOne("direct", lens, key, 1f, 3, lock) }
+        test("mode 3 ×2 via direct") { runOne("direct", lens, key, 2f, 3, lock) }
         if (crashed.isNotEmpty()) sb.appendLine("\ntests that upset the camera service: ${crashed.joinToString()}")
         return sb.toString()
+    }
+
+    /** Does the frame look like a centre crop of the baseline at ×1.5 / 2 / 2.5 / 3? (pattern match, like classify) */
+    private fun bestCrop(t: FloatArray?, base: FloatArray?): String {
+        if (t == null || base == null) return ""
+        fun z(a: FloatArray): FloatArray {
+            val m = a.average().toFloat()
+            val sd = Math.sqrt(a.fold(0.0) { acc, v -> acc + (v - m) * (v - m) } / a.size).toFloat().coerceAtLeast(1e-6f)
+            return FloatArray(a.size) { (a[it] - m) / sd }
+        }
+        fun match(p: FloatArray, q: FloatArray): Float { var s = 0f; for (i in p.indices) s += p[i] * q[i]; return s / p.size }
+        val a = z(t); val full = match(a, z(base))
+        val best = listOf(1.5f, 2f, 2.5f, 3f).map { f ->
+            val c = FloatArray(64 * 48) { i -> val x = i % 64; val y = i / 64
+                val bx = (32 + (x - 32 + 0.5f) / f).toInt().coerceIn(0, 63); val by = (24 + (y - 24 + 0.5f) / f).toInt().coerceIn(0, 47)
+                base[by * 64 + bx] }
+            f to match(a, z(c))
+        }.maxByOrNull { it.second } ?: return ""
+        return if (best.second > 0.75f && best.second > full + 0.15f) " ← looks like ×${best.first} crop (match %.2f vs %.2f)".format(best.second, full) else ""
     }
 
     /** What the lens itself says about full-resolution and cropped RAW. */
@@ -677,6 +699,8 @@ class VendorProbe(private val context: Context) {
         val map = physChars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) ?: return Outcome(false, "no stream map")
         val maxRes = variant == "maxres"
         val cropped = variant == "cropped"
+        val vendorUseCase = if (variant.startsWith("usecase:")) variant.removePrefix("usecase:").toLongOrNull() else null
+        if (vendorUseCase != null && Build.VERSION.SDK_INT < 33) return Outcome(false, "stream use cases need Android 13")
         if (maxRes && Build.VERSION.SDK_INT < 31) return Outcome(false, "full-resolution RAW needs Android 12")
         if (cropped && Build.VERSION.SDK_INT < 34) return Outcome(false, "cropped RAW needs Android 14")
         val rawSize = (if (maxRes) physChars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP_MAXIMUM_RESOLUTION)?.getOutputSizes(ImageFormat.RAW_SENSOR)
@@ -725,6 +749,7 @@ class VendorProbe(private val context: Context) {
                             rawOut.setStreamUseCase(CameraMetadata.SCALER_AVAILABLE_STREAM_USE_CASES_CROPPED_RAW.toLong())
                             prevOut.setStreamUseCase(CameraMetadata.SCALER_AVAILABLE_STREAM_USE_CASES_PREVIEW.toLong())
                         }
+                        if (vendorUseCase != null && Build.VERSION.SDK_INT >= 33) rawOut.setStreamUseCase(vendorUseCase)
                         outs += prevOut; outs += rawOut
                         yuvReader?.let { outs += OutputConfiguration(it.surface) }
                         if (!direct) outs.forEach { it.setPhysicalCameraId(lens.physicalId) }

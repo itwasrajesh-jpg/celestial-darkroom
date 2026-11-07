@@ -121,7 +121,7 @@ fun ProbeScreen(settings: AppSettings, onBack: () -> Unit) {
             Btn("Sensor mode sweep $sweepFrom–63 on ${settings.cameraPath}/${lens.physicalId}", !running) {
                 run { probe.sensorModeSweep(settings.cameraPath, lens, sweepFrom, 63, skipSet()) { p -> progress = p } }
             }
-            Btn("Close-up hunt on ${settings.cameraPath}/${lens.physicalId} (full-res + cropped RAW, mode 3, sweep)", !running) {
+            Btn("Close-up hunt on ${settings.cameraPath}/${lens.physicalId} (full-res, cropped RAW, Xiaomi stream types, mode 3)", !running) {
                 run { probe.closeUpHunt(settings.cameraPath, lens, sweepFrom, skipSet()) { p -> progress = p } }
             }
             Btn("A/B test: does DCG / HDR actually do anything?", !running) {
