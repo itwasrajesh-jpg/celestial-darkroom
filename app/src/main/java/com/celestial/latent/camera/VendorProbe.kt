@@ -8,12 +8,14 @@ import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
+import android.hardware.camera2.CameraMetadata
 import android.hardware.camera2.CaptureRequest
 import android.hardware.camera2.CaptureResult
 import android.hardware.camera2.TotalCaptureResult
 import android.hardware.camera2.params.OutputConfiguration
 import android.hardware.camera2.params.SessionConfiguration
 import android.media.ImageReader
+import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import android.view.Surface
@@ -116,6 +118,7 @@ class VendorProbe(private val context: Context) {
         val ok: Boolean, val note: String, val rawW: Int = 0, val rawH: Int = 0, val crop: String = "", val focal: String = "", val echo: String = "",
         val whiteLevel: String = "", val blackLevel: String = "", val exposure: String = "", val frameNs: String = "", val thumb: FloatArray? = null,
         val shadowNoise: Float = 0f, val clipped: Float = 0f, val meanLevel: Float = 0f, val exposureNs: Long = 0, val iso: Int = 0,
+        val rawCrop: String = "",
     ) {
         override fun toString() = if (ok) "ok raw=${rawW}x$rawH echo=$echo white=$whiteLevel black=$blackLevel exp=$exposure iso=$iso · shadowNoise=%.2f clipped=%.3f%% mean=%.0f".format(shadowNoise, clipped * 100, meanLevel) else "FAILED: $note"
     }
@@ -539,7 +542,7 @@ class VendorProbe(private val context: Context) {
 
     /** Sweep sensor mode indices via sensor_meta_data.current_mode, at a locked exposure. */
     @SuppressLint("MissingPermission")
-    fun sensorModeSweep(path: String, lens: Lens, from: Int, to: Int, progress: (String) -> Unit): String {
+    fun sensorModeSweep(path: String, lens: Lens, from: Int, to: Int, skip: Set<Int> = emptySet(), progress: (String) -> Unit): String {
         val key = "org.codeaurora.qcamera3.sensor_meta_data.current_mode"
         val sb = StringBuilder("CELESTIAL DARKROOM SENSOR MODE SWEEP · path=$path lens=${lens.physicalId} (${lens.name}) · $key\n")
         progress("metering…")
@@ -549,13 +552,15 @@ class VendorProbe(private val context: Context) {
         sb.appendLine("locked at ${auto.exposure}, ISO ${auto.iso} — frames are comparable\n")
         val base = runOne(path, lens, null, 1f, 1, lock)
         sb.appendLine("baseline: $base")
+        if (from > 0 || skip.isNotEmpty()) sb.appendLine("starting at mode $from" + if (skip.isNotEmpty()) " · skipping ${skip.sorted().joinToString()}" else "")
         var consecutiveFails = 0
         val crashed = ArrayList<Int>()
         for (m in from..to) {
+            if (m in skip) { sb.appendLine("mode $m: skipped"); continue }
             if (consecutiveFails >= 5) { sb.appendLine("\nstopped at mode $m after 5 failures in a row — the camera service is unhappy; rerun from here if you want the rest"); break }
             progress("mode $m / $to")
             var r = runOne(path, lens, key, 1f, m, lock)
-            if (!r.ok && (r.note.contains("disconnect", true) || r.note.contains("characteristics", true) || r.note.contains("error", true))) {
+            if (!r.ok && serviceTrouble(r)) {
                 crashed += m
                 if (waitForCameraService(progress)) r = runOne(path, lens, key, 1f, m, lock)
             }
@@ -569,6 +574,89 @@ class VendorProbe(private val context: Context) {
         }
         if (crashed.isNotEmpty()) sb.appendLine("\nmodes that upset the camera service: ${crashed.joinToString()}")
         return sb.toString()
+    }
+
+    /**
+     * Did this failure leave the camera service hurt? "Session has been closed" counts too: in the
+     * 7 Nov ultra-wide sweep, mode 3 closed the session and every later mode then failed the same
+     * way because nothing waited for the service to recover.
+     */
+    private fun serviceTrouble(r: Outcome) = listOf("disconnect", "characteristics", "error", "closed", "illegal").any { r.note.contains(it, true) }
+
+    /**
+     * Close-up hunt (127a): how does Xiaomi get a sharp 35 mm, 12.5 MP picture out of the
+     * ultra-wide in its adaptive macro (EXIF 2.13 mm, 7 Nov)? A plain crop of our 12.5 MP RAW
+     * leaves ~2 MP, so Xiaomi must read the full 50 MP sensor. This tries the official Android
+     * routes to that first (full-resolution RAW, cropped RAW), then sensor mode 3 (the in-sensor
+     * ×2 on the main lens, which crashed the ultra-wide via camera 0) other ways, then sweeps the
+     * remaining modes. Nothing is retried after a crash; it only waits for the service.
+     */
+    @SuppressLint("MissingPermission")
+    fun closeUpHunt(path: String, lens: Lens, from: Int, skip: Set<Int>, progress: (String) -> Unit): String {
+        val key = "org.codeaurora.qcamera3.sensor_meta_data.current_mode"
+        val sb = StringBuilder("CELESTIAL DARKROOM CLOSE-UP HUNT · path=$path lens=${lens.physicalId} (${lens.name})\n\n")
+        sb.append(lensFacts(lens)).appendLine()
+        progress("metering…")
+        val auto = runOneRetry(path, lens, null, 1f)
+        if (!auto.ok || auto.exposureNs == 0L) return sb.appendLine("could not meter: $auto").toString()
+        val lock = auto.exposureNs to auto.iso
+        sb.appendLine("locked at ${auto.exposure}, ISO ${auto.iso} — frames are comparable")
+        val base = runOne(path, lens, null, 1f, 1, lock)
+        sb.appendLine("baseline: $base\n")
+        val crashed = ArrayList<String>()
+        fun test(label: String, block: () -> Outcome) {
+            progress(label)
+            val r = try { block() } catch (t: Throwable) { Outcome(false, "threw ${t.javaClass.simpleName} ${t.message}") }
+            if (r.ok) {
+                val noise = if (base.shadowNoise > 0) " · shadow noise %.2f vs %.2f".format(r.shadowNoise, base.shadowNoise) else ""
+                val rc = if (r.rawCrop.isNotEmpty()) " · RAW crop ${r.rawCrop}" else ""
+                val big = if (r.rawW.toLong() * r.rawH > base.rawW.toLong() * base.rawH * 2) " ← FULL-RESOLUTION RAW" else ""
+                sb.appendLine("$label: ok ${r.rawW}x${r.rawH} echo=${r.echo} white=${r.whiteLevel} · ${classify(r.thumb, base.thumb)}$noise$rc$big")
+            } else {
+                sb.appendLine("$label: ${r.note}")
+                if (serviceTrouble(r)) { crashed += label; if (!waitForCameraService(progress)) sb.appendLine("   (camera service did not come back)") }
+            }
+        }
+        val paths = listOf(path, "direct").distinct()
+        sb.appendLine("— official Android routes —")
+        for (p in paths) test("full-resolution RAW via $p") { runOne(p, lens, null, 1f, 1, lock, "maxres") }
+        for (p in paths) for (z in listOf(2f, 2.5f)) test("cropped RAW ×$z via $p") { runOne(p, lens, null, z, 1, lock, "cropped") }
+        sb.appendLine("\n— sensor mode 3 other ways —")
+        if (3 in skip) sb.appendLine("skipped (in the skip list)")
+        else {
+            if (path != "direct") test("mode 3 via direct") { runOne("direct", lens, key, 1f, 3, lock) }
+            for (p in paths) test("mode 3 + full-resolution RAW via $p") { runOne(p, lens, key, 1f, 3, lock, "maxres") }
+        }
+        sb.appendLine("\n— sweep —")
+        sb.append(sensorModeSweep(path, lens, from, 63, skip + 3, progress).substringAfter("\n"))
+        if (crashed.isNotEmpty()) sb.appendLine("\ntests that upset the camera service: ${crashed.joinToString()}")
+        return sb.toString()
+    }
+
+    /** What the lens itself says about full-resolution and cropped RAW. */
+    private fun lensFacts(lens: Lens): String = runCatching {
+        val ch = cm.getCameraCharacteristics(lens.physicalId)
+        val sb = StringBuilder("lens ${lens.physicalId} facts:\n")
+        val map = ch.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+        sb.appendLine("  RAW sizes: " + (map?.getOutputSizes(ImageFormat.RAW_SENSOR)?.joinToString { s -> "${s}(%.1f ms)".format(map.getOutputMinFrameDuration(ImageFormat.RAW_SENSOR, s) / 1e6) } ?: "none"))
+        sb.appendLine("  pixel array: ${ch.get(CameraCharacteristics.SENSOR_INFO_PIXEL_ARRAY_SIZE)}")
+        val caps = ch.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES)?.toList().orEmpty()
+        sb.appendLine("  ultra high resolution sensor: ${16 in caps} · remosaic reprocessing: ${17 in caps} · stream use cases: ${19 in caps}")
+        if (Build.VERSION.SDK_INT >= 31) {
+            sb.appendLine("  full-resolution pixel array: ${ch.get(CameraCharacteristics.SENSOR_INFO_PIXEL_ARRAY_SIZE_MAXIMUM_RESOLUTION) ?: "not listed"}")
+            val mx = ch.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP_MAXIMUM_RESOLUTION)
+            sb.appendLine("  full-resolution RAW sizes: " + (mx?.getOutputSizes(ImageFormat.RAW_SENSOR)?.joinToString() ?: "none"))
+            sb.appendLine("  full-resolution JPEG sizes: " + (mx?.getOutputSizes(ImageFormat.JPEG)?.joinToString() ?: "none"))
+        }
+        if (Build.VERSION.SDK_INT >= 33) sb.appendLine("  stream use cases: " + (ch.get(CameraCharacteristics.SCALER_AVAILABLE_STREAM_USE_CASES)?.joinToString { useCaseName(it) } ?: "none"))
+        if (Build.VERSION.SDK_INT >= 30) sb.appendLine("  zoom range: ${ch.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE)}")
+        val minD = ch.get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE) ?: 0f
+        sb.appendLine("  closest focus: " + if (minD > 0f) "%.1f cm (%.1f D)".format(100f / minD, minD) else "fixed focus")
+        sb.toString()
+    }.getOrElse { "lens facts failed: ${it.message}\n" }
+
+    private fun useCaseName(u: Long) = when (u) {
+        0L -> "DEFAULT"; 1L -> "PREVIEW"; 2L -> "STILL_CAPTURE"; 3L -> "VIDEO_RECORD"; 4L -> "PREVIEW_VIDEO_STILL"; 5L -> "VIDEO_CALL"; 6L -> "CROPPED_RAW"; else -> "vendor $u"
     }
 
     /** Blocks until the camera service answers again after a driver crash (up to ~20 s). */
@@ -587,7 +675,13 @@ class VendorProbe(private val context: Context) {
         val direct = path == "direct"
         val physChars = try { cm.getCameraCharacteristics(lens.physicalId) } catch (t: Throwable) { return Outcome(false, "no characteristics") }
         val map = physChars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) ?: return Outcome(false, "no stream map")
-        val rawSize = map.getOutputSizes(ImageFormat.RAW_SENSOR).maxByOrNull { it.width.toLong() * it.height } ?: return Outcome(false, "no RAW")
+        val maxRes = variant == "maxres"
+        val cropped = variant == "cropped"
+        if (maxRes && Build.VERSION.SDK_INT < 31) return Outcome(false, "full-resolution RAW needs Android 12")
+        if (cropped && Build.VERSION.SDK_INT < 34) return Outcome(false, "cropped RAW needs Android 14")
+        val rawSize = (if (maxRes) physChars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP_MAXIMUM_RESOLUTION)?.getOutputSizes(ImageFormat.RAW_SENSOR)
+                ?.maxByOrNull { it.width.toLong() * it.height } ?: return Outcome(false, "lens lists no full-resolution RAW size")
+            else map.getOutputSizes(ImageFormat.RAW_SENSOR).maxByOrNull { it.width.toLong() * it.height }) ?: return Outcome(false, "no RAW")
         val st = SurfaceTexture(0).apply { setDefaultBufferSize(1280, 960) }
         val previewSurface = Surface(st)
         val rawFormat = if (variant == "raw10") ImageFormat.RAW10 else ImageFormat.RAW_SENSOR
@@ -624,7 +718,14 @@ class VendorProbe(private val context: Context) {
                     device = cam
                     try {
                         val outs = ArrayList<OutputConfiguration>()
-                        outs += OutputConfiguration(previewSurface); outs += OutputConfiguration(reader.surface)
+                        val rawOut = OutputConfiguration(reader.surface)
+                        val prevOut = OutputConfiguration(previewSurface)
+                        if (maxRes && Build.VERSION.SDK_INT >= 31) rawOut.addSensorPixelModeUsed(CameraMetadata.SENSOR_PIXEL_MODE_MAXIMUM_RESOLUTION)
+                        if (cropped && Build.VERSION.SDK_INT >= 34) {
+                            rawOut.setStreamUseCase(CameraMetadata.SCALER_AVAILABLE_STREAM_USE_CASES_CROPPED_RAW.toLong())
+                            prevOut.setStreamUseCase(CameraMetadata.SCALER_AVAILABLE_STREAM_USE_CASES_PREVIEW.toLong())
+                        }
+                        outs += prevOut; outs += rawOut
                         yuvReader?.let { outs += OutputConfiguration(it.surface) }
                         if (!direct) outs.forEach { it.setPhysicalCameraId(lens.physicalId) }
                         val cfg = SessionConfiguration(SessionConfiguration.SESSION_REGULAR, outs, executor, object : CameraCaptureSession.StateCallback() {
@@ -633,7 +734,11 @@ class VendorProbe(private val context: Context) {
                                 try {
                                     val prev = cam.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply { addTarget(previewSurface); setKey(this) }
                                     s.setRepeatingRequest(prev.build(), null, handler)
-                                    val still = cam.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply { addTarget(reader.surface); addTarget(previewSurface); yuvReader?.let { addTarget(it.surface) }; setKey(this) }
+                                    // A full-resolution request may only feed the full-resolution stream.
+                                    val still = cam.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
+                                        addTarget(reader.surface); if (!maxRes) addTarget(previewSurface); yuvReader?.let { addTarget(it.surface) }; setKey(this)
+                                        if (maxRes && Build.VERSION.SDK_INT >= 31) set(CaptureRequest.SENSOR_PIXEL_MODE, CameraMetadata.SENSOR_PIXEL_MODE_MAXIMUM_RESOLUTION)
+                                    }
                                     handler.postDelayed({
                                         try {
                                             s.capture(still.build(), object : CameraCaptureSession.CaptureCallback() {
@@ -672,7 +777,8 @@ class VendorProbe(private val context: Context) {
                 val fd = pr.get(CaptureResult.SENSOR_FRAME_DURATION)?.let { "%.1fms".format(it / 1e6) } ?: "?"
                 val expNs = pr.get(CaptureResult.SENSOR_EXPOSURE_TIME) ?: 0L
                 val isoV = pr.get(CaptureResult.SENSOR_SENSITIVITY) ?: 0
-                finish(Outcome(true, "", rawW, rawH, crop, focal, echo, whiteS, black, exp, fd, thumb, met.first, met.second, met.third, expNs, isoV))
+                val rawCrop = if (Build.VERSION.SDK_INT >= 34) pr.get(CaptureResult.SCALER_RAW_CROP_REGION)?.let { "${it.width()}x${it.height()}@${it.left},${it.top}" } ?: "" else ""
+                finish(Outcome(true, "", rawW, rawH, crop, focal, echo, whiteS, black, exp, fd, thumb, met.first, met.second, met.third, expNs, isoV, rawCrop))
             }
             Thread.sleep(50)
         }
