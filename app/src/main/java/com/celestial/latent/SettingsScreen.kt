@@ -225,6 +225,17 @@ fun SettingsScreen(settings: AppSettings, onChange: (AppSettings) -> Unit, onOpe
                                 options = listOf("Silver" to true, "Classic" to false),
                                 selected = silverIntro,
                             ) { IntroStyle.set(context, it); silverIntro = it }
+                            // 125a: how sharp the Silver opening draws (Classic keeps its own rule)
+                            if (silverIntro) {
+                                Hair()
+                                var introQuality by remember { mutableStateOf(IntroStyle.quality(context)) }
+                                OptionRow(
+                                    title = "Opening sharpness",
+                                    subtitle = "Auto: as sharp as this phone's graphics chip has time for, measured as it runs. Smooth: a little softer, so slower phones never stutter. Sharp: always sharp, even if a slower phone drops frames.",
+                                    options = listOf("Auto" to IntroStyle.AUTO, "Smooth" to IntroStyle.SMOOTH, "Sharp" to IntroStyle.SHARP),
+                                    selected = introQuality,
+                                ) { IntroStyle.setQuality(context, it); introQuality = it }
+                            }
                         }
                     }
 

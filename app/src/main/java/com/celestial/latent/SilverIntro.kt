@@ -39,6 +39,11 @@ import javax.microedition.khronos.opengles.GL10
  * approximation, not a full Kerr solver: the shadow shifts and flattens into a soft D, and the photon ring is
  * found by how far each ray swept round so it follows it); thin streams spiral off the inner edge into the
  * shadow; and every 9 s a hot spot flares near the inner edge and races round, seen with light-travel delay.
+ * 125a: sharpness from the GPU's own time. Once landed, Auto sharpens in 5% steps while the GPU would still use
+ * under 82% of a frame after the step (the black hole's share grows with the pixel count), and softens if it passes
+ * 90%; only when the timer is steady (no clock jumps), otherwise the frame-time rule alone, as before. Settings →
+ * Look → Opening sharpness: Auto, Smooth (no sharper than the glide's 0.7) or Sharp (lands at 1.0, never below
+ * 0.85). The one-off cost check of 123a is gone (it had done its job).
  * 124a: the same picture for less work. The build-up's clean-up box (the brightest and darkest of the 5x5 small
  * pixels round each one) was worked out again for every screen pixel, 25 reads each at 1440x3200; it is now worked
  * out once per small pixel in its own pass and read twice. The hot spot's maths is skipped on sheets nowhere near
@@ -54,6 +59,11 @@ object IntroStyle {
     fun set(ctx: Context, silver: Boolean) {
         ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString("style", if (silver) "silver" else "classic").apply()
     }
+    /** 125a: the Silver opening's sharpness: Auto (from the GPU's own time), Smooth or Sharp. */
+    const val AUTO = "auto"; const val SMOOTH = "smooth"; const val SHARP = "sharp"
+    fun quality(ctx: Context): String = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString("quality", AUTO)
+        .let { if (it == SMOOTH || it == SHARP) it else AUTO }
+    fun setQuality(ctx: Context, q: String) { ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString("quality", q).apply() }
 }
 
 /** What the intro screen asks of either renderer (the classic one and Silver). */
@@ -118,9 +128,9 @@ internal class SilverRenderer(
     private var gpuOk = false
     private val gq = IntArray(4 * GQ); private val gqBusy = BooleanArray(GQ); private var gqFrame = 0; private var gqNow = false
     private val gpuMs = DoubleArray(4); private var gpuN = 0; private var gpuWait = 0; private var gpuJumps = 0   // 124a: hole, glow, build-up, tone
-    // the cost check: each variant of the black hole pass timed twice, off screen, one per frame
-    private val probeQ = IntArray(PROBES.size * 2); private var probeStep = 0; private var probeBad = false
-    private var probeDone = false; private var probeQuiet = 0; private var probeAfter = 0f
+    // 125a: the GPU time over the sharpness rule's own window (black hole, the rest), and the chosen sharpness
+    private var winHole = 0.0; private var winRest = 0.0; private var winN = 0; private var winJumps = 0
+    private val quality = IntroStyle.quality(app)
 
     // the explorable camera, as the classic intro's (drag to orbit, pinch to fall closer, idle drift)
     private var exploring = false
@@ -213,9 +223,8 @@ internal class SilverRenderer(
             GLES30.glGenTextures(6, tex, 0); GLES30.glGenFramebuffers(5, fbo, 0)
             // 123a: the GPU timer, if the driver has one
             gpuOk = ext.contains("GL_EXT_disjoint_timer_query")
-            if (gpuOk) { GLES30.glGenQueries(gq.size, gq, 0); GLES30.glGenQueries(probeQ.size, probeQ, 0) }
+            if (gpuOk) GLES30.glGenQueries(gq.size, gq, 0)
             gqBusy.fill(false); gqFrame = 0; gpuMs.fill(0.0); gpuN = 0; gpuWait = 0; gpuJumps = 0
-            probeStep = 0; probeBad = false; probeQuiet = 0
             Log.i("Latent", "silver intro: GPU %s · %s · GPU timer %s".format(GLES30.glGetString(GLES30.GL_RENDERER), ver,
                 if (gpuOk) "on" else "not offered by this driver"))
             uploadMaps()
@@ -275,12 +284,6 @@ internal class SilverRenderer(
         } catch (t: Throwable) { Log.i("Latent", "silver intro: screen rate unknown ($t)") }
     }
 
-    /** 123a: GL_TIME_ELAPSED_EXT start/stop round [draw], if the timer is there. */
-    private inline fun timed(id: Int, draw: () -> Unit) {
-        if (gpuOk) GLES30.glBeginQuery(TIME_ELAPSED, id)
-        draw()
-        if (gpuOk) GLES30.glEndQuery(TIME_ELAPSED)
-    }
     private fun ready(id: Int): Boolean { val a = IntArray(1); GLES30.glGetQueryObjectuiv(id, GLES30.GL_QUERY_RESULT_AVAILABLE, a, 0); return a[0] != 0 }
     private fun ns(id: Int): Long { val a = IntArray(1); GLES30.glGetQueryObjectuiv(id, GLES30.GL_QUERY_RESULT, a, 0); return a[0].toLong() and 0xffffffffL }
 
@@ -290,22 +293,19 @@ internal class SilverRenderer(
         gqNow = false
         if (!gpuOk) return
         val dj = IntArray(1); GLES30.glGetIntegerv(GPU_DISJOINT, dj, 0)
-        if (dj[0] != 0) { gpuJumps++; if (probeStep > 0 && !probeDone) probeBad = true }
+        if (dj[0] != 0) { gpuJumps++; winJumps++ }
         // every slot that has finished, oldest first
         for (k in 0 until GQ) {
             val s = (gqFrame + k) % GQ
-            if (gqBusy[s] && ready(gq[4 * s + 3])) { for (q in 0 until 4) gpuMs[q] += ns(gq[4 * s + q]) / 1e6; gpuN++; gqBusy[s] = false }
+            if (gqBusy[s] && ready(gq[4 * s + 3])) {
+                val t = DoubleArray(4) { ns(gq[4 * s + it]) / 1e6 }
+                for (q in 0 until 4) gpuMs[q] += t[q]
+                gpuN++; gqBusy[s] = false
+                winHole += t[0]; winRest += t[1] + t[2] + t[3]; winN++
+            }
         }
         val s = gqFrame % GQ
         if (gqBusy[s]) gpuWait++ else gqNow = true
-        // the cost check's results, once all are in
-        if (probeStep == probeQ.size && !probeDone && ready(probeQ[probeQ.size - 1])) {
-            probeDone = true
-            val ms = DoubleArray(PROBES.size) { (ns(probeQ[it]) + ns(probeQ[it + PROBES.size])) / 2e6 }
-            Log.i("Latent", "silver intro: cost check, GPU ms of the black hole pass at %dx%d: %s%s".format(rw, rh,
-                PROBES.indices.joinToString(" · ") { "%s %.1f".format(java.util.Locale.US, PROBES[it].first, ms[it]) },
-                if (probeBad) " (the GPU clock jumped during it)" else ""))
-        }
     }
 
     /** The effects' switches in the black hole pass: time slowing, nebula, ring, spin, plunge, hot spot (1 = on). */
@@ -314,6 +314,9 @@ internal class SilverRenderer(
         GLES30.glUniform1f(us[19], 0.9f * on[3]); GLES30.glUniform1f(us[20], on[4]); GLES30.glUniform1f(us[21], on[5])
         GLES30.glUniform1f(us[22], 1.2f)
     }
+
+    /** 125a: the sharpness rule's window is done; start the next. */
+    private fun newWindow() { acc = 0f; frames = 0; winHole = 0.0; winRest = 0.0; winN = 0; winJumps = 0 }
 
     private fun checkFbo() {
         val s = GLES30.glCheckFramebufferStatus(GLES30.GL_FRAMEBUFFER)
@@ -337,17 +340,27 @@ internal class SilverRenderer(
         val dtMs = minOf((now - last) / 1e6f, 120f); last = now; el += dtMs / 1000f
         gpuRead()
         // the classic intro's sharpness rules: smaller when slow, sharper when there is time to spare
-        // (123a: not counting the cost check's frames, which draw the black hole twice)
-        if (probeQuiet > 0) probeQuiet-- else { acc += dtMs; frames++ }
+        acc += dtMs; frames++
         if (!exploring && frames >= 12) {
             val avg = acc / frames
             if (avg > 30f && scale > 0.35f) scale = maxOf(0.35f, scale * 0.8f)
-            acc = 0f; frames = 0
+            newWindow()
         } else if (exploring && frames >= 24) {
             val avg = acc / frames
-            if (avg > 26f && scale > 0.4f) scale = maxOf(0.4f, scale * 0.85f)
-            else if (avg < 14f && scale < 1.4f) scale = minOf(1.4f, scale * 1.08f)
-            acc = 0f; frames = 0
+            // 125a: Smooth never above the glide's 0.7; Sharp never below 0.85
+            val lo = if (quality == IntroStyle.SHARP) 0.85f else 0.4f
+            val hi = if (quality == IntroStyle.SMOOTH) 0.7f else 1.4f
+            // the GPU's own time, when its clock held steady all window (the Pixel's Mali jumps every frame: frame time only)
+            val steady = winN >= 12 && winJumps == 0
+            val hole = winHole / maxOf(1, winN); val rest = winRest / maxOf(1, winN)
+            when {
+                avg > 26f && scale > lo -> scale = maxOf(lo, scale * 0.85f)
+                steady && hole + rest > 0.9 * avg && scale > lo -> scale = maxOf(lo, scale * 0.95f)
+                // one 5% step more: the black hole's share grows with the pixels (1.05² = 1.1025)
+                steady && quality != IntroStyle.SMOOTH && hole * 1.1025 + rest < 0.82 * avg && scale < hi -> scale = minOf(hi, scale * 1.05f)
+                !steady && avg < 14f && scale < hi -> scale = minOf(hi, scale * 1.08f)
+            }
+            newWindow()
         }
         // the frame-time line, every 60 frames, to size this on each phone
         logMs += dtMs; logN++
@@ -370,7 +383,10 @@ internal class SilverRenderer(
         if (!exploring) {
             yaw = 0.6f + 0.5f * e; dist = 27f - 9f * e; pitch = 0.04f + 0.08f * e
             nameYaw = yaw; namePitch = pitch
-            if (k >= 1f || takeOver) { exploring = true; distTarget = dist; acc = 0f; frames = 0; scale = 0.85f }
+            if (k >= 1f || takeOver) {
+                exploring = true; distTarget = dist; newWindow()
+                scale = when (quality) { IntroStyle.SMOOTH -> 0.7f; IntroStyle.SHARP -> 1f; else -> 0.85f }
+            }
         }
         if (exploring) {
             synchronized(lock) { yaw += dYaw; pitch += dPitch; dYaw = 0f; dPitch = 0f }
@@ -425,16 +441,6 @@ internal class SilverRenderer(
         GLES30.glUniform1f(us[15], echoAt + 20f)                                         // 120a: the light echo
         // 120a the photon ring; 121a time slowing, the nebula; 122a spin 0.9 (frame dragging at strength 1.2), the
         // plunging streams, the hot spot
-        // 123a: the cost check, once per launch, 1.5 s after the glide lands with no finger down: this frame's black
-        // hole drawn again off screen (into the glow target, which the glow pass then overwrites) with one effect off
-        if (probeAfter == 0f) probeAfter = duration + 1.5f
-        if (gpuOk && probeStep < probeQ.size && exploring && closeAt < 0f && !held && el > probeAfter) {
-            effects(PROBES[probeStep % PROBES.size].second)
-            GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, fbo[3])
-            timed(probeQ[probeStep]) { GLES30.glDrawArrays(GLES30.GL_TRIANGLES, 0, 3) }
-            GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, fbo[0])
-            probeStep++; probeQuiet = 2
-        }
         effects(ALL_ON)
         if (gpuOk && gqFrame == 0) while (GLES30.glGetError() != GLES30.GL_NO_ERROR) { }   // so the check below sees only the timer's
         val slot = gqFrame % GQ
@@ -572,18 +578,7 @@ internal class SilverRenderer(
         const val TIME_ELAPSED = 0x88BF; const val GPU_DISJOINT = 0x8FBB
         /** 123b: frames of GPU timer queries in flight. */
         const val GQ = 8
-        private val ALL_ON = floatArrayOf(1f, 1f, 1f, 1f, 1f, 1f)
-        /** 123a: the cost check's variants: switches for time slowing, nebula, ring, spin, plunge, hot spot. */
-        val PROBES: List<Pair<String, FloatArray>> = listOf(
-            "all" to ALL_ON,
-            "no spin" to floatArrayOf(1f, 1f, 1f, 0f, 1f, 1f),
-            "no hot spot" to floatArrayOf(1f, 1f, 1f, 1f, 1f, 0f),
-            "no streams" to floatArrayOf(1f, 1f, 1f, 1f, 0f, 1f),
-            "no ring" to floatArrayOf(1f, 1f, 0f, 1f, 1f, 1f),
-            "no nebula" to floatArrayOf(1f, 0f, 1f, 1f, 1f, 1f),
-            "no slow time" to floatArrayOf(0f, 1f, 1f, 1f, 1f, 1f),
-            "none of 121a-122a" to floatArrayOf(0f, 0f, 1f, 0f, 0f, 0f),
-        )
+        private val ALL_ON = floatArrayOf(1f, 1f, 1f, 1f, 1f, 1f)   // every effect on
         /** The intro's own two lines, as the proof drew them: CELESTIAL small over DARKROOM big, widely spaced, white on black. */
         fun nameBitmap(): Bitmap {
             val bmp = Bitmap.createBitmap(NAME_W, NAME_H, Bitmap.Config.ARGB_8888)
