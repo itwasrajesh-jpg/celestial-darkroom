@@ -218,15 +218,15 @@ fun SettingsScreen(settings: AppSettings, onChange: (AppSettings) -> Unit, onOpe
                         // 119a: which black hole opens the app
                         if (settings.openingAnimation) {
                             Hair()
-                            var silverIntro by remember { mutableStateOf(IntroStyle.silver(context)) }
+                            var introStyle by remember { mutableStateOf(IntroStyle.style(context)) }
                             OptionRow(
                                 title = "Opening look",
-                                subtitle = "Silver: a silver disc whose threads break up and re-form, with the name bent by the hole's gravity. Classic: the warm original. Shows the next time the app opens.",
-                                options = listOf("Silver" to true, "Classic" to false),
-                                selected = silverIntro,
-                            ) { IntroStyle.set(context, it); silverIntro = it }
+                                subtitle = "Silver: a silver disc whose threads break up and re-form, with the name bent by the hole's gravity. Ember: the same black hole in the classic's fire colours. Classic: the warm original. Shows the next time the app opens.",
+                                options = listOf("Silver" to IntroStyle.SILVER, "Ember" to IntroStyle.EMBER, "Classic" to IntroStyle.CLASSIC),
+                                selected = introStyle,
+                            ) { IntroStyle.setStyle(context, it); introStyle = it }
                             // 125a: how sharp the Silver opening draws (Classic keeps its own rule)
-                            if (silverIntro) {
+                            if (introStyle != IntroStyle.CLASSIC) {
                                 Hair()
                                 var introQuality by remember { mutableStateOf(IntroStyle.quality(context)) }
                                 OptionRow(
