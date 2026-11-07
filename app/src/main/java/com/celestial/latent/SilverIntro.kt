@@ -39,6 +39,10 @@ import javax.microedition.khronos.opengles.GL10
  * approximation, not a full Kerr solver: the shadow shifts and flattens into a soft D, and the photon ring is
  * found by how far each ray swept round so it follows it); thin streams spiral off the inner edge into the
  * shadow; and every 9 s a hot spot flares near the inner edge and races round, seen with light-travel delay.
+ * 126a: Ember, the Silver opening in the classic intro's colours (approved proof blackhole-silver/classic-colours,
+ * "classic colours, full"): the classic's fire ramp on the disc (deep red, orange, cream, blue-white), the sky's
+ * clouds toward its blue haze, its warm/blue stars, a warmer name, and the finish keeps full colour without the
+ * cream tint. One switch (uWarm) in the shaders; at 0 every sum is exactly Silver's.
  * 125a: sharpness from the GPU's own time. Once landed, Auto sharpens in 5% steps while the GPU would still use
  * under 82% of a frame after the step (the black hole's share grows with the pixel count), and softens if it passes
  * 90%; only when the timer is steady (no clock jumps), otherwise the frame-time rule alone, as before. Settings →
@@ -54,10 +58,15 @@ import javax.microedition.khronos.opengles.GL10
  */
 object IntroStyle {
     private const val PREFS = "latent_intro"
-    /** Silver unless Classic was chosen. */
-    fun silver(ctx: Context): Boolean = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString("style", "silver") != "classic"
-    fun set(ctx: Context, silver: Boolean) {
-        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString("style", if (silver) "silver" else "classic").apply()
+    const val SILVER = "silver"; const val EMBER = "ember"; const val CLASSIC = "classic"
+    /** Which opening: Silver (default), Ember (126a: Silver in the classic's colours) or Classic. */
+    fun style(ctx: Context): String = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString("style", SILVER)
+        .let { if (it == EMBER || it == CLASSIC) it else SILVER }
+    /** The Silver renderer (Silver or Ember) unless Classic was chosen. */
+    fun silver(ctx: Context): Boolean = style(ctx) != CLASSIC
+    fun ember(ctx: Context): Boolean = style(ctx) == EMBER
+    fun setStyle(ctx: Context, style: String) {
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString("style", style).apply()
     }
     /** 125a: the Silver opening's sharpness: Auto (from the GPU's own time), Smooth or Sharp. */
     const val AUTO = "auto"; const val SMOOTH = "smooth"; const val SHARP = "sharp"
@@ -109,7 +118,7 @@ internal class SilverRenderer(
     private var first = true
     @Volatile override var fade = 1f
     private var scene = 0; private var post = 0; private var accum = 0; private var glow = 0; private var bloom = 0; private var box = 0
-    private val us = IntArray(24); private val up = IntArray(5); private val ua = IntArray(8); private val ug = IntArray(2); private val ub = IntArray(4)
+    private val us = IntArray(25); private val up = IntArray(6); private val ua = IntArray(8); private val ug = IntArray(2); private val ub = IntArray(4)
     private val ux = IntArray(2)
     private val maptex = IntArray(5)                  // fib, low, shape, sky, name
     private val hist = IntArray(2); private val histFbo = IntArray(2); private var histNow = 0
@@ -131,6 +140,7 @@ internal class SilverRenderer(
     // 125a: the GPU time over the sharpness rule's own window (black hole, the rest), and the chosen sharpness
     private var winHole = 0.0; private var winRest = 0.0; private var winN = 0; private var winJumps = 0
     private val quality = IntroStyle.quality(app)
+    private val warm = if (IntroStyle.ember(app)) 1f else 0f      // 126a: Ember's colours
 
     // the explorable camera, as the classic intro's (drag to orbit, pinch to fall closer, idle drift)
     private var exploring = false
@@ -207,8 +217,8 @@ internal class SilverRenderer(
             box = program(FS_SILVER_BOX)
             listOf("uCur", "uCurRes").forEachIndexed { i, n -> ux[i] = GLES30.glGetUniformLocation(box, n) }
             listOf("uRes", "uTime", "uCam", "uRight", "uUp", "uFwd", "uFar", "uJitter", "uShift", "uDown",
-                "uNF", "uNR", "uNU", "uNameV", "uNameAspect", "uEcho", "uRing", "uDil", "uNeb", "uSpin", "uPlunge", "uSpot", "uKD").forEachIndexed { i, n -> us[i] = GLES30.glGetUniformLocation(scene, n) }
-            listOf("uHist", "uGlow", "uOut", "uTime", "uIris").forEachIndexed { i, n -> up[i] = GLES30.glGetUniformLocation(post, n) }
+                "uNF", "uNR", "uNU", "uNameV", "uNameAspect", "uEcho", "uRing", "uDil", "uNeb", "uSpin", "uPlunge", "uSpot", "uKD", "uWarm").forEachIndexed { i, n -> us[i] = GLES30.glGetUniformLocation(scene, n) }
+            listOf("uHist", "uGlow", "uOut", "uTime", "uIris", "uWarm").forEachIndexed { i, n -> up[i] = GLES30.glGetUniformLocation(post, n) }
             listOf("uHot", "uLit", "uRes", "uMaxLev").forEachIndexed { i, n -> ub[i] = GLES30.glGetUniformLocation(bloom, n) }
             listOf("uCur", "uHist", "uCurRes", "uOut", "uJitter", "uKeep", "uMin", "uMax").forEachIndexed { i, n -> ua[i] = GLES30.glGetUniformLocation(accum, n) }
             listOf("uScene", "uMode").forEachIndexed { i, n -> ug[i] = GLES30.glGetUniformLocation(glow, n) }
@@ -438,7 +448,7 @@ internal class SilverRenderer(
         GLES30.glUniform3f(us[10], nb[3][0], nb[3][1], nb[3][2]); GLES30.glUniform3f(us[11], nb[1][0], nb[1][1], nb[1][2])
         GLES30.glUniform3f(us[12], nb[2][0], nb[2][1], nb[2][2]); GLES30.glUniform1f(us[13], nameV)
         GLES30.glUniform1f(us[14], NAME_W.toFloat() / NAME_H)
-        GLES30.glUniform1f(us[15], echoAt + 20f)                                         // 120a: the light echo
+        GLES30.glUniform1f(us[15], echoAt + 20f); GLES30.glUniform1f(us[23], warm)                                         // 120a: the light echo
         // 120a the photon ring; 121a time slowing, the nebula; 122a spin 0.9 (frame dragging at strength 1.2), the
         // plunging streams, the hot spot
         effects(ALL_ON)
@@ -498,7 +508,7 @@ internal class SilverRenderer(
         GLES30.glActiveTexture(GLES30.GL_TEXTURE0); GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, hist[histNow])
         GLES30.glActiveTexture(GLES30.GL_TEXTURE1); GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, tex[3])
         GLES30.glUniform1i(up[0], 0); GLES30.glUniform1i(up[1], 1)
-        GLES30.glUniform2f(up[2], vw.toFloat(), vh.toFloat()); GLES30.glUniform1f(up[3], el)
+        GLES30.glUniform2f(up[2], vw.toFloat(), vh.toFloat()); GLES30.glUniform1f(up[3], el); GLES30.glUniform1f(up[5], warm)
         // 120a: the iris, from the hole's middle (the view is shifted 0.1 of the short side), once the shadow fills
         val iris = if (closeAt < 0f) 0f else smooth(closeAt + FALL * 0.8f, closeAt + FALL + 0.35f, el)
         GLES30.glUniform4f(up[4], vw * 0.5f + 0.1f * minOf(vw, vh), vh * 0.5f, iris * 0.62f * kotlin.math.hypot(vw.toFloat(), vh.toFloat()),
@@ -667,6 +677,7 @@ uniform float uSpin;
 uniform float uPlunge;
 uniform float uSpot;
 uniform float uKD;
+uniform float uWarm;
 out vec4 outColor;
 
 const float TAU = 6.2831853;
@@ -710,7 +721,12 @@ float thick(vec3 p){
 vec3 silverCol(float t){
   vec3 c = mix(vec3(0.30, 0.28, 0.27), vec3(0.78, 0.74, 0.68), ss(0.25, 0.65, t));
   c = mix(c, vec3(1.0, 0.97, 0.92), ss(0.65, 1.15, t));
-  return mix(c, vec3(0.88, 0.93, 1.0), ss(1.3, 2.0, t));
+  c = mix(c, vec3(0.88, 0.93, 1.0), ss(1.3, 2.0, t));
+  // 126a Ember: the classic intro's fire, deep red, orange, cream, blue-white
+  vec3 e = mix(vec3(1.0, 0.2, 0.03), vec3(1.0, 0.56, 0.18), ss(0.25, 0.65, t));
+  e = mix(e, vec3(1.0, 0.9, 0.76), ss(0.65, 1.15, t));
+  e = mix(e, vec3(0.78, 0.88, 1.0), ss(1.2, 1.9, t));
+  return mix(c, e, uWarm);
 }
 vec4 disk(vec3 p, vec3 rd, float si, float path){
   float r;
@@ -822,7 +838,7 @@ vec3 sky(vec3 d0){
   float lat = asin(clamp(d.y, -1.0, 1.0));
   float lon = atan(d.z, d.x);
   vec3 s = textureLod(uSky, vec2(lon / TAU, lat / 3.14159265 + 0.5), 0.0).rgb;
-  vec3 c = pow(s, vec3(2.2)) * 4.0 * SKYG;
+  vec3 c = pow(s, vec3(2.2)) * 4.0 * SKYG * mix(vec3(1.0), vec3(0.55, 0.62, 1.05), uWarm);   // 126a: Ember's blue haze
   for(int l = 0; l < 3; l++){
     float sc = 38.0 * pow(1.9, float(l));
     vec3 p = d * sc;
@@ -831,10 +847,10 @@ vec3 sky(vec3 d0){
     float h = hash(id + float(l) * 13.7);
     vec3 off = vec3(hash(id + 1.7), hash(id + 5.3), hash(id + 9.1)) - 0.5;
     float b = ss(0.09, 0.0, length(f - off * 0.6)) * pow(h, 14.0) * 5.0;
-    c += b * vec3(1.0, 0.96, 0.9);
+    c += b * mix(vec3(1.0, 0.96, 0.9), mix(vec3(1.0, 0.74, 0.52), vec3(0.62, 0.78, 1.0), hash(id + 3.3)), uWarm);
   }
   c += uNeb * nebula(d0);
-  c += 1.6 * nameLight(d) * vec3(1.0, 0.97, 0.92);
+  c += 1.6 * nameLight(d) * mix(vec3(1.0, 0.97, 0.92), vec3(1.0, 0.9, 0.76), uWarm);
   return c;
 }
 void main(){
@@ -1036,6 +1052,7 @@ uniform sampler2D uGlow;
 uniform vec2 uOut;
 uniform float uTime;
 uniform vec4 uIris;     // 120a: centre (px), radius (px), soft edge (px); radius 0 = closed
+uniform float uWarm;    // 126a: Ember keeps full colour, no cream tint
 out vec4 outColor;
 float h21(vec2 p){ return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
 void main(){
@@ -1043,8 +1060,8 @@ void main(){
   vec3 g = max(texture(uHist, uv).rgb + texture(uGlow, uv).rgb, 0.0);
   vec3 t = pow(1.0 - exp(-g * 1.15), vec3(1.0 / 2.2));
   float l = (t.r + t.g + t.b) / 3.0;
-  t = l + (t - l) * 0.35;
-  t = clamp(pow(t, vec3(1.4)) * vec3(1.0, 0.985, 0.955), 0.0, 1.0);
+  t = l + (t - l) * mix(0.35, 1.0, uWarm);
+  t = clamp(pow(t, vec3(1.4)) * mix(vec3(1.0, 0.985, 0.955), vec3(1.0), uWarm), 0.0, 1.0);
   vec2 q = uv - 0.5;
   t *= 1.0 - 0.5 * dot(q, q);
   t += (h21(gl_FragCoord.xy + fract(uTime) * 61.0) - 0.5) * 0.018;
