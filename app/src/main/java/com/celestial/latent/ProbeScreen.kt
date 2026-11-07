@@ -23,10 +23,17 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
@@ -44,6 +51,9 @@ fun ProbeScreen(settings: AppSettings, onBack: () -> Unit) {
     var output by remember { mutableStateOf("") }
     var progress by remember { mutableStateOf("") }
     var running by remember { mutableStateOf(false) }
+    var sweepFrom by remember { mutableIntStateOf(0) }
+    var skipText by remember { mutableStateOf("3") }
+    fun skipSet() = skipText.split(',', ' ').mapNotNull { it.trim().toIntOrNull() }.toSet()
     val lens = Lenses.ALL.firstOrNull { it.physicalId == settings.defaultLensId } ?: Lenses.DEFAULT
     DisposableEffect(Unit) { onDispose { probe.destroy() } }
 
@@ -92,8 +102,27 @@ fun ProbeScreen(settings: AppSettings, onBack: () -> Unit) {
         // One per line: side by side, the A/B button was squashed into a circle and the quality
         // probe was pushed off the screen entirely.
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Btn("Sensor mode sweep 0–63 on ${settings.cameraPath}/${lens.physicalId}", !running) {
-                run { probe.sensorModeSweep(settings.cameraPath, lens, 0, 63) { p -> progress = p } }
+            // 127a: start anywhere and skip modes that crash, so one bad mode no longer hides the rest.
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("Start at mode", color = LatentColors.Text, fontSize = 12.sp)
+                Btn("−", !running && sweepFrom > 0) { sweepFrom-- }
+                Text("$sweepFrom", color = LatentColors.TextBright, fontSize = 14.sp)
+                Btn("+", !running && sweepFrom < 63) { sweepFrom++ }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("Skip modes", color = LatentColors.Text, fontSize = 12.sp)
+                BasicTextField(
+                    skipText, { skipText = it.filter { c -> c.isDigit() || c == ',' || c == ' ' } }, singleLine = true,
+                    textStyle = TextStyle(color = LatentColors.TextBright, fontSize = 14.sp), cursorBrush = SolidColor(LatentColors.Amber),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.weight(1f).clip(RoundedCornerShape(8.dp)).background(LatentColors.Surface).padding(horizontal = 10.dp, vertical = 8.dp),
+                )
+            }
+            Btn("Sensor mode sweep $sweepFrom–63 on ${settings.cameraPath}/${lens.physicalId}", !running) {
+                run { probe.sensorModeSweep(settings.cameraPath, lens, sweepFrom, 63, skipSet()) { p -> progress = p } }
+            }
+            Btn("Close-up hunt on ${settings.cameraPath}/${lens.physicalId} (full-res + cropped RAW, mode 3, sweep)", !running) {
+                run { probe.closeUpHunt(settings.cameraPath, lens, sweepFrom, skipSet()) { p -> progress = p } }
             }
             Btn("A/B test: does DCG / HDR actually do anything?", !running) {
                 run { probe.abTest(settings.cameraPath, lens) { p -> progress = p } }
